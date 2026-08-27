@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ConnectED – Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <script>
+    (function () {
+      function syncLayoutMode() {
+        var mobile = window.matchMedia('(max-width: 900px)').matches;
+        document.documentElement.classList.toggle('layout-mobile', mobile);
+        document.documentElement.classList.toggle('layout-desktop', !mobile);
+        if (document.body) {
+          document.body.classList.toggle('layout-mobile', mobile);
+          document.body.classList.toggle('layout-desktop', !mobile);
+        }
+      }
+      syncLayoutMode();
+      window.addEventListener('resize', syncLayoutMode);
+      window.matchMedia('(max-width: 900px)').addEventListener('change', syncLayoutMode);
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260823a1" />
+</head>
+<body data-view="login">
+  <main class="page-shell">
+    <div class="view-stack">
+
+      <!-- ========== LOGIN VIEW ========== -->
+      <section id="view-login" class="app-view login-page-view" data-view="login" aria-label="Login Screen">
+        <div class="login-split">
+          <aside class="login-hero" aria-hidden="true">
+            <div class="login-hero-bg"></div>
+            <div class="login-hero-content">
+              <div class="login-hero-branding">
+                <img class="login-hero-logo" src="https://www.usant.edu.ph/images/logos/USANTlogo1.png" alt="University of Saint Anthony" />
+                <p class="login-hero-tagline">Choose Excellence</p>
+                <h2 class="login-hero-title">Choose <span class="login-hero-accent">USANT</span></h2>
+              </div>
+              <div class="login-card-overlay">
+                <div class="login-card-usant">
+                  <div class="login-card-brand">
+                    <img class="login-card-logo" src="/assets/connectED.png" alt="ConnectED" width="64" height="64" />
+                    <h1 class="login-title-usant font-heading">ConnectED</h1>
+                  </div>
+                  <p class="login-subtitle-usant">Sign in with your school email and temporary password.</p>
+                  <div class="form-field">
+                    <label class="field-label-usant" for="login-email">Email</label>
+                    <input class="input-usant" id="login-email" type="email" placeholder="Enter your email" />
+                  </div>
+                  <div class="form-field">
+                    <label class="field-label-usant" for="login-password">Password</label>
+                    <div class="input-usant-wrap input-usant-wrap--password">
+                      <input class="input-usant" id="login-password" type="password" placeholder="Enter your password" />
+                      <button type="button" class="password-toggle-usant" id="toggle-password" aria-label="Show password">👁</button>
+                    </div>
+                  </div>
+                  <div class="login-row-meta">
+                    <button type="button" class="link-usant link-usant--muted" id="forgot-password-btn">Forgot Password</button>
+                  </div>
+                  <div class="login-actions-stack">
+                    <button class="btn-maroon" id="login-signin-btn" type="button">Log in</button>
+                  </div>
+                  <label class="login-remember">
+                    <input type="checkbox" id="login-remember" name="remember" checked /> Remember me
+                  </label>
+                  <p id="login-message" class="inline-message login-msg"></p>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ========== TEACHER VIEW ========== -->
+      <section id="view-teacher" class="app-view" data-view="teacher" aria-label="Teacher Dashboard" hidden>
+        <div class="dash-frame" data-portal="teacher">
+          <div class="mobile-nav-backdrop" data-mobile-backdrop hidden></div>
+          <aside class="dash-sidebar dash-sidebar--teacher">
+            <div class="dash-sidebar-brand dash-sidebar-brand--stack">
+              <span class="dash-sidebar-brand-accent">ConnectED</span>
+              <span class="dash-sidebar-brand-subtitle">Teacher Portal</span>
+            </div>
+            <nav class="sidebar-nav sidebar-nav--icons" aria-label="Teacher sections">
+              <button type="button" class="sidebar-item active" data-teacher-panel="classroom"><span class="nav-ico">🏫</span> Classroom</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="attendance-sheet"><span class="nav-ico">📅</span> Attendance Sheet</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="progress"><span class="nav-ico">📈</span> Progress</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="lesson-plans"><span class="nav-ico">📚</span> Lesson Plans</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="quiz-bank"><span class="nav-ico">🗂️</span> Quiz Bank</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="inbox">
+                <span class="nav-ico">✉</span> Inbox
+                <span id="teacher-inbox-badge" class="inbox-badge sidebar-inbox-badge" hidden>0</span>
+              </button>
+            </nav>
+
+            <div class="teacher-sidebar-classroom" id="teacher-sidebar-classroom">
+              <p class="teacher-school-year-meta">
+                School year <strong id="teacher-school-year-label">2025-2026</strong>
+              </p>
+              <div class="my-classes-flyout" id="my-classes-flyout">
+                <button type="button" class="my-classes-trigger" id="my-classes-trigger" aria-expanded="false" aria-controls="teacher-class-list">
+                  <span>My Classes</span>
+                  <span class="my-classes-chev" aria-hidden="true">▾</span>
+                </button>
+                <div class="my-classes-panel" id="teacher-class-list">
+                  <div class="class-nav-empty">Loading…</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="dash-sidebar-footer">
+              <button type="button" class="dash-logout" data-action="logout">Logout</button>
+            </div>
+          </aside>
+
+          <div class="dash-main">
+            <header class="dash-topbar">
+              <div class="dash-topbar-left">
+                <button type="button" class="mobile-nav-toggle" data-mobile-nav="teacher" aria-label="Open menu" title="Menu">☰</button>
+                <button type="button" class="topbar-back-btn" id="teacher-back-btn" title="Go back" style="display:none;">← Back</button>
+                <span class="dash-topbar-role" id="teacher-topbar-title">Teacher Portal</span>
+              </div>
+              <div class="dash-topbar-right">
+              <div class="dash-topbar-actions" id="teacher-classroom-topbar-actions">
+                <div class="dash-search-wrap">
+                  <span class="dash-search-icon" aria-hidden="true">🔍</span>
+                  <input type="text" id="teacher-search-input" class="dash-search-input" placeholder="Search Student" />
+                </div>
+                <button id="add-record-btn" type="button" class="btn-record-add">+ Add Progress Record</button>
+              </div>
+              <div class="dash-topbar-profile">
+                <button type="button" class="topbar-avatar-btn" id="teacher-avatar-btn" aria-label="Open settings">
+                  <img id="teacher-topbar-avatar-img" data-topbar-avatar src="" alt="Teacher" style="display:none;" onload="this.style.display='block';this.nextElementSibling.style.display='none';" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                  <span class="topbar-avatar-initial" data-user-initial style="display:flex;">T</span>
+                </button>
+                <div class="settings-dropdown" id="teacher-settings-dropdown" hidden>
+                  <div class="settings-dropdown-header">
+                    <span class="settings-dropdown-name" data-user-name>Teacher</span>
+                    <span class="settings-dropdown-role">Teacher</span>
+                  </div>
+                  <div class="settings-dropdown-divider"></div>
+                  <button type="button" class="settings-dropdown-item" id="teacher-edit-profile-btn">✎ Edit Profile</button>
+                  <button type="button" class="settings-dropdown-item" id="teacher-change-password-btn">🔒 Change Password</button>
+                  <button type="button" class="settings-dropdown-item" data-action="logout">⎋ Logout</button>
+                </div>
+              </div>
+              </div>
+            </header>
+
+            <div class="dash-body teacher-shell teacher-full">
+              <div class="dash-body-inner">
+
+                <!-- PANEL: Classroom -->
+                <section id="teacher-panel-classroom" class="teacher-panel teacher-main">
+                  <div class="teacher-header-row">
+                    <div>
+                      <h2 class="page-heading font-heading" id="teacher-class-title">Grade 1-A</h2>
+                      <div class="teacher-header-meta page-subheading" id="teacher-session-meta">
+                        <span id="teacher-mode-badge" class="badge" style="background:var(--maroon);color:#fff;margin-right:8px;">Homeroom</span>
+                        Session Date: <span id="teacher-session-date">July 14, 2026</span>
+                      </div>
+                    </div>
+                    <div class="teacher-actions teacher-actions--toolbar">
+                      <button type="button" class="btn-toolbar btn-toolbar--ghost" id="open-attendance-sheet-btn">Attendance Sheet</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="notify-all-btn">Send Attendance Update</button>
+                    </div>
+                  </div>
+
+                  <div class="teacher-stats teacher-stats--branded">
+                    <div class="stat-card stat-card--light stat-card--stat">
+                      <div class="stat-card-icon stat-card-icon--orange">●</div>
+                      <span class="stat-label">Total Students</span>
+                      <div class="stat-main"><span id="stat-total-students">--</span></div>
+                      <span class="stat-trend" id="stat-class-info">Grade 1-A</span>
+                    </div>
+                    <div class="stat-card stat-card--dark stat-card--stat">
+                      <div class="stat-card-ring"></div>
+                      <span class="stat-label stat-label--on-dark">Present Today</span>
+                      <div class="stat-main stat-main--on-dark"><span id="stat-present-today">--</span></div>
+                      <span class="stat-trend stat-trend--on-dark" id="stat-present-pct">--%</span>
+                    </div>
+                    <div class="stat-card stat-card--light stat-card--stat">
+                      <div class="stat-card-icon stat-card-icon--orange" style="font-size:1.3rem;">📊</div>
+                      <span class="stat-label">Class Progress</span>
+                      <p style="margin-top:4px;color:#6b7280;font-size:0.78rem;" id="teacher-performance-text">
+                        Record scores in Progress so parents can see how their child is doing.
+                      </p>
+                      <button class="btn-outline" id="view-ai-insights-btn" style="margin-top:8px;">Open Progress</button>
+                    </div>
+                    <div class="stat-card stat-card--light stat-card--stat">
+                      <div class="stat-card-icon stat-card-icon--orange" style="font-size:1.3rem;">✉</div>
+                      <span class="stat-label">Absent Alerts</span>
+                      <div class="stat-main"><span id="stat-absent-count">--</span></div>
+                      <span class="stat-trend">Parents to notify</span>
+                    </div>
+                  </div>
+
+                  <div class="attendance-session-bar" id="attendance-session-bar" hidden>
+                    <span class="page-subheading" style="margin:0;">Session</span>
+                    <div class="session-toggle" role="group" aria-label="Attendance session">
+                      <button type="button" class="session-chip active" data-session="AM" id="session-chip-am">Morning (AM)</button>
+                      <button type="button" class="session-chip" data-session="PM" id="session-chip-pm">Afternoon (PM)</button>
+                    </div>
+                    </div>
+
+                  <div id="teacher-roster-wrap" class="teacher-roster-wrap" style="margin-top: 18px;">
+                    <div class="records-card">
+                      <div class="records-header">
+                        <div>
+                          <h3 class="page-heading font-heading" style="font-size: 1.1rem;">Class Roster</h3>
+                          <p class="page-subheading" id="classroom-roster-hint">Tap P, A, or L to mark attendance.</p>
+                        </div>
+                        <div class="records-header-actions">
+                          <button type="button" class="chip-ghost" id="attendance-save-all">Mark remaining Present</button>
+                        </div>
+                      </div>
+                      <div class="records-table-wrapper">
+                        <table id="teacher-roster-table">
+                          <thead>
+                            <tr>
+                              <th>LRN</th>
+                              <th>Student Name</th>
+                              <th>Gender</th>
+                              <th>Attendance</th>
+                              <th>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody></tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- PANEL: Attendance Sheet -->
+                <section id="teacher-panel-attendance-sheet" class="teacher-panel" hidden>
+                  <div class="teacher-header-row">
+                    <div>
+                      <h2 class="page-heading font-heading">Attendance Sheet</h2>
+                      <p class="page-subheading" id="attendance-sheet-meta">Select a class to view the weekly register.</p>
+                    </div>
+                    <div class="teacher-actions teacher-actions--toolbar" style="align-items:center;gap:10px;flex-wrap:wrap;">
+                      <div class="download-menu" id="attendance-download-menu">
+                        <button type="button" class="btn-toolbar btn-toolbar--ghost" id="attendance-download-btn" aria-haspopup="true" aria-expanded="false">
+                          Download ▾
+                        </button>
+                        <div class="download-menu-panel" id="attendance-download-panel" hidden>
+                          <button type="button" class="download-menu-item" id="attendance-export-pdf">PDF</button>
+                          <button type="button" class="download-menu-item" id="attendance-export-excel">Excel</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="attendance-week-bar" id="attendance-week-bar">
+                    <button type="button" class="chip-ghost" id="attendance-week-prev" title="Previous week">← Week</button>
+                    <span id="attendance-week-label" class="page-subheading attendance-week-label" style="margin:0;text-align:center;"></span>
+                    <button type="button" class="chip-ghost" id="attendance-week-next" title="Next week">Week →</button>
+                  </div>
+
+                  <div class="attendance-sheet-summary" id="attendance-sheet-summary" hidden>
+                    <p class="att-sheet-summary-main">
+                      <span>Students <strong id="att-sheet-total">0</strong></span>
+                      <span class="att-sheet-sep" aria-hidden="true">·</span>
+                      <!-- <span>Week <strong id="att-sheet-week-range">—</strong></span> -->
+                    </p>
+                    <p class="att-sheet-legend">
+                      <span><strong>P</strong> – Present</span>
+                      <span><strong>A</strong> – Absent</span>
+                      <span><strong>L</strong> – Late</span>
+                    </p>
+                  </div>
+
+                  <div class="records-card" style="margin-top:16px;">
+                    <div class="records-header">
+                      <div>
+                        <h3 class="page-heading font-heading" style="font-size:1.1rem;">Weekly register</h3>
+                        <p class="page-subheading" id="attendance-sheet-hint">From Classroom attendance · Monday–Friday weeks.</p>
+                      </div>
+                    </div>
+                    <div class="records-table-wrapper attendance-sheet-scroll">
+                      <table id="teacher-attendance-sheet-table" class="attendance-matrix-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- PANEL: Progress -->
+                <section id="teacher-panel-progress" class="teacher-panel" hidden>
+                  <div class="teacher-header-row">
+                    <div>
+                      <h2 class="page-heading font-heading">Progress Records</h2>
+                      <p class="page-subheading" id="progress-class-meta">Select a class to record quizzes, activities, and exams.</p>
+                    </div>
+                    <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-new-btn">+ New Record</button>
+                  </div>
+
+                  <p class="page-subheading" style="margin-bottom:12px;">
+                    Quiz Bank → Progress → Enable link when ready.
+                  </p>
+
+                  <div class="progress-quarter-bar" id="progress-quarter-bar">
+                    <span class="progress-quarter-label">Quarter</span>
+                    <div class="progress-quarter-list" id="teacher-quarter-list" role="tablist" aria-label="Grading quarter">
+                      <button type="button" class="progress-quarter-chip active" data-quarter="Q1">Q1</button>
+                      <button type="button" class="progress-quarter-chip" data-quarter="Q2" hidden>Q2</button>
+                      <button type="button" class="progress-quarter-chip" data-quarter="Q3" hidden>Q3</button>
+                      <button type="button" class="progress-quarter-chip" data-quarter="Q4" hidden>Q4</button>
+                    </div>
+                    <p class="progress-quarter-note" id="progress-quarter-note">Unlocked through Q1</p>
+                  </div>
+
+                  <div class="progress-toolbar" id="progress-toolbar">
+                    <div class="progress-type-filters" role="tablist" aria-label="Record type">
+                      <button type="button" class="progress-type-chip active" data-progress-type="all">All</button>
+                      <button type="button" class="progress-type-chip" data-progress-type="quiz">Quiz</button>
+                      <button type="button" class="progress-type-chip" data-progress-type="activity">Activity</button>
+                      <button type="button" class="progress-type-chip" data-progress-type="exam">Exam</button>
+                    </div>
+                    <div class="dash-search-wrap progress-search-wrap">
+                      <span class="dash-search-icon" aria-hidden="true">🔍</span>
+                      <input type="text" id="progress-search-input" class="dash-search-input" placeholder="Search by title or subject" />
+                    </div>
+                  </div>
+
+                  <div id="progress-create-form" class="admin-form" hidden style="margin-bottom:20px;">
+                    <div class="form-row">
+                      <div class="field-small">
+                        <label for="progress-title">Title</label>
+                        <input type="text" id="progress-title" placeholder="e.g., Quiz 1 — Fractions" />
+                      </div>
+                      <div class="field-small">
+                        <label for="progress-type">Type</label>
+                        <select id="progress-type">
+                          <option value="quiz">Quiz</option>
+                          <option value="activity">Activity</option>
+                          <option value="exam">Monthly Exam</option>
+                        </select>
+                      </div>
+                      <div class="field-small">
+                        <label for="progress-subject">Subject</label>
+                        <select id="progress-subject">
+                          <option value="">-- Select --</option>
+                        </select>
+                      </div>
+                      <div class="field-small">
+                        <label for="progress-max">Max Score</label>
+                        <input type="number" id="progress-max" min="1" max="999" value="100" />
+                      </div>
+                    </div>
+                    <div class="field-small">
+                      <label for="progress-quiz-link">External link (optional)</label>
+                      <input type="url" id="progress-quiz-link" placeholder="https://forms.gle/…" />
+                    </div>
+                    <button type="button" class="btn-solid" id="progress-create-save">Create Record</button>
+                    <button type="button" class="btn-outline" id="progress-create-cancel" style="margin-left:8px;">Cancel</button>
+                    <p id="progress-create-msg" class="inline-message"></p>
+                  </div>
+
+                  <div id="progress-list-wrap">
+                    <div id="progress-list" class="announcement-list"></div>
+                  </div>
+
+                  <div id="progress-editor" hidden>
+                    <button type="button" class="chip-ghost" id="progress-editor-back" style="margin-bottom:12px;">← Back to records</button>
+                    <div class="records-card progress-detail-card">
+                      <div class="records-header">
+                        <div>
+                          <h3 class="page-heading font-heading" style="font-size:1.1rem;" id="progress-editor-title">Record</h3>
+                          <p class="page-subheading" id="progress-editor-meta"></p>
+                        </div>
+                        <div class="progress-detail-header-actions">
+                          <button type="button" class="btn-outline" id="progress-mode-view" hidden>View scores</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-edit">Edit scores</button>
+                        </div>
+                      </div>
+
+                      <div class="progress-detail-section">
+                        <h4 class="progress-detail-section-title">ConnectED shared link</h4>
+                        <input type="text" id="progress-share-url" class="progress-share-url-input" readonly placeholder="Enable a link to share with the class" />
+                        <div class="progress-share-actions" id="progress-share-actions">
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-assign">Enable</button>
+                          <button type="button" class="chip-ghost chip-icon" id="progress-share-copy" title="Copy link" aria-label="Copy link" hidden>⧉</button>
+                          <button type="button" class="chip-ghost chip-icon chip-danger" id="progress-share-revoke" title="Turn off link" aria-label="Turn off link" hidden>✕</button>
+                          <a class="chip-ghost chip-icon primary" id="progress-share-open" href="#" target="_blank" rel="noopener" title="Open quiz" aria-label="Open quiz" hidden>↗</a>
+                        </div>
+                      </div>
+
+                      <div class="progress-detail-section">
+                        <h4 class="progress-detail-section-title">External quiz link <span class="page-subheading">(optional)</span></h4>
+                        <div class="progress-detail-row">
+                          <input type="url" id="progress-editor-quiz-link" placeholder="https://forms.gle/…" />
+                          <button type="button" class="btn-outline" id="progress-quiz-link-save">Save link</button>
+                          <a class="chip-ghost primary" id="progress-quiz-link-open" href="#" target="_blank" rel="noopener" hidden>Open link</a>
+                        </div>
+                      </div>
+
+                      <div id="progress-attached-questions" class="progress-detail-section" hidden>
+                        <h4 class="progress-detail-section-title">Attached questions</h4>
+                        <ol id="progress-questions-list" class="ai-draft-items progress-questions-list"></ol>
+                        <button type="button" class="chip-ghost" id="progress-copy-questions">Copy questions</button>
+                      </div>
+
+                      <div class="progress-detail-section progress-scores-section">
+                        <div class="progress-scores-section-header">
+                          <h4 class="progress-detail-section-title" style="margin:0;">Student scores</h4>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-scores-save" hidden>Save Scores</button>
+                        </div>
+                        <div class="records-table-wrapper">
+                          <table id="progress-scores-table">
+                            <thead>
+                              <tr>
+                                <th>Student</th>
+                                <th>Score</th>
+                                <th>%</th>
+                              </tr>
+                            </thead>
+                            <tbody></tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- PANEL: Lesson Plans & AI -->
+                <section id="teacher-panel-lesson-plans" class="teacher-panel" hidden>
+                  <h2 class="page-heading font-heading">Lesson Plans & AI</h2>
+                  <p class="page-subheading">Upload a lesson plan and generate AI drafts.</p>
+
+                  <div class="admin-form" style="margin-bottom:20px;">
+                    <div class="form-row">
+                      <div class="field-small">
+                        <label for="lp-title">Lesson Title</label>
+                        <input type="text" id="lp-title" placeholder="e.g., Multiplication Tables" />
+                      </div>
+                      <div class="field-small">
+                        <label for="lp-subject">Subject</label>
+                        <select id="lp-subject">
+                          <option value="">-- Select --</option>
+                        </select>
+                      </div>
+                      <div class="field-small">
+                        <label for="lp-grade">Grade Level</label>
+                        <select id="lp-grade">
+                          <option value="1">Grade 1</option>
+                          <option value="2">Grade 2</option>
+                          <option value="3">Grade 3</option>
+                          <option value="4">Grade 4</option>
+                          <option value="5">Grade 5</option>
+                          <option value="6">Grade 6</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="field-small">
+                      <label for="lp-objectives">Learning Objectives</label>
+                      <textarea id="lp-objectives" rows="3" placeholder="Describe what students should learn..."></textarea>
+                    </div>
+                    <div class="field-small">
+                      <label for="lp-file">Upload Lesson Plan (PDF/DOC)</label>
+                      <input type="file" id="lp-file" accept=".pdf,.doc,.docx" />
+                    </div>
+                    <button type="button" class="btn-solid" id="upload-lesson-btn">Upload Lesson Plan</button>
+                    <p id="lp-message" class="inline-message"></p>
+                    <p id="ai-mode-hint" class="page-subheading" style="margin-top:8px;"></p>
+                  </div>
+
+                  <h3 class="admin-section-title">My Lesson Plans</h3>
+                  <div id="lesson-plans-list" class="announcement-list"></div>
+
+                  <h3 class="admin-section-title" style="margin-top:24px;">AI Drafts</h3>
+                  <div id="ai-recommendations-list" class="announcement-list"></div>
+                </section>
+
+                <!-- PANEL: Quiz Bank -->
+                <section id="teacher-panel-quiz-bank" class="teacher-panel" hidden>
+                  <div class="teacher-header-row">
+                    <div>
+                      <h2 class="page-heading font-heading" id="qb-page-title">Saved sets</h2>
+                      <p class="page-subheading" id="qb-selection-meta">Open a set to pick items</p>
+                    </div>
+                    <div class="qb-header-actions">
+                      <button type="button" class="chip-ghost qb-refresh-btn" id="qb-filter-refresh" title="Refresh" aria-label="Refresh">↻</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" disabled>Create Progress quiz</button>
+                    </div>
+                  </div>
+
+                  <div class="progress-toolbar" style="margin-bottom:12px;">
+                    <div class="field-small qb-filter-field">
+                      <label for="qb-filter-grade">Grade</label>
+                      <select id="qb-filter-grade">
+                        <option value="">All my grades</option>
+                      </select>
+                    </div>
+                    <div class="field-small qb-filter-field">
+                      <label for="qb-filter-subject">Subject</label>
+                      <select id="qb-filter-subject">
+                        <option value="">All subjects</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div id="qb-list" class="announcement-list"></div>
+                  <div id="qb-set-detail" hidden>
+                    <button type="button" class="chip-ghost" id="qb-set-back" style="margin-bottom:12px;">← Back</button>
+                    <div class="records-card">
+                      <div class="records-header">
+                        <div>
+                          <h3 class="page-heading font-heading" style="font-size:1.1rem;" id="qb-set-title">Set</h3>
+                          <p class="page-subheading" id="qb-set-meta"></p>
+                        </div>
+                        <button type="button" class="chip-ghost chip-danger" id="qb-set-delete">Delete set</button>
+                      </div>
+                      <div class="qb-bulk-bar" id="qb-bulk-bar" hidden>
+                        <button type="button" class="chip-ghost" id="qb-select-all">Select all</button>
+                        <button type="button" class="chip-ghost" id="qb-clear-selection">Clear</button>
+                      </div>
+                      <div id="qb-set-groups" class="qb-set-groups"></div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- PANEL: Inbox -->
+                <section id="teacher-panel-inbox" class="teacher-panel" hidden>
+                  <h2 class="page-heading font-heading">Inbox</h2>
+                  <p class="page-subheading">Announcements, concerns, and class notices.</p>
+                  <div class="chart-card" style="margin-bottom:16px;">
+                    <h3 style="font-size:1.05rem;color:var(--maroon-deep);margin-bottom:8px;">Send class notice</h3>
+                    <form id="teacher-announcement-form" class="admin-form" style="margin-top:12px;">
+                      <div class="form-row">
+                        <div class="field-small">
+                          <label for="teacher-notice-class">Class</label>
+                          <select id="teacher-notice-class" required>
+                            <option value="">Select a class</option>
+                          </select>
+                        </div>
+                        <div class="field-small">
+                          <label for="teacher-notice-title">Title</label>
+                          <input id="teacher-notice-title" type="text" required placeholder="e.g. Project due Friday" />
+                        </div>
+                      </div>
+                      <div class="field-small">
+                        <label for="teacher-notice-body">Message</label>
+                        <textarea id="teacher-notice-body" rows="3" required placeholder="Write a notice for parents of this class..."></textarea>
+                      </div>
+                      <button type="submit" class="btn-solid">Send to parents</button>
+                      <p id="teacher-notice-msg" class="inline-message"></p>
+                    </form>
+                  </div>
+                  <div class="inbox-filters">
+                    <button type="button" class="active" data-inbox-filter="all">All</button>
+                    <button type="button" data-inbox-filter="admin">Admin</button>
+                    <button type="button" data-inbox-filter="parent">Parent Concerns</button>
+                  </div>
+                  <ul id="teacher-inbox-list" class="inbox-list"></ul>
+                </section>
+
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== PARENT VIEW ========== -->
+      <section id="view-parent" class="app-view" data-view="parent" aria-label="Parent Portal" hidden>
+        <div class="dash-frame" data-portal="parent">
+          <div class="mobile-nav-backdrop" data-mobile-backdrop hidden></div>
+          <aside class="dash-sidebar dash-sidebar--parent">
+            <div class="dash-sidebar-brand dash-sidebar-brand--stack">
+              <span class="dash-sidebar-brand-accent">ConnectED</span>
+              <span class="dash-sidebar-brand-subtitle">Parent Portal</span>
+            </div>
+            <div class="parent-sidebar-child">
+              <div class="dash-sidebar-heading">My Child</div>
+              <div class="parent-name parent-name--sidebar">
+                <small id="parent-child-name">Loading…</small>
+              </div>
+            </div>
+            <div>
+              <nav class="sidebar-nav sidebar-nav--icons">
+                <button class="sidebar-item active" data-parent-tab="overview"><span class="nav-ico">▦</span> Academic Overview</button>
+                <button class="sidebar-item" data-parent-tab="progress"><span class="nav-ico">📈</span> Progress Tracking</button>
+                <button class="sidebar-item" data-parent-tab="attendance"><span class="nav-ico">📅</span> Attendance Records</button>
+                <button class="sidebar-item" data-parent-tab="contact"><span class="nav-ico">💬</span> Contact Teachers</button>
+                <button class="sidebar-item" data-parent-tab="inbox">
+                  <span class="nav-ico">✉</span> Inbox
+                  <span id="parent-inbox-badge" class="inbox-badge sidebar-inbox-badge" hidden>0</span>
+                </button>
+              </nav>
+            </div>
+            <div class="parent-sidebar-footer-links">
+              <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
+              <div class="footer-links-row">
+                <a href="#">Privacy Policy</a>
+                <a href="#">Terms</a>
+                <a href="#">Help</a>
+              </div>
+            </div>
+          </aside>
+
+          <div class="dash-main">
+            <header class="dash-topbar">
+              <div class="dash-topbar-left">
+                <button type="button" class="mobile-nav-toggle" data-mobile-nav="parent" aria-label="Open menu" title="Menu">☰</button>
+                <button type="button" class="topbar-back-btn" id="parent-back-btn" title="Go back" style="display:none;">← Back</button>
+                <span class="dash-topbar-role">Parent Portal</span>
+              </div>
+              <div class="dash-topbar-right">
+                <div class="dash-topbar-actions">
+                  <button id="parent-print-btn" type="button" class="btn-orange-solid">Print / Save PDF</button>
+                </div>
+                <div class="dash-topbar-profile">
+                  <button type="button" class="topbar-avatar-btn" id="parent-avatar-btn" aria-label="Open settings">
+                    <img id="parent-topbar-avatar-img" data-topbar-avatar src="" alt="Parent" style="display:none;" onload="this.style.display='block';this.nextElementSibling.style.display='none';" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                    <span class="topbar-avatar-initial" data-user-initial style="display:flex;">P</span>
+                  </button>
+                  <div class="settings-dropdown" id="parent-settings-dropdown" hidden>
+                    <div class="settings-dropdown-header">
+                      <span class="settings-dropdown-name" data-user-name>Parent</span>
+                      <span class="settings-dropdown-role">Parent</span>
+                    </div>
+                    <div class="settings-dropdown-divider"></div>
+                    <button type="button" class="settings-dropdown-item" id="parent-edit-profile-btn">✎ Edit Profile</button>
+                    <button type="button" class="settings-dropdown-item" id="parent-change-password-btn">🔒 Change Password</button>
+                    <button type="button" class="settings-dropdown-item" data-action="logout">⎋ Logout</button>
+                  </div>
+                </div>
+              </div>
+            </header>
+            <div class="dash-body parent-dash-body">
+              <div class="dash-body-inner">
+                <section class="parent-main" id="parent-content" data-parent-tab-container>
+                  <!-- Loaded dynamically -->
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== ADMIN VIEW ========== -->
+      <section id="view-admin" class="app-view" data-view="admin" aria-label="Admin Dashboard" hidden>
+        <div class="dash-frame" data-portal="admin">
+          <div class="mobile-nav-backdrop" data-mobile-backdrop hidden></div>
+          <aside class="dash-sidebar dash-sidebar--admin">
+            <div class="dash-sidebar-brand dash-sidebar-brand--stack">
+              <span class="dash-sidebar-brand-accent">ConnectED</span>
+              <span class="dash-sidebar-brand-subtitle">Admin Portal</span>
+            </div>
+            <nav class="sidebar-nav sidebar-nav--icons">
+              <button class="sidebar-item active" data-admin-tab="overview"><span class="nav-ico">▦</span> Overview</button>
+              <button class="sidebar-item" data-admin-tab="accounts"><span class="nav-ico">👥</span> Manage Accounts</button>
+              <button class="sidebar-item" data-admin-tab="students"><span class="nav-ico">🎓</span> Manage Students</button>
+              <button class="sidebar-item" data-admin-tab="subjects"><span class="nav-ico">📚</span> Subjects</button>
+              <button class="sidebar-item" data-admin-tab="announcements"><span class="nav-ico">📣</span> Announcements</button>
+            </nav>
+          </aside>
+
+          <div class="dash-main">
+            <header class="dash-topbar">
+              <div class="dash-topbar-left">
+                <button type="button" class="mobile-nav-toggle" data-mobile-nav="admin" aria-label="Open menu" title="Menu">☰</button>
+                <button type="button" class="topbar-back-btn" id="admin-back-btn" title="Go back" style="display:none;">← Back</button>
+                <span class="dash-topbar-role">Admin Portal</span>
+              </div>
+              <div class="dash-topbar-right">
+              <div class="dash-topbar-profile">
+                <button type="button" class="topbar-avatar-btn" id="admin-avatar-btn" aria-label="Open settings">
+                  <img id="admin-topbar-avatar-img" data-topbar-avatar src="" alt="Admin" style="display:none;" onload="this.style.display='block';this.nextElementSibling.style.display='none';" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                  <span class="topbar-avatar-initial" data-user-initial style="display:flex;">A</span>
+                </button>
+                <div class="settings-dropdown" id="admin-settings-dropdown" hidden>
+                  <div class="settings-dropdown-header">
+                    <span class="settings-dropdown-name" data-user-name>Admin</span>
+                    <span class="settings-dropdown-role">Administrator</span>
+                  </div>
+                  <div class="settings-dropdown-divider"></div>
+                  <button type="button" class="settings-dropdown-item" id="admin-edit-profile-btn">✎ Edit Profile</button>
+                  <button type="button" class="settings-dropdown-item" id="admin-change-password-btn">🔒 Change Password</button>
+                  <button type="button" class="settings-dropdown-item" data-action="logout">⎋ Logout</button>
+                </div>
+              </div>
+              </div>
+            </header>
+            <div class="dash-body admin-dash-body">
+              <div class="dash-body-inner">
+                <section class="admin-main">
+                  <div class="admin-tab-stack">
+
+                    <!-- TAB: Overview -->
+                    <div id="admin-tab-overview" class="admin-tab">
+                      <h2 class="admin-page-title">Dashboard Overview</h2>
+                      <p class="admin-greeting">Welcome back, Admin. Here is what is happening today.</p>
+                      <div class="admin-kpis admin-kpis--hero">
+                        <div class="admin-stat-card admin-stat-card--light">
+                          <div class="admin-stat-head">
+                            <span class="admin-stat-label">Total Teachers</span>
+                            <span class="admin-stat-orb">👨‍🏫</span>
+                          </div>
+                          <div class="admin-stat-num" id="admin-kpi-teachers">--</div>
+                          <a href="#" class="admin-stat-link" data-admin-tab-click="accounts" data-role-filter="teacher">Manage Teachers</a>
+                        </div>
+                        <div class="admin-stat-card admin-stat-card--dark">
+                          <div class="admin-stat-head">
+                            <span class="admin-stat-label admin-stat-label--light">Total Parents</span>
+                            <span class="admin-stat-orb">👪</span>
+                          </div>
+                          <div class="admin-stat-num admin-stat-num--light" id="admin-kpi-parents">--</div>
+                          <a href="#" class="admin-stat-link admin-stat-link--light" data-admin-tab-click="accounts" data-role-filter="parent">Manage Parents</a>
+                        </div>
+                        <div class="admin-stat-card admin-stat-card--light">
+                          <div class="admin-stat-head">
+                            <span class="admin-stat-label">Total Students</span>
+                            <span class="admin-stat-orb">🎓</span>
+                          </div>
+                          <div class="admin-stat-num" id="admin-kpi-students">--</div>
+                          <a href="#" class="admin-stat-link" data-admin-tab-click="students">Manage Students</a>
+                        </div>
+                      </div>
+                      <div class="admin-overview-grid">
+                        <div class="admin-panel">
+                          <h3 class="admin-panel-title">Recent System Activity</h3>
+                          <p class="admin-panel-sub">Latest 8 actions across admin, teacher, and parent portals.</p>
+                          <table class="admin-log-table">
+                            <thead><tr><th>User</th><th>Action</th><th>Time</th></tr></thead>
+                            <tbody id="admin-activity-log"></tbody>
+                          </table>
+                        </div>
+                        <div class="admin-panel admin-panel--actions">
+                          <h3 class="admin-panel-title">School Term</h3>
+                          <p class="admin-panel-sub">Unlock Progress quarters for teachers. Earlier quarters stay available.</p>
+                          <div class="field-small" style="margin-top:10px;">
+                            <label for="admin-current-quarter">Current quarter</label>
+                            <select id="admin-current-quarter">
+                              <option value="Q1">Q1</option>
+                              <option value="Q2">Q2</option>
+                              <option value="Q3">Q3</option>
+                              <option value="Q4">Q4</option>
+                            </select>
+                          </div>
+                          <p id="admin-quarter-help" class="page-subheading" style="margin-top:8px;">Unlocks Progress recording through this quarter.</p>
+                          <button type="button" class="btn-solid" id="admin-save-quarter-btn" style="margin-top:10px;">Save Quarter</button>
+                          <p id="admin-quarter-msg" class="inline-message"></p>
+                          <hr style="border:none;border-top:1px solid var(--border-maroon);margin:16px 0;" />
+                          <h3 class="admin-panel-title">Quick Actions</h3>
+                          <p class="admin-panel-sub">Commonly performed school management tasks.</p>
+                          <button type="button" class="qa-card" data-admin-tab-click="announcements">
+                            <span class="qa-ico">📣</span>
+                            <span class="qa-title">Compose Announcement</span>
+                            <span class="qa-desc">Broadcast to school-wide, grade-wide, or class-specific.</span>
+                          </button>
+                          <button type="button" class="qa-card" data-admin-tab-click="accounts">
+                            <span class="qa-ico">＋</span>
+                            <span class="qa-title">Add New User</span>
+                            <span class="qa-desc">Register teacher or parent with temporary password.</span>
+                          </button>
+                          <button type="button" class="qa-card" data-admin-tab-click="students">
+                            <span class="qa-ico">🎓</span>
+                            <span class="qa-title">Add Student</span>
+                            <span class="qa-desc">Enroll a new student and assign parent/teacher.</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- TAB: Manage Accounts -->
+                    <div id="admin-tab-accounts" class="admin-tab" hidden>
+                      <h2>Manage Accounts</h2>
+                      <p class="admin-subtitle">Create, edit, or deactivate teacher and parent accounts.</p>
+
+                      <form id="admin-account-form" class="admin-form">
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="admin-account-first">First Name</label>
+                            <input id="admin-account-first" type="text" placeholder="First name" required />
+                          </div>
+                          <div class="field-small">
+                            <label for="admin-account-last">Last Name</label>
+                            <input id="admin-account-last" type="text" placeholder="Last name" required />
+                          </div>
+                          <div class="field-small">
+                            <label for="admin-account-email">Email</label>
+                            <input id="admin-account-email" type="email" placeholder="name@usant.edu" required />
+                          </div>
+                        </div>
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="admin-account-phone">Phone (SMS)</label>
+                            <input id="admin-account-phone" type="text" placeholder="09171234567" maxlength="13" />
+                          </div>
+                          <div class="field-small">
+                            <label for="admin-account-password">Temporary Password</label>
+                            <input id="admin-account-password" type="text" placeholder="Auto-generate or enter" value="changeme123" />
+                          </div>
+                          <div class="field-small">
+                            <label for="admin-account-role">Role</label>
+                            <select id="admin-account-role">
+                              <option value="teacher">Teacher</option>
+                              <option value="parent">Parent</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <!-- Teacher-specific fields -->
+                        <div id="teacher-fields">
+                          <div class="form-row" style="margin-bottom:16px;">
+                            <div class="field-small">
+                              <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Teaching Role <small>(check all that apply)</small></label>
+                              <div id="teaching-role-list" style="margin-top:6px;">
+                                <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+                                  <input type="checkbox" id="teacher-role-class-adviser" onchange="toggleClassAdviserFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+                                  <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Class Adviser</span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+                                  <input type="checkbox" id="teacher-role-subject-teacher" onchange="toggleSubjectTeacherFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+                                  <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Subject Teacher</span>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Class Adviser Assignment -->
+                          <div id="class-adviser-fields" class="form-row" style="display:none;">
+                            <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;">Class Adviser Assignment</div>
+                            <div class="field-small">
+                              <label for="class-adviser-grade">Grade Level</label>
+                              <select id="class-adviser-grade" onchange="loadClassAdviserSections()">
+                                <option value="">-- Select --</option>
+                                <option value="1">Grade 1</option>
+                                <option value="2">Grade 2</option>
+                                <option value="3">Grade 3</option>
+                                <option value="4">Grade 4</option>
+                                <option value="5">Grade 5</option>
+                                <option value="6">Grade 6</option>
+                              </select>
+                            </div>
+                            <div class="field-small">
+                              <label for="class-adviser-section">Section</label>
+                              <div id="class-adviser-section-wrap">
+                                <select id="class-adviser-section" disabled onchange="handleSectionSelect(this, 'class-adviser-new-section')">
+                                  <option value="">-- Select Grade First --</option>
+                                </select>
+                              </div>
+                              <input type="text" id="class-adviser-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
+                              <small id="class-adviser-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
+                            </div>
+                          </div>
+
+                          <p id="class-adviser-auto-note" class="inline-message" style="display:none;margin:4px 0 8px;width:100%;">
+                            Grades 1–3: this class adviser automatically teaches all subjects for the class. Subject teacher rows are only for Grades 4–6.
+                          </p>
+
+                          <!-- Subjects Taught by Class Adviser (Grades 4-6) -->
+                          <div id="class-adviser-subjects-wrap" class="form-row" style="display:none;margin-top:8px;">
+                            <div class="field-small span-full">
+                              <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects Taught by this Class Adviser (Grades 4–6)</label>
+                              <div id="class-adviser-subjects-list" class="admin-subject-check-grid"></div>
+                            </div>
+                          </div>
+
+                          <!-- Subject Teacher Assignments -->
+                          <div id="subject-teacher-fields" style="display:none;">
+                            <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6 only)</div>
+                            <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser.</p>
+                            <div id="subject-assignments-container">
+                              <!-- Dynamic rows inserted here -->
+                            </div>
+                            <button type="button" class="chip-ghost" id="add-subject-btn" onclick="addSubjectAssignment()" style="margin-top:8px;">+ Add Another Subject</button>
+                          </div>
+                        </div>
+
+                        <!-- Parent-specific fields -->
+                        <div id="parent-fields" class="form-row" hidden>
+                          <div class="field-small">
+                            <label for="admin-account-address">Address</label>
+                            <textarea id="admin-account-address" rows="2" placeholder="Home address..."></textarea>
+                          </div>
+                          <div class="field-small">
+                            <label for="admin-account-emergency">Emergency Contact</label>
+                            <input id="admin-account-emergency" type="text" placeholder="0917xxxxxxx" />
+                          </div>
+                        </div>
+
+                        <button class="btn-solid" type="submit">+ Create Account</button>
+                      </form>
+
+                      <div class="admin-filter-bar">
+                        <div class="admin-filter-group">
+                          <button type="button" class="chip-ghost primary" data-account-filter="all">All</button>
+                          <button type="button" class="chip-ghost" data-account-filter="teacher">Teachers</button>
+                          <button type="button" class="chip-ghost" data-account-filter="parent">Parents</button>
+                        </div>
+                        <div class="admin-filter-group">
+                          <button type="button" class="chip-ghost primary" data-account-status="active">Active</button>
+                          <button type="button" class="chip-ghost" data-account-status="inactive">Inactive</button>
+                        </div>
+                      </div>
+                      <h3 class="admin-section-title">Recent Accounts</h3>
+                      <div class="records-table-wrapper admin-table-wrap">
+                      <table id="admin-accounts-table">
+                        <thead>
+                          <tr><th>Name</th><th>Email</th><th>Role</th><th>Details</th><th>Status</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                      </table>
+                      </div>
+                    </div>
+
+                    <!-- TAB: Manage Students -->
+                    <div id="admin-tab-students" class="admin-tab" hidden>
+                      <h2>Manage Students</h2>
+                      <p class="admin-subtitle">Enroll students, assign parents and class advisers.</p>
+                      <form id="admin-student-form" class="admin-form">
+
+                        <div class="form-row">
+                          <div class="field-small"><label for="student-lrn">LRN</label><input id="student-lrn" type="text" placeholder="12-digit LRN" maxlength="12" oninput="this.value=this.value.replace(/\D/g,'').slice(0,12)" /></div>
+                          <div class="field-small"><label for="student-first">First Name</label><input id="student-first" type="text" required /></div>
+                           <div class="field-small"><label for="student-middle">Middle Name</label><input id="student-middle" type="text" placeholder="Optional" /></div>
+                        </div>
+
+                        <div class="form-row">
+                          <div class="field-small"><label for="student-last">Last Name</label><input id="student-last" type="text" required /></div>
+                          <div class="field-small">
+                            <label for="student-grade">Grade Level</label>
+                            <select id="student-grade">
+                              <option value="1">Grade 1</option><option value="2">Grade 2</option><option value="3">Grade 3</option>
+                              <option value="4">Grade 4</option><option value="5">Grade 5</option><option value="6">Grade 6</option>
+                            </select>
+                          </div>
+
+                          <div class="field-small">
+                            <label for="student-section">Section</label>
+                            <select id="student-section" required disabled>
+                              <option value="">-- Select Grade First --</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="student-gender">Gender</label>
+                            <select id="student-gender"><option value="M">Male</option><option value="F">Female</option></select>
+                          </div>
+                          <div class="field-small"><label for="student-parent">Parent</label><select id="student-parent"><option value="">-- Select Parent --</option></select></div>
+                          <div class="field-small">
+  <label for="student-class-adviser-display">Class Adviser</label>
+  <div id="student-class-adviser-display" style="padding:8px 11px;border:1px solid var(--border-maroon);border-radius:10px;background:#f8f6f4;color:var(--text-dark);font-size:0.84rem;min-height:35px;display:flex;align-items:center;">
+    <span id="student-class-adviser-text" style="color:var(--text-muted);">-- Select Grade & Section --</span>
+  </div>
+  <input type="hidden" id="student-homeroom" />
+  <small id="student-class-adviser-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
+</div>
+                        </div>
+
+                        <div class="form-row">
+                          <div class="field-small"><label for="student-dob">Date of Birth</label><input id="student-dob" type="date" /></div>
+                        </div>
+
+                        <button class="btn-solid" type="submit">+ Enroll Student</button>
+                      </form>
+                      <div class="admin-list-toolbar">
+                        <h3 class="admin-section-title" style="margin:0;">Student List</h3>
+                        <div class="dash-search-wrap admin-accounts-search">
+                          <span class="dash-search-icon" aria-hidden="true">🔍</span>
+                          <input type="text" id="admin-student-search" class="dash-search-input" placeholder="Search by name or LRN..." />
+                        </div>
+                      </div>
+                      <div class="records-table-wrapper admin-table-wrap">
+                      <table id="admin-students-table">
+                        <thead><tr><th>LRN</th><th>Name</th><th>Grade</th><th>Section</th><th>Parent</th><th>Status</th><th></th></tr></thead>
+                        <tbody></tbody>
+                      </table>
+                      </div>
+                    </div>
+
+                    <!-- TAB: Subjects -->
+                    <div id="admin-tab-subjects" class="admin-tab" hidden>
+                      <h2>Subjects</h2>
+                      <p class="admin-subtitle">Manage the Montessori elementary curriculum subjects.</p>
+
+                      <form id="admin-subject-form" class="admin-form" style="margin-bottom:20px;">
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="subject-code">Code</label>
+                            <input id="subject-code" type="text" placeholder="MATH" required maxlength="20" />
+                          </div>
+                          <div class="field-small">
+                            <label for="subject-name">Name</label>
+                            <input id="subject-name" type="text" placeholder="Mathematics" required />
+                          </div>
+                          <div class="field-small">
+                            <label for="subject-grades">Applicable Grades</label>
+                            <input id="subject-grades" type="text" placeholder="1-6" />
+                          </div>
+                        </div>
+                        <div class="field-small">
+                          <label for="subject-desc">Description</label>
+                          <input id="subject-desc" type="text" placeholder="Number concepts, operations..." />
+                        </div>
+                        <button class="btn-solid" type="submit">+ Add Subject</button>
+                      </form>
+
+                      <table id="admin-subjects-table">
+                        <thead>
+                          <tr><th>Code</th><th>Name</th><th>Description</th><th>Grades</th><th></th></tr>
+                        </thead>
+                        <tbody id="admin-subjects-tbody">
+                          <!-- Populated dynamically -->
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <!-- TAB: Announcements -->
+                    <div id="admin-tab-announcements" class="admin-tab" hidden>
+                      <h2>Announcements</h2>
+                      <p class="admin-subtitle">Send announcements to the whole school, a grade, or a class. Choose who should see them.</p>
+                      <form id="admin-announcement-form" class="admin-form">
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="announcement-audience">Audience</label>
+                            <select id="announcement-audience">
+                              <option value="everyone">Parents &amp; teachers</option>
+                              <option value="teachers">Teachers only</option>
+                            </select>
+                          </div>
+                          <div class="field-small">
+                            <label for="announcement-scope">Scope</label>
+                            <select id="announcement-scope">
+                              <option value="school_wide">School-wide</option>
+                              <option value="grade_wide">Grade-wide</option>
+                              <option value="class_specific">Class-specific</option>
+                            </select>
+                          </div>
+                          <div class="field-small" id="announcement-grade-wrap" hidden>
+                            <label for="announcement-grade">Grade</label>
+                            <select id="announcement-grade">
+                              <option value="">Select grade</option>
+                              <option value="1">Grade 1</option><option value="2">Grade 2</option><option value="3">Grade 3</option>
+                              <option value="4">Grade 4</option><option value="5">Grade 5</option><option value="6">Grade 6</option>
+                            </select>
+                          </div>
+                          <div class="field-small" id="announcement-section-wrap" hidden>
+                            <label for="announcement-section">Section</label>
+                            <input id="announcement-section" type="text" placeholder="e.g. A" maxlength="10" />
+                          </div>
+                        </div>
+                        <div class="form-row">
+                          <div class="field-small">
+                            <label for="announcement-title">Title</label>
+                            <input id="announcement-title" type="text" placeholder="Exam week schedule" required />
+                          </div>
+                          <div class="field-small">
+                            <label for="announcement-priority">Priority</label>
+                            <select id="announcement-priority">
+                              <option value="low">Low</option>
+                              <option value="normal" selected>Normal</option>
+                              <option value="high">High</option>
+
+                            </select>
+                          </div>
+                        </div>
+                        <div class="field-small">
+                          <label for="announcement-body">Message</label>
+                          <textarea id="announcement-body" rows="4" placeholder="Share important updates..." required></textarea>
+                        </div>
+                        <button class="btn-solid" type="submit">Send Announcement</button>
+                        <p id="admin-announcement-message" class="inline-message"></p>
+                      </form>
+                      <h3 class="admin-section-title">Sent Announcements</h3>
+                      <ul id="admin-announcement-list" class="announcement-list"></ul>
+                    </div>
+
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+</main>
+
+<!-- ADMIN PROFILE MODAL -->
+<div id="admin-profile-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 class="font-heading">Edit Profile</h3>
+    <form id="admin-profile-form">
+      <div class="form-row">
+        <div class="field-small">
+          <label for="admin-profile-first">First Name</label>
+          <input id="admin-profile-first" type="text" required />
+        </div>
+        <div class="field-small">
+          <label for="admin-profile-last">Last Name</label>
+          <input id="admin-profile-last" type="text" required />
+        </div>
+        <div class="field-small">
+          <label for="admin-profile-email">Email</label>
+          <input id="admin-profile-email" type="email" required />
+        </div>
+      </div>
+      <div class="field-small">
+        <label for="admin-profile-avatar">Profile Picture</label>
+        <input id="admin-profile-avatar" type="file" accept="image/jpeg,image/png,image/webp" />
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="admin-profile-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- FORGOT PASSWORD MODAL -->
+<div id="forgot-password-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 class="font-heading">Forgot Password</h3>
+    <p class="page-subheading">ConnectED does not send reset emails. Ask the school administrator to open Manage Accounts, click your name, open <strong>Actions</strong>, and choose <strong>Reset Password</strong>. Sign in with that temporary password, then change it when prompted.</p>
+    <div class="modal-form-actions">
+      <button type="button" class="btn-solid" id="forgot-password-close">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANGE PASSWORD MODAL -->
+<div id="change-password-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 class="font-heading" id="change-password-title">Change Password</h3>
+    <p class="page-subheading" id="change-password-hint" hidden>Your administrator set a temporary password. Enter it below as the current password, then choose a new one to continue.</p>
+    <p id="change-password-error" class="inline-message" style="color:#b71c1c;" hidden></p>
+    <form id="change-password-form">
+      <div class="field-small">
+        <label for="cp-current">Current Password</label>
+        <input id="cp-current" type="password" required />
+      </div>
+      <div class="field-small">
+        <label for="cp-new">New Password</label>
+        <input id="cp-new" type="password" required minlength="6" />
+      </div>
+      <div class="field-small">
+        <label for="cp-confirm">Confirm New Password</label>
+        <input id="cp-confirm" type="password" required minlength="6" />
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="change-password-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Update Password</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- RESET PASSWORD MODAL -->
+<div id="reset-password-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 class="font-heading">Reset Password</h3>
+    <p class="page-subheading" id="reset-password-subtitle">Set a temporary password. The user must change it after they sign in.</p>
+    <p id="reset-password-error" class="inline-message" style="color:#b71c1c;" hidden></p>
+    <form id="reset-password-form">
+      <input type="hidden" id="reset-password-user-id" />
+      <div class="field-small">
+        <label for="reset-password-temp">Temporary Password</label>
+        <input id="reset-password-temp" type="text" required minlength="6" value="changeme123" />
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="reset-password-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Set Temporary Password</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ATTENDANCE UPDATE MODAL -->
+<div id="attendance-update-modal" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 class="font-heading">Send Attendance Update</h3>
+    <p class="page-subheading" id="attendance-update-subtitle">Notify linked parents about today's attendance for this class.</p>
+    <form id="attendance-update-form">
+      <div class="field-small">
+        <label for="attendance-update-scope">Who to notify</label>
+        <select id="attendance-update-scope">
+          <option value="absent">Absent only</option>
+          <option value="late_absent" selected>Late and absent</option>
+          <option value="all">All statuses (Present, Late, Absent)</option>
+        </select>
+      </div>
+      <p id="attendance-update-preview" class="page-subheading"></p>
+      <p class="page-subheading" id="attendance-update-sms-hint" style="margin-top:4px;"></p>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="attendance-update-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Send notices + SMS</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+  <!-- MODALS -->
+  <div id="teacher-history-modal" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <h3 class="font-heading">Student Record History</h3>
+      <ul id="teacher-history-list" class="history-list"></ul>
+      <button type="button" class="btn-solid" id="teacher-history-close">Close</button>
+    </div>
+  </div>
+
+  <div id="teacher-add-student-modal" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <h3 class="font-heading">Add Student to Class</h3>
+      <p class="page-subheading">Create a new student record.</p>
+      <form id="teacher-add-student-form">
+        <div class="field-small"><label for="add-student-lrn">LRN</label><input id="add-student-lrn" type="text" placeholder="12-digit LRN" /></div>
+        <div class="field-small"><label for="add-student-first">First Name</label><input id="add-student-first" type="text" required placeholder="First name" /></div>
+        <div class="field-small"><label for="add-student-last">Last Name</label><input id="add-student-last" type="text" required placeholder="Last name" /></div>
+        <div class="field-small"><label for="add-student-dob">Date of Birth</label><input id="add-student-dob" type="date" /></div>
+        <div class="field-small">
+          <label for="add-student-gender">Gender</label>
+          <select id="add-student-gender"><option value="M">Male</option><option value="F">Female</option></select>
+        </div>
+        <div class="modal-form-actions">
+          <button type="button" class="btn-outline" id="add-student-cancel">Cancel</button>
+          <button type="submit" class="btn-solid">Add Student</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="ai-approve-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:440px;">
+      <h3 class="font-heading">Approve AI draft</h3>
+      <p class="page-subheading">Creates a Progress record and saves items to Quiz Bank.</p>
+      <input type="hidden" id="ai-approve-id" />
+      <input type="hidden" id="ai-approve-grade" />
+      <div class="field-small">
+        <label for="ai-approve-type">Resource type</label>
+        <select id="ai-approve-type">
+          <option value="quiz">Quiz</option>
+          <option value="activity">Activity</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="ai-approve-class">Class (assigned only)</label>
+        <select id="ai-approve-class">
+          <option value="">-- Select your class --</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="ai-approve-quarter">Quarter</label>
+        <select id="ai-approve-quarter">
+          <option value="Q1">Q1</option>
+          <option value="Q2">Q2</option>
+          <option value="Q3">Q3</option>
+          <option value="Q4">Q4</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="ai-approve-quiz-link">Shared quiz link (optional)</label>
+        <input type="url" id="ai-approve-quiz-link" placeholder="https://forms.gle/… (optional)" />
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="ai-approve-cancel">Cancel</button>
+        <button type="button" class="btn-solid" id="ai-approve-confirm">Approve &amp; create</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-create-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:460px;">
+      <h3 class="font-heading">Create Progress quiz from bank</h3>
+      <p class="page-subheading" id="qb-create-count">Selected items → new Progress record.</p>
+      <div class="field-small">
+        <label for="qb-create-title">Title</label>
+        <input type="text" id="qb-create-title" placeholder="e.g., Quiz — Algebra week 1" />
+      </div>
+      <div class="field-small">
+        <label for="qb-create-type">Type</label>
+        <select id="qb-create-type">
+          <option value="quiz">Quiz</option>
+          <option value="activity">Activity</option>
+          <option value="exam">Exam</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="qb-create-class">Class (assigned only)</label>
+        <select id="qb-create-class">
+          <option value="">-- Select your class --</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="qb-create-quarter">Quarter</label>
+        <select id="qb-create-quarter">
+          <option value="Q1">Q1</option>
+          <option value="Q2">Q2</option>
+          <option value="Q3">Q3</option>
+          <option value="Q4">Q4</option>
+        </select>
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="qb-create-cancel">Cancel</button>
+        <button type="button" class="btn-solid" id="qb-create-confirm">Create record</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-edit-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:520px;">
+      <h3 class="font-heading">Edit bank item</h3>
+      <input type="hidden" id="qb-edit-id" />
+      <div class="field-small">
+        <label for="qb-edit-question">Question / prompt</label>
+        <textarea id="qb-edit-question" rows="3"></textarea>
+      </div>
+      <div class="field-small">
+        <label for="qb-edit-choices">Choices (one per line, MCQ)</label>
+        <textarea id="qb-edit-choices" rows="4" placeholder="Option A&#10;Option B&#10;Option C&#10;Option D"></textarea>
+      </div>
+      <div class="field-small">
+        <label for="qb-edit-answer">Correct answer</label>
+        <input type="text" id="qb-edit-answer" />
+      </div>
+      <div class="form-row">
+        <div class="field-small">
+          <label for="qb-edit-points">Points</label>
+          <input type="number" id="qb-edit-points" min="0.5" step="0.5" value="1" />
+        </div>
+        <div class="field-small">
+          <label for="qb-edit-grade">Grade (assigned only)</label>
+          <select id="qb-edit-grade"></select>
+        </div>
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="qb-edit-cancel">Cancel</button>
+        <button type="button" class="btn-solid" id="qb-edit-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="teacher-report-modal" class="modal-overlay" hidden>
+    <div class="modal-card modal-card--wide">
+      <h3 class="font-heading" id="teacher-report-title">Class Performance Report</h3>
+      <p class="page-subheading" id="teacher-report-subtitle"></p>
+      <div id="teacher-report-summary" class="report-summary-grid"></div>
+      <div id="teacher-report-table" class="report-table-wrap"></div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-solid" id="teacher-report-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="parent-concern-modal" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <h3 class="font-heading">Send Concern to Teacher</h3>
+      <form id="parent-concern-form">
+        <div class="field-small">
+          <label for="concern-teacher">Teacher</label>
+          <select id="concern-teacher" required></select>
+        </div>
+        <div class="field-small">
+          <label for="concern-student">Student</label>
+          <select id="concern-student" required></select>
+        </div>
+        <div class="field-small">
+          <label for="concern-subject">Subject</label>
+          <input id="concern-subject" type="text" placeholder="e.g., Mathematics" required />
+        </div>
+        <div class="field-small">
+          <label for="concern-message">Message</label>
+          <textarea id="concern-message" rows="4" placeholder="Describe your concern..." required></textarea>
+        </div>
+        <div class="modal-form-actions">
+          <button type="button" class="btn-outline" id="concern-cancel">Cancel</button>
+          <button type="submit" class="btn-solid">Send Concern</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+<!-- EDIT TEACHER ASSIGNMENTS MODAL -->
+<div id="edit-teacher-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:600px;">
+    <h3 class="font-heading">Edit Teacher Assignments</h3>
+    <p class="page-subheading" id="edit-teacher-name">Loading...</p>
+    <form id="edit-teacher-form">
+      <input type="hidden" id="edit-teacher-id">
+
+      <div class="form-row" style="margin-bottom:16px;">
+        <div class="field-small">
+          <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Teaching Role <small>(check all that apply)</small></label>
+          <div id="edit-teaching-role-list" style="margin-top:6px;">
+            <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+              <input type="checkbox" id="edit-role-class-adviser" onchange="toggleEditClassAdviser()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+              <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Class Adviser</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+              <input type="checkbox" id="edit-role-subject-teacher" onchange="toggleEditSubjectTeacher()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+              <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Subject Teacher</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Class Adviser Assignment -->
+      <div id="edit-class-adviser-fields" class="form-row" style="display:none;">
+        <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;">Class Adviser Assignment</div>
+        <div class="field-small">
+          <label for="edit-class-adviser-grade">Grade Level</label>
+          <select id="edit-class-adviser-grade" onchange="loadEditClassAdviserSections()">
+            <option value="">-- Select --</option>
+            <option value="1">Grade 1</option>
+            <option value="2">Grade 2</option>
+            <option value="3">Grade 3</option>
+            <option value="4">Grade 4</option>
+            <option value="5">Grade 5</option>
+            <option value="6">Grade 6</option>
+          </select>
+        </div>
+        <div class="field-small">
+          <label for="edit-class-adviser-section">Section</label>
+          <div id="edit-class-adviser-section-wrap">
+            <select id="edit-class-adviser-section" disabled onchange="handleSectionSelect(this, 'edit-class-adviser-new-section')">
+              <option value="">-- Select Grade First --</option>
+            </select>
+          </div>
+          <input type="text" id="edit-class-adviser-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
+          <small id="edit-class-adviser-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
+        </div>
+      </div>
+
+      <p id="edit-class-adviser-auto-note" class="inline-message" style="display:none;margin:4px 0 8px;">
+        Grades 1–3: this class adviser automatically teaches all subjects for the class. Subject teacher rows are only for Grades 4–6.
+      </p>
+
+      <!-- Subjects Taught by Class Adviser (Grades 4-6) -->
+      <div id="edit-class-adviser-subjects-wrap" class="form-row" style="display:none;margin-top:8px;">
+        <div class="field-small span-full">
+          <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects Taught by this Class Adviser (Grades 4–6)</label>
+          <div id="edit-class-adviser-subjects-list" class="admin-subject-check-grid"></div>
+        </div>
+      </div>
+
+      <!-- Subject Teacher Assignments -->
+      <div id="edit-subject-teacher-fields" style="display:none;">
+        <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6 only)</div>
+        <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser.</p>
+        <div id="edit-subject-assignments-container">
+          <!-- Dynamic rows inserted here -->
+        </div>
+        <button type="button" class="chip-ghost" onclick="addEditSubjectAssignment()" style="margin-top:8px;">+ Add Another Subject</button>
+      </div>
+
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="edit-teacher-cancel" style="min-width:140px;">Cancel</button>
+        <button type="submit" class="btn-solid" style="min-width:140px;">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+  <!-- Single-page app: load unified app.js that handles role-based routing -->
+  <script src="/js/app.js?v=20260823a1" type="module"></script>
+
+<!-- RE-ENROLL STUDENT MODAL -->
+<div id="reenroll-student-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:700px;max-height:90vh;overflow-y:auto;">
+    <h3 class="font-heading">Re-enroll Student</h3>
+    <p class="page-subheading">Review and update student details before re-enrolling.</p>
+    <form id="reenroll-student-form">
+      <input type="hidden" id="reenroll-student-id">
+
+      <div class="form-row">
+        <div class="field-small"><label for="reenroll-lrn">LRN</label><input id="reenroll-lrn" type="text" placeholder="12-digit LRN" maxlength="12" oninput="this.value=this.value.replace(/\D/g,'').slice(0,12)" /></div>
+        <div class="field-small"><label for="reenroll-first">First Name</label><input id="reenroll-first" type="text" required /></div>
+        <div class="field-small"><label for="reenroll-middle">Middle Name</label><input id="reenroll-middle" type="text" placeholder="Optional" /></div>
+      </div>
+
+      <div class="form-row">
+        <div class="field-small"><label for="reenroll-last">Last Name</label><input id="reenroll-last" type="text" required /></div>
+        <div class="field-small">
+          <label for="reenroll-grade">Grade Level</label>
+          <select id="reenroll-grade" required>
+            <option value="1">Grade 1</option><option value="2">Grade 2</option><option value="3">Grade 3</option>
+            <option value="4">Grade 4</option><option value="5">Grade 5</option><option value="6">Grade 6</option>
+          </select>
+        </div>
+        <div class="field-small">
+          <label for="reenroll-section">Section</label>
+          <select id="reenroll-section" required disabled>
+            <option value="">-- Select Grade First --</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="field-small">
+          <label for="reenroll-gender">Gender</label>
+          <select id="reenroll-gender"><option value="M">Male</option><option value="F">Female</option></select>
+        </div>
+        <div class="field-small"><label for="reenroll-parent">Parent</label><select id="reenroll-parent"><option value="">-- Select Parent --</option></select></div>
+        <div class="field-small">
+          <label for="reenroll-class-adviser-display">Class Adviser</label>
+          <div id="reenroll-class-adviser-display" style="padding:8px 11px;border:1px solid var(--border-maroon);border-radius:10px;background:#f8f6f4;color:var(--text-dark);font-size:0.84rem;min-height:35px;display:flex;align-items:center;">
+            <span id="reenroll-class-adviser-text" style="color:var(--text-muted);">-- Select Grade & Section --</span>
+          </div>
+          <input type="hidden" id="reenroll-homeroom" />
+          <small id="reenroll-class-adviser-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="field-small"><label for="reenroll-dob">Date of Birth</label><input id="reenroll-dob" type="date" /></div>
+        <div class="field-small" style="visibility:hidden;"><label>&nbsp;</label><input type="text" tabindex="-1" style="visibility:hidden;" disabled /></div>
+        <div class="field-small" style="visibility:hidden;"><label>&nbsp;</label><input type="text" tabindex="-1" style="visibility:hidden;" disabled /></div>
+      </div>
+
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="reenroll-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Confirm Re-enroll</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- EDIT ANNOUNCEMENT MODAL -->
+<div id="edit-announcement-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:600px;">
+    <h3 class="font-heading">Edit Announcement</h3>
+    <form id="edit-announcement-form">
+      <input type="hidden" id="edit-announcement-id">
+      <div class="form-row">
+        <div class="field-small">
+          <label for="edit-announcement-audience">Audience</label>
+          <select id="edit-announcement-audience">
+            <option value="everyone">Parents &amp; teachers</option>
+            <option value="teachers">Teachers only</option>
+          </select>
+        </div>
+        <div class="field-small">
+          <label for="edit-announcement-scope">Scope</label>
+          <select id="edit-announcement-scope" onchange="updateEditAnnouncementScopeFields()">
+            <option value="school_wide">School-wide</option>
+            <option value="grade_wide">Grade-wide</option>
+            <option value="class_specific">Class-specific</option>
+          </select>
+        </div>
+        <div class="field-small" id="edit-announcement-grade-wrap" hidden>
+          <label for="edit-announcement-grade">Grade</label>
+          <select id="edit-announcement-grade">
+            <option value="">Select grade</option>
+            <option value="1">Grade 1</option><option value="2">Grade 2</option><option value="3">Grade 3</option>
+            <option value="4">Grade 4</option><option value="5">Grade 5</option><option value="6">Grade 6</option>
+          </select>
+        </div>
+        <div class="field-small" id="edit-announcement-section-wrap" hidden>
+          <label for="edit-announcement-section">Section</label>
+          <input id="edit-announcement-section" type="text" placeholder="e.g. A" maxlength="10" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field-small">
+          <label for="edit-announcement-title">Title</label>
+          <input id="edit-announcement-title" type="text" required />
+        </div>
+        <div class="field-small">
+          <label for="edit-announcement-priority">Priority</label>
+          <select id="edit-announcement-priority">
+            <option value="low">Low</option>
+            <option value="normal" selected>Normal</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-small">
+        <label for="edit-announcement-body">Message</label>
+        <textarea id="edit-announcement-body" rows="4" required></textarea>
+      </div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="edit-announcement-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- TEACHER DETAIL MODAL -->
+<div id="teacher-detail-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:650px;max-height:90vh;overflow-y:auto;">
+    <div class="modal-card-header">
+      <h3 class="font-heading modal-card-title" id="teacher-detail-name">Teacher Details</h3>
+      <div class="modal-actions-wrap">
+        <button type="button" class="chip-ghost" id="teacher-detail-actions-btn" aria-haspopup="true" aria-expanded="false">Actions ▾</button>
+        <div class="settings-dropdown" id="teacher-detail-actions-menu" hidden>
+          <button type="button" class="settings-dropdown-item" id="teacher-detail-action-reset">Reset Password</button>
+          <button type="button" class="settings-dropdown-item" id="teacher-detail-action-edit-info">Edit Info</button>
+          <button type="button" class="settings-dropdown-item" id="teacher-detail-action-edit">Edit Assignments</button>
+          <div class="settings-dropdown-divider"></div>
+          <button type="button" class="settings-dropdown-item settings-dropdown-item--danger" id="teacher-detail-action-status">Deactivate</button>
+        </div>
+      </div>
+    </div>
+    <div id="teacher-detail-content" style="margin-top:16px;">
+      <p style="color:var(--text-muted);">Loading...</p>
+    </div>
+    <div class="modal-form-actions" style="margin-top:20px;">
+      <button type="button" class="btn-solid" id="teacher-detail-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- PARENT DETAIL MODAL -->
+<div id="parent-detail-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:650px;max-height:90vh;overflow-y:auto;">
+    <div class="modal-card-header">
+      <h3 class="font-heading modal-card-title" id="parent-detail-name">Parent Details</h3>
+      <div class="modal-actions-wrap">
+        <button type="button" class="chip-ghost" id="parent-detail-actions-btn" aria-haspopup="true" aria-expanded="false">Actions ▾</button>
+        <div class="settings-dropdown" id="parent-detail-actions-menu" hidden>
+          <button type="button" class="settings-dropdown-item" id="parent-detail-action-reset">Reset Password</button>
+          <button type="button" class="settings-dropdown-item" id="parent-detail-action-edit-info">Edit Info</button>
+          <div class="settings-dropdown-divider"></div>
+          <button type="button" class="settings-dropdown-item settings-dropdown-item--danger" id="parent-detail-action-status">Deactivate</button>
+        </div>
+      </div>
+    </div>
+    <div id="parent-detail-content" style="margin-top:16px;">
+      <p style="color:var(--text-muted);">Loading...</p>
+    </div>
+    <div class="modal-form-actions" style="margin-top:20px;">
+      <button type="button" class="btn-solid" id="parent-detail-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT ACCOUNT INFO MODAL -->
+<div id="edit-account-info-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:480px;">
+    <h3 class="font-heading" id="edit-account-info-title">Edit Info</h3>
+    <p class="page-subheading" id="edit-account-info-subtitle">Update account details.</p>
+    <form id="edit-account-info-form">
+      <input type="hidden" id="edit-account-id" />
+      <input type="hidden" id="edit-account-role" />
+      <div class="form-row">
+        <div class="field-small">
+          <label for="edit-account-first">First Name</label>
+          <input id="edit-account-first" type="text" required />
+        </div>
+        <div class="field-small">
+          <label for="edit-account-last">Last Name</label>
+          <input id="edit-account-last" type="text" required />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field-small">
+          <label for="edit-account-email">Email</label>
+          <input id="edit-account-email" type="email" required />
+        </div>
+        <div class="field-small">
+          <label for="edit-account-phone">Phone (SMS)</label>
+          <input id="edit-account-phone" type="text" placeholder="09171234567" maxlength="13" />
+        </div>
+      </div>
+      <div id="edit-account-parent-fields" hidden>
+        <div class="field-small">
+          <label for="edit-account-address">Address</label>
+          <textarea id="edit-account-address" rows="2" placeholder="Home address..."></textarea>
+        </div>
+        <div class="field-small">
+          <label for="edit-account-emergency">Emergency Contact</label>
+          <input id="edit-account-emergency" type="text" placeholder="09171234567" maxlength="13" />
+        </div>
+      </div>
+      <p id="edit-account-info-msg" class="inline-message" hidden></p>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="edit-account-info-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;pointer-events:none;"></div>
+
+</body>
+</html>

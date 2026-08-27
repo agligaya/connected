@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <script>
+    (function () {
+      function syncLayoutMode() {
+        var mobile = window.matchMedia('(max-width: 900px)').matches;
+        document.documentElement.classList.toggle('layout-mobile', mobile);
+        document.documentElement.classList.toggle('layout-desktop', !mobile);
+      }
+      syncLayoutMode();
+      window.matchMedia('(max-width: 900px)').addEventListener('change', syncLayoutMode);
+    })();
+  </script>
+  <title>ConnectED Quiz</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260823a1" />
+  <style>
+    body { margin: 0; background: #f4ebe4; }
+    .quiz-page { max-width: 720px; margin: 0 auto; padding: 16px 12px 40px; box-sizing: border-box; }
+    .quiz-card { background: #fff; border-radius: 16px; padding: 16px; box-shadow: 0 8px 24px rgba(0,0,0,.08); margin-bottom: 14px; }
+    .quiz-q { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid #eee; }
+    .quiz-q:last-child { border-bottom: none; }
+    .quiz-choices label {
+      display: block;
+      margin: 8px 0;
+      padding: 12px 12px;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      cursor: pointer;
+      line-height: 1.35;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .quiz-choices label:hover,
+    .quiz-choices label:has(input:checked) { border-color: #b71c1c; background: rgba(183,28,28,.04); }
+    .quiz-choices input { margin-right: 8px; transform: scale(1.15); }
+    .quiz-error { color: #b71c1c; margin-top: 8px; }
+    .quiz-success { color: #1b5e20; }
+    .quiz-meta { color: #666; margin: 4px 0 16px; font-size: 0.9rem; word-break: break-word; }
+    textarea.quiz-sa { width: 100%; min-height: 88px; border-radius: 10px; border: 1px solid #ccc; padding: 12px; font: inherit; font-size: 16px; box-sizing: border-box; }
+    #quiz-student, #quiz-submit { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 16px; }
+    #quiz-submit { margin-top: 8px; }
+    #quiz-title { font-size: 1.25rem; line-height: 1.3; word-break: break-word; }
+    @media (max-width: 480px) {
+      .quiz-page { padding: 12px 10px 32px; }
+      .quiz-card { padding: 14px 12px; border-radius: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="quiz-page">
+    <div class="quiz-card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+        <img src="/assets/connectED.png" alt="ConnectED" width="40" height="40" />
+        <strong class="font-heading">ConnectED Quiz</strong>
+      </div>
+      <div id="quiz-status">Loading…</div>
+    </div>
+
+    <div id="quiz-form-wrap" class="quiz-card" hidden>
+      <h1 class="page-heading font-heading" id="quiz-title" style="font-size:1.35rem;"></h1>
+      <p class="quiz-meta" id="quiz-meta"></p>
+
+      <div class="field-small" style="margin-bottom:16px;">
+        <label for="quiz-student"><strong>Your name</strong></label>
+        <select id="quiz-student">
+          <option value="">-- Select your name --</option>
+        </select>
+      </div>
+
+      <div id="quiz-questions"></div>
+      <p id="quiz-form-error" class="quiz-error" hidden></p>
+      <button type="button" class="btn-solid" id="quiz-submit">Submit answers</button>
+    </div>
+
+    <div id="quiz-done" class="quiz-card" hidden>
+      <h2 class="font-heading quiz-success">Submitted</h2>
+      <p id="quiz-done-msg"></p>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      const token = (location.pathname.split('/').filter(Boolean).pop() || '').trim();
+      const statusEl = document.getElementById('quiz-status');
+      const formWrap = document.getElementById('quiz-form-wrap');
+      const doneWrap = document.getElementById('quiz-done');
+      const qBox = document.getElementById('quiz-questions');
+      const studentSel = document.getElementById('quiz-student');
+      const errEl = document.getElementById('quiz-form-error');
+      let quizData = null;
+
+      function esc(s) {
+        return String(s ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      async function load() {
+        if (!token) {
+          statusEl.textContent = 'Invalid quiz link.';
+          return;
+        }
+        try {
+          const res = await fetch('/api/quiz/' + encodeURIComponent(token));
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Could not load quiz');
+          quizData = data;
+          statusEl.hidden = true;
+          formWrap.hidden = false;
+          document.getElementById('quiz-title').textContent = data.title || 'Quiz';
+          document.getElementById('quiz-meta').textContent =
+            'Grade ' + data.grade_level + '-' + data.section +
+            (data.subject_name ? ' · ' + data.subject_name : '') +
+            ' · Max ' + data.max_score;
+
+          studentSel.innerHTML = '<option value="">-- Select your name --</option>' +
+            (data.students || []).slice().sort(function (a, b) {
+              const ln = String(a.last_name || a.name || '').localeCompare(String(b.last_name || b.name || ''), undefined, { sensitivity: 'base' });
+              if (ln !== 0) return ln;
+              return String(a.first_name || '').localeCompare(String(b.first_name || ''), undefined, { sensitivity: 'base' });
+            }).map(function (s) {
+              const disabled = s.submitted ? ' disabled' : '';
+              const base = (s.last_name && s.first_name)
+                ? (s.last_name + ', ' + s.first_name)
+                : s.name;
+              const label = s.submitted ? base + ' (already submitted)' : base;
+              return '<option value="' + s.id + '"' + disabled + '>' + esc(label) + '</option>';
+            }).join('');
+
+          qBox.innerHTML = (data.questions || []).map(function (q, i) {
+            const isMcq = q.item_type === 'mcq' || (q.choices && q.choices.length);
+            let body = '';
+            if (isMcq) {
+              body = '<div class="quiz-choices">' + (q.choices || []).map(function (c, j) {
+                const id = 'q' + q.id + '_' + j;
+                return '<label for="' + id + '"><input type="radio" name="q_' + q.id + '" id="' + id + '" value="' + esc(c) + '" /> ' + esc(c) + '</label>';
+              }).join('') + '</div>';
+            } else {
+              body = '<textarea class="quiz-sa" data-qid="' + q.id + '" placeholder="Your answer"></textarea>';
+            }
+            return '<div class="quiz-q" data-qid="' + q.id + '" data-mcq="' + (isMcq ? '1' : '0') + '">' +
+              '<p><strong>' + (i + 1) + '.</strong> ' + esc(q.question) +
+              ' <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>' + body + '</div>';
+          }).join('');
+        } catch (e) {
+          statusEl.textContent = e.message || 'Failed to load quiz.';
+        }
+      }
+
+      document.getElementById('quiz-submit').addEventListener('click', async function () {
+        errEl.hidden = true;
+        const studentId = studentSel.value;
+        if (!studentId) {
+          errEl.textContent = 'Please select your name.';
+          errEl.hidden = false;
+          return;
+        }
+
+        const answers = [];
+        qBox.querySelectorAll('.quiz-q').forEach(function (block) {
+          const qid = block.getAttribute('data-qid');
+          const isMcq = block.getAttribute('data-mcq') === '1';
+          let answer = '';
+          if (isMcq) {
+            const checked = block.querySelector('input[type="radio"]:checked');
+            answer = checked ? checked.value : '';
+          } else {
+            const ta = block.querySelector('textarea');
+            answer = ta ? ta.value.trim() : '';
+          }
+          answers.push({ question_id: Number(qid), answer: answer });
+        });
+
+        try {
+          const res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: Number(studentId), answers: answers })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Submit failed');
+          formWrap.hidden = true;
+          doneWrap.hidden = false;
+          document.getElementById('quiz-done-msg').textContent =
+            (data.student_name || 'Student') + ' — score ' + data.score + ' / ' + data.max_score +
+            '. ' + (data.message || '');
+        } catch (e) {
+          errEl.textContent = e.message || 'Submit failed.';
+          errEl.hidden = false;
+        }
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>
