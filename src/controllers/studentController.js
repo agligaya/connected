@@ -6,8 +6,9 @@ exports.createStudent = async (req, res) => {
   try {
     const {
       lrn, first_name, middle_name, last_name, grade_level, section,
-      dob, gender, parent_id, homeroom_teacher_id
+      dob, date_of_birth, gender, parent_id, homeroom_teacher_id
     } = req.body;
+    const dobValue = dob || date_of_birth || null;
 
     if (!first_name || !last_name || !grade_level || !section) {
       return res.status(400).json({ error: 'First name, last name, grade, and section are required' });
@@ -29,7 +30,7 @@ exports.createStudent = async (req, res) => {
     const [result] = await db.query(
       `INSERT INTO students (lrn, first_name, middle_name, last_name, grade_level, section, dob, gender, STATUS) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [lrn || null, first_name, middle_name || null, last_name, grade_level, section, dob || null, gender || null]
+      [lrn || null, first_name, middle_name || null, last_name, grade_level, section, dobValue || null, gender || null]
     );
     const studentId = result.insertId;
 
@@ -60,15 +61,16 @@ exports.createStudent = async (req, res) => {
 exports.getStudents = async (req, res) => {
   try {
     const [students] = await db.query(
-      `SELECT s.id, s.lrn, s.first_name, s.middle_name, s.last_name, s.grade_level, s.section, s.gender, s.dob, s.STATUS as status, 
+      `SELECT s.id, s.lrn, s.first_name, s.middle_name, s.last_name, s.grade_level, s.section, s.gender, s.dob, s.STATUS as status,
+        MAX(psl.parent_id) as parent_id,
         MAX(p.first_name) as parent_first, MAX(p.last_name) as parent_last,
         MAX(t.first_name) as teacher_first, MAX(t.last_name) as teacher_last
        FROM students s
        LEFT JOIN parent_student_links psl ON s.id = psl.student_id
        LEFT JOIN users p ON psl.parent_id = p.id
        LEFT JOIN (
-         SELECT teacher_id, grade_level, section 
-         FROM teacher_assignments 
+         SELECT teacher_id, grade_level, section
+         FROM teacher_assignments
          WHERE subject_id IS NULL AND school_year = '${schoolYear}'
        ) ta ON s.grade_level = ta.grade_level AND s.section = ta.section
        LEFT JOIN users t ON ta.teacher_id = t.id
@@ -86,10 +88,31 @@ exports.getStudents = async (req, res) => {
 exports.updateStudent = async (req, res) => {
   try {
     const { id } = req.params;
-    const { lrn, first_name, middle_name, last_name, status } = req.body;
+    const {
+      lrn,
+      first_name,
+      middle_name,
+      last_name,
+      status,
+      grade_level,
+      section,
+      gender,
+      dob,
+      date_of_birth,
+      parent_id,
+      homeroom_teacher_id
+    } = req.body;
+
+    const dobValue = dob || date_of_birth || null;
+    const sectionNorm = section != null ? String(section).trim() : null;
+    const isReenroll = grade_level != null && sectionNorm;
 
     if (!first_name || !last_name) {
       return res.status(400).json({ error: 'First name and last name are required' });
+    }
+
+    if (isReenroll && (!grade_level || !sectionNorm)) {
+      return res.status(400).json({ error: 'Grade level and section are required for re-enrollment' });
     }
 
     // Validate LRN if provided
@@ -105,12 +128,50 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    await db.query(
-      'UPDATE students SET lrn = ?, first_name = ?, middle_name = ?, last_name = ?, status = ? WHERE id = ?',
-      [lrn || null, first_name, middle_name || null, last_name, status || 'active', id]
-    );
+    if (isReenroll) {
+      await db.query(
+        `UPDATE students SET lrn = ?, first_name = ?, middle_name = ?, last_name = ?,
+         grade_level = ?, section = ?, dob = ?, gender = ?, STATUS = ?
+         WHERE id = ?`,
+        [
+          lrn || null,
+          first_name,
+          middle_name || null,
+          last_name,
+          grade_level,
+          sectionNorm,
+          dobValue || null,
+          gender || null,
+          status || 'active',
+          id
+        ]
+      );
 
-    res.json({ message: 'Student updated successfully' });
+      await db.query('DELETE FROM parent_student_links WHERE student_id = ?', [id]);
+      if (parent_id) {
+        await db.query(
+          'INSERT INTO parent_student_links (parent_id, student_id) VALUES (?, ?)',
+          [parent_id, id]
+        );
+      }
+
+      if (homeroom_teacher_id) {
+        await db.query(
+          `INSERT INTO teacher_assignments (teacher_id, grade_level, section, school_year)
+           VALUES (?, ?, ?, '${schoolYear}')
+           ON DUPLICATE KEY UPDATE teacher_id = VALUES(teacher_id)`,
+          [homeroom_teacher_id, grade_level, sectionNorm]
+        );
+      }
+    } else {
+      await db.query(
+        `UPDATE students SET lrn = ?, first_name = ?, middle_name = ?, last_name = ?, STATUS = ?
+         WHERE id = ?`,
+        [lrn || null, first_name, middle_name || null, last_name, status || 'active', id]
+      );
+    }
+
+    res.json({ message: isReenroll ? 'Student re-enrolled successfully' : 'Student updated successfully' });
   } catch (error) {
     console.error('Update student error:', error);
     res.status(500).json({ error: 'Server error updating student' });
@@ -127,7 +188,7 @@ exports.updateStudentStatus = async (req, res) => {
       return res.status(400).json({ error: 'Status must be active or inactive' });
     }
 
-    await db.query('UPDATE students SET status = ? WHERE id = ?', [status, id]);
+    await db.query('UPDATE students SET STATUS = ? WHERE id = ?', [status, id]);
     res.json({ message: `Student ${status === 'active' ? 're-enrolled' : 'unenrolled'} successfully` });
   } catch (error) {
     console.error('Update status error:', error);

@@ -73,6 +73,12 @@ app.listen(PORT, async () => {
     console.error('[startup] attendanceSchema:', e.message);
   }
   try {
+    const { ensureQuizAttendanceSchema } = require('./utils/quizAttendance');
+    await ensureQuizAttendanceSchema();
+  } catch (e) {
+    console.error('[startup] quizAttendance:', e.message);
+  }
+  try {
     const { ensureSmsSchema, startSmsWorker } = require('./utils/sms');
     await ensureSmsSchema();
     startSmsWorker();

@@ -152,7 +152,7 @@ function mockGenerate({ title, gradeLevel, subjectName, sourceText }) {
       max_score: quizMax,
       items,
       notes:
-        'Mock draft mixes Multiple choice, Identification, and Enumeration. Save to Quiz Bank, then pick items for Progress.'
+        'Mock draft mixes Multiple choice, Identification, and Enumeration. Save to Classwork, then pick items for Progress.'
     },
     activity: {
       title: `Activity: Explore ${topic}`,

@@ -178,6 +178,7 @@ function statusLetter(status) {
   if (st === 'present') return 'P';
   if (st === 'absent') return 'A';
   if (st === 'late') return 'L';
+  if (st === 'excused') return 'E';
   return '';
 }
 

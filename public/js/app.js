@@ -38,7 +38,7 @@ function applyQuarterUnlockUI() {
   if (help) {
     help.textContent = CURRENT_QUARTER === 'Q4'
       ? 'All quarters are unlocked for Progress records.'
-      : `Teachers can record Progress through ${CURRENT_QUARTER}. Next quarters stay hidden until you unlock them.`;
+      : `Teachers can record Progress through ${CURRENT_QUARTER}.`;
   }
 
   const select = document.getElementById('admin-current-quarter');
@@ -262,10 +262,42 @@ document.querySelectorAll('[data-action="logout"]').forEach(btn => {
 });
 
 // ========== PASSWORD TOGGLE ==========
+function resetPasswordFieldVisibility(inputId) {
+  const input = document.getElementById(inputId);
+  const btn = document.querySelector(`[data-password-toggle="${inputId}"]`);
+  if (!input) return;
+  input.type = 'password';
+  if (btn) {
+    btn.textContent = '👁';
+    btn.setAttribute('aria-label', btn.dataset.showLabel || 'Show password');
+  }
+}
+
+function resetChangePasswordFields() {
+  ['cp-current', 'cp-new', 'cp-confirm'].forEach(resetPasswordFieldVisibility);
+}
+
 document.getElementById('toggle-password')?.addEventListener('click', (e) => {
   const input = document.getElementById('login-password');
   input.type = input.type === 'password' ? 'text' : 'password';
   e.currentTarget.textContent = input.type === 'password' ? '👁' : '🙈';
+  e.currentTarget.setAttribute('aria-label', input.type === 'password' ? 'Show password' : 'Hide password');
+});
+
+document.querySelectorAll('[data-password-toggle]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const inputId = btn.getAttribute('data-password-toggle');
+    const input = document.getElementById(inputId);
+    if (!input) return;
+    input.type = input.type === 'password' ? 'text' : 'password';
+    btn.textContent = input.type === 'password' ? '👁' : '🙈';
+    btn.setAttribute(
+      'aria-label',
+      input.type === 'password'
+        ? (btn.dataset.showLabel || 'Show password')
+        : (btn.dataset.hideLabel || 'Hide password')
+    );
+  });
 });
 
 const forgotModal = document.getElementById('forgot-password-modal');
@@ -840,8 +872,8 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
     const caError = document.getElementById('class-adviser-section-error');
     if (caError) caError.style.display = 'none';
     toggleRoleFields();
-    loadAccountsTable();
-    refreshAdminOverview();
+    closeAdminModal('add-account-modal', { reset: false });
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -865,6 +897,7 @@ document.getElementById('admin-student-form')?.addEventListener('submit', async 
     grade_level: document.getElementById('student-grade').value,
     section: document.getElementById('student-section').value,
     date_of_birth: document.getElementById('student-dob').value,
+    dob: document.getElementById('student-dob').value || null,
     gender: document.getElementById('student-gender').value,
     parent_id: document.getElementById('student-parent').value || null,
     homeroom_teacher_id: document.getElementById('student-homeroom').value || null
@@ -883,8 +916,8 @@ document.getElementById('admin-student-form')?.addEventListener('submit', async 
     e.target.reset();
     document.getElementById('student-section').innerHTML = '<option value="">-- Select Grade First --</option>';
     document.getElementById('student-section').disabled = true;
-    loadStudentsTable();
-    loadOverviewStats();
+    closeAdminModal('add-student-modal', { reset: false });
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -969,7 +1002,7 @@ function applyAccountFilters() {
               : 'Teacher — No assignments set')
           : (u.emergency_contact || '-')}
       </td>
-      <td><span class="badge ${u.status}">${u.status}</span></td>
+      <td>${statusBadgeHtml(u.status)}</td>
     </tr>
   `).join('');
 }
@@ -1357,8 +1390,7 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
 
     alert('Assignments updated successfully');
     document.getElementById('edit-teacher-modal').setAttribute('hidden', '');
-    loadAccountsTable();
-    refreshAdminOverview();
+    await refreshSchoolData({ accounts: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -1393,8 +1425,7 @@ window.toggleAccountStatus = async function(id, newStatus) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    loadAccountsTable();
-    refreshAdminOverview();
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
     if (currentDetailAccountId === id) {
       currentDetailAccountStatus = newStatus;
       updateDetailStatusActionLabel(newStatus);
@@ -1564,7 +1595,7 @@ function renderStudentRow(student) {
     <td>Grade ${escapeHtml(String(student.grade_level))}</td>
     <td>${escapeHtml(student.section)}</td>
     <td>${student.parent_last ? escapeHtml(student.parent_last + ', ' + student.parent_first) : '<span style="color:#b71c1c">Unlinked</span>'}</td>
-    <td><span class="badge ${student.status || 'active'}">${student.status || 'active'}</span></td>
+    <td>${statusBadgeHtml(student.status)}</td>
     <td class="row-actions">
       <button type="button" class="icon-btn" title="Edit student" aria-label="Edit student" onclick="startEditStudent(${student.id})">✎</button>
       ${student.status === 'inactive'
@@ -1577,21 +1608,107 @@ function renderStudentRow(student) {
 }
 
 let currentStudentFilter = '';
+let currentStudentGradeFilter = '';
+let currentStudentSectionFilter = '';
+
+async function loadStudentFilterSections(grade) {
+  const sel = document.getElementById('admin-student-filter-section');
+  if (!sel) return;
+
+  if (!grade) {
+    sel.innerHTML = '<option value="">All sections</option>';
+    sel.disabled = true;
+    sel.value = '';
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/admin/sections?grade_level=${encodeURIComponent(grade)}`, { headers: getAuthHeaders() });
+    const sections = await res.json();
+    if (!res.ok) throw new Error(sections.error);
+
+    if (!sections.length) {
+      sel.innerHTML = '<option value="">No sections yet</option>';
+      sel.disabled = true;
+      sel.value = '';
+      return;
+    }
+
+    sel.innerHTML = '<option value="">All sections</option>' +
+      sections.map((sec) => `<option value="${sec}">${sec}</option>`).join('');
+    sel.disabled = false;
+
+    if (currentStudentSectionFilter && sections.includes(currentStudentSectionFilter)) {
+      sel.value = currentStudentSectionFilter;
+    } else {
+      currentStudentSectionFilter = '';
+      sel.value = '';
+    }
+  } catch (err) {
+    console.error('Load student filter sections error:', err);
+    sel.innerHTML = '<option value="">Failed to load</option>';
+    sel.disabled = true;
+    sel.value = '';
+  }
+}
+
+function getFilteredStudents() {
+  let filtered = lastStudentsData;
+
+  if (currentStudentGradeFilter) {
+    filtered = filtered.filter((s) => String(s.grade_level) === String(currentStudentGradeFilter));
+  }
+  if (currentStudentSectionFilter) {
+    filtered = filtered.filter(
+      (s) => String(s.section || '').toUpperCase() === String(currentStudentSectionFilter).toUpperCase()
+    );
+  }
+  if (currentStudentFilter) {
+    const search = currentStudentFilter.toLowerCase();
+    filtered = filtered.filter((s) => {
+      const name = `${s.first_name} ${s.middle_name || ''} ${s.last_name}`.toLowerCase();
+      return (
+        name.includes(search) ||
+        (s.lrn && s.lrn.includes(search)) ||
+        String(s.section || '').toLowerCase().includes(search)
+      );
+    });
+  }
+
+  return filtered;
+}
+
+function clearStudentFilters() {
+  currentStudentFilter = '';
+  currentStudentGradeFilter = '';
+  currentStudentSectionFilter = '';
+
+  const search = document.getElementById('admin-student-search');
+  const gradeSel = document.getElementById('admin-student-filter-grade');
+  if (search) search.value = '';
+  if (gradeSel) gradeSel.value = '';
+  loadStudentFilterSections('');
+  filterStudentsTable();
+}
 
 function filterStudentsTable() {
   const tbody = document.querySelector('#admin-students-table tbody');
   if (!tbody) return;
 
-  const filtered = currentStudentFilter
-    ? lastStudentsData.filter(s => {
-        const search = currentStudentFilter.toLowerCase();
-        const name = `${s.first_name} ${s.middle_name || ''} ${s.last_name}`.toLowerCase();
-        return name.includes(search) || (s.lrn && s.lrn.includes(search)) || s.section.toLowerCase().includes(search);
-      })
-    : lastStudentsData;
+  if (!lastStudentsData.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">No students enrolled</td></tr>';
+    return;
+  }
+
+  const filtered = getFilteredStudents();
 
   if (!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">No students match "${currentStudentFilter}"</td></tr>`;
+    const parts = [];
+    if (currentStudentGradeFilter) parts.push(`Grade ${currentStudentGradeFilter}`);
+    if (currentStudentSectionFilter) parts.push(`Section ${currentStudentSectionFilter}`);
+    if (currentStudentFilter) parts.push(`"${currentStudentFilter}"`);
+    const label = parts.length ? parts.join(', ') : 'your filters';
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">No students match ${label}</td></tr>`;
     return;
   }
 
@@ -1614,18 +1731,7 @@ async function loadStudentsTable() {
     if (!res.ok) throw new Error(data.error);
 
     lastStudentsData = data;
-
-    if (!data.length) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">No students enrolled</td></tr>`;
-      return;
-    }
-
-    const sorted = [...data].sort(compareStudentsByName);
-    tbody.innerHTML = sorted.map(s => `
-      <tr data-student-id="${s.id}" style="${s.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
-        ${renderStudentRow(s)}
-      </tr>
-    `).join('');
+    filterStudentsTable();
 
   } catch (err) {
     console.error('Load students error:', err);
@@ -1677,7 +1783,7 @@ window.startEditStudent = function(id) {
     <td>Grade ${student.grade_level}</td>
     <td>${student.section}</td>
     <td>${student.parent_last ? student.parent_last + ', ' + student.parent_first : '<span style="color:#b71c1c">Unlinked</span>'}</td>
-    <td><span class="badge ${student.status || 'active'}">${student.status || 'active'}</span></td>
+    <td>${statusBadgeHtml(student.status)}</td>
     <td class="row-actions">
       <button type="button" class="icon-btn icon-btn--ok" title="Save changes" aria-label="Save changes" onclick="saveStudentEdit(${id})">✓</button>
       <button type="button" class="icon-btn" title="Cancel" aria-label="Cancel" onclick="cancelStudentEdit(${id})">✕</button>
@@ -1738,8 +1844,7 @@ window.saveStudentEdit = async function(id) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    loadStudentsTable();
-    loadOverviewStats();
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -1768,8 +1873,7 @@ window.unenrollStudent = async function(id) {
     const student = lastStudentsData.find(s => s.id === id);
     if (student) student.status = 'inactive';
 
-    loadStudentsTable();
-    loadOverviewStats();
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -1781,11 +1885,17 @@ window.reenrollStudent = function(id) {
 
 // ========== RE-ENROLL MODAL ==========
 window.openReenrollModal = async function(id) {
-  const student = lastStudentsData.find(s => s.id === id);
+  const student = lastStudentsData.find(s => Number(s.id) === Number(id));
   if (!student) return;
 
   const modal = document.getElementById('reenroll-student-modal');
   if (!modal) return;
+
+  const formatDobForInput = (dob) => {
+    if (!dob) return '';
+    const s = String(dob);
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
+  };
 
   // Pre-fill form
   document.getElementById('reenroll-student-id').value = student.id;
@@ -1795,8 +1905,8 @@ window.openReenrollModal = async function(id) {
   document.getElementById('reenroll-last').value = student.last_name || '';
   document.getElementById('reenroll-grade').value = String(student.grade_level || '1');
   document.getElementById('reenroll-gender').value = student.gender || 'M';
-  document.getElementById('reenroll-dob').value = student.date_of_birth || '';
-  document.getElementById('reenroll-homeroom').value = student.homeroom_teacher_id || '';
+  document.getElementById('reenroll-dob').value = formatDobForInput(student.dob);
+  document.getElementById('reenroll-homeroom').value = '';
 
   // Reset class adviser display
   const displayText = document.getElementById('reenroll-class-adviser-text');
@@ -1970,8 +2080,13 @@ document.getElementById('reenroll-student-form')?.addEventListener('submit', asy
 
   const id = document.getElementById('reenroll-student-id').value;
   const lrnVal = document.getElementById('reenroll-lrn').value.trim();
+  const sectionVal = document.getElementById('reenroll-section').value;
   if (lrnVal && lrnVal.length !== 12) {
     alert('LRN must be exactly 12 digits');
+    return;
+  }
+  if (!sectionVal) {
+    alert('Please select a section');
     return;
   }
 
@@ -1981,11 +2096,11 @@ document.getElementById('reenroll-student-form')?.addEventListener('submit', asy
     middle_name: document.getElementById('reenroll-middle').value.trim() || null,
     last_name: document.getElementById('reenroll-last').value.trim(),
     grade_level: document.getElementById('reenroll-grade').value,
-    section: document.getElementById('reenroll-section').value,
+    section: sectionVal,
     gender: document.getElementById('reenroll-gender').value,
     parent_id: document.getElementById('reenroll-parent').value || null,
     homeroom_teacher_id: document.getElementById('reenroll-homeroom').value || null,
-    date_of_birth: document.getElementById('reenroll-dob').value || null,
+    dob: document.getElementById('reenroll-dob').value || null,
     status: 'active'
   };
 
@@ -2009,8 +2124,7 @@ document.getElementById('reenroll-student-form')?.addEventListener('submit', asy
 
     alert('Student re-enrolled successfully');
     document.getElementById('reenroll-student-modal').setAttribute('hidden', '');
-    loadStudentsTable();
-    loadOverviewStats();
+    await refreshSchoolData({ students: true, teachers: true });
   } catch (err) {
     alert(err.message);
   }
@@ -2026,8 +2140,7 @@ window.deleteStudent = async function(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    loadStudentsTable();
-    loadOverviewStats();
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -2047,6 +2160,275 @@ function refreshAdminOverview() {
     loadOverviewStats();
     loadActivityLog();
   }
+}
+
+function statusBadgeHtml(status) {
+  const normalized = String(status || 'active').toLowerCase();
+  const label = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  return `<span class="badge status-badge status-badge--${normalized}">${label}</span>`;
+}
+
+function openAdminModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.removeAttribute('hidden');
+}
+
+function resetAdminModalForm(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  const form = modal.querySelector('form');
+  form?.reset();
+
+  if (modalId === 'add-account-modal') {
+    const container = document.getElementById('subject-assignments-container');
+    if (container) container.innerHTML = '';
+    subjectCounter = 0;
+    const caNewSection = document.getElementById('class-adviser-new-section');
+    const caSectionSelect = document.getElementById('class-adviser-section');
+    if (caNewSection) { caNewSection.style.display = 'none'; caNewSection.value = ''; }
+    if (caSectionSelect) {
+      caSectionSelect.style.display = 'block';
+      caSectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
+      caSectionSelect.disabled = true;
+    }
+    const caError = document.getElementById('class-adviser-section-error');
+    if (caError) caError.style.display = 'none';
+    if (typeof toggleRoleFields === 'function') toggleRoleFields();
+  }
+
+  if (modalId === 'add-student-modal') {
+    const sectionSelect = document.getElementById('student-section');
+    if (sectionSelect) {
+      sectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
+      sectionSelect.disabled = true;
+    }
+    const displayText = document.getElementById('student-class-adviser-text');
+    const hiddenInput = document.getElementById('student-homeroom');
+    if (displayText) {
+      displayText.textContent = '-- Select Grade & Section --';
+      displayText.style.color = 'var(--text-muted)';
+    }
+    if (hiddenInput) hiddenInput.value = '';
+  }
+
+  if (modalId === 'compose-announcement-modal') {
+    const msgEl = document.getElementById('admin-announcement-message');
+    if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; }
+    if (typeof updateAnnouncementScopeFields === 'function') updateAnnouncementScopeFields();
+  }
+}
+
+function closeAdminModal(modalId, { reset = true } = {}) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.setAttribute('hidden', '');
+  if (reset) resetAdminModalForm(modalId);
+}
+
+function wireAdminModal(modalId, openBtnId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+
+  document.getElementById(openBtnId)?.addEventListener('click', () => openAdminModal(modalId));
+
+  modal.querySelector('[data-modal-cancel]')?.addEventListener('click', () => closeAdminModal(modalId));
+
+  modal.addEventListener('click', (e) => {
+    if (e.target.id === modalId) closeAdminModal(modalId);
+  });
+}
+
+function wireSimpleModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+
+  modal.querySelector('[data-modal-cancel]')?.addEventListener('click', () => {
+    modal.setAttribute('hidden', '');
+    modal.querySelector('form')?.reset();
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target.id === modalId) {
+      modal.setAttribute('hidden', '');
+      modal.querySelector('form')?.reset();
+    }
+  });
+}
+
+/** Refresh shared lists/caches across admin and teacher portals after data changes. */
+async function refreshSchoolData(scopes = {}) {
+  const all = scopes.all === true || !Object.keys(scopes).length;
+  const want = (key) => all || scopes[key] === true;
+  const jobs = [];
+
+  if (want('overview') || want('accounts') || want('students') || want('parents') || want('announcements')) {
+    jobs.push(loadOverviewStats());
+  }
+  if (want('overview') || want('accounts') || want('students') || want('subjects') || want('announcements')) {
+    jobs.push(loadActivityLog());
+  }
+
+  if (want('accounts')) {
+    jobs.push(loadAccountsTable());
+  }
+
+  if (want('students') || want('parents')) {
+    jobs.push(loadDropdowns());
+  }
+
+  if (want('students')) {
+    jobs.push(loadStudentsTable());
+    const grade = document.getElementById('student-grade')?.value;
+    if (grade) jobs.push(loadSectionsForGrade(grade));
+  }
+
+  if (want('subjects')) {
+    jobs.push(loadSubjectsTable());
+    jobs.push(refreshAdminSubjectPickers());
+  }
+
+  if (want('accounts') || want('teachers')) {
+    const grade = document.getElementById('student-grade')?.value;
+    if (grade) jobs.push(loadSectionsForGrade(grade));
+  }
+
+  if (want('teachers') || want('accounts') || want('subjects')) {
+    jobs.push(refreshTeacherClassesPreserveSelection());
+  }
+  if (want('students')) {
+    jobs.push(refreshTeacherRosterIfActive());
+  }
+  if (want('subjects')) {
+    teacherSubjectsLoaded = false;
+    jobs.push(loadTeacherSubjects(true));
+    jobs.push(refreshTeacherRosterIfActive());
+  }
+  if (want('students') || want('subjects')) {
+    const panel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
+    if (panel === 'progress') jobs.push(loadProgressList());
+    if (panel === 'quiz-bank') jobs.push(loadQuestionBank());
+  }
+  if (want('announcements')) {
+    jobs.push(loadTeacherInbox());
+    jobs.push(loadAdminAnnouncements());
+  }
+
+  await Promise.allSettled(jobs);
+}
+
+async function refreshTeacherClassesPreserveSelection() {
+  const prev = teacherCurrentClass
+    ? {
+        grade: teacherCurrentClass.grade,
+        section: teacherCurrentClass.section,
+        subjectName: teacherCurrentClass.subjectName,
+        subjectId: teacherCurrentClass.subjectId
+      }
+    : null;
+
+  try {
+    const res = await fetch(`${API_URL}/teacher/classes`, { headers: getAuthHeaders() });
+    const classes = await res.json();
+    if (!res.ok) throw new Error(classes.error);
+
+    teacherAssignedClasses = Array.isArray(classes) ? classes : [];
+    fillTeacherNoticeClasses();
+
+    const listEl = document.getElementById('teacher-class-list');
+    if (!listEl) return;
+
+    if (!classes.length) {
+      listEl.innerHTML = '<div class="class-nav-empty">No classes assigned</div>';
+      return;
+    }
+
+    renderTeacherClassNav(classes);
+
+    if (prev) {
+      const still = classes.find(
+        (c) => String(c.grade_level) === String(prev.grade) && String(c.section) === String(prev.section)
+      );
+      if (still) {
+        await selectTeacherClassContext({
+          grade: prev.grade,
+          section: prev.section,
+          subjectName: prev.subjectName,
+          subjectId: prev.subjectId,
+          goToPanel: null,
+          expandGroup: true
+        });
+        return;
+      }
+    }
+
+    const first = classes[0];
+    if (first) {
+      await selectTeacherClassContext({
+        grade: first.grade_level,
+        section: first.section,
+        subjectName: null,
+        subjectId: null,
+        goToPanel: null
+      });
+    }
+  } catch (err) {
+    console.error('Refresh teacher classes error:', err);
+  }
+}
+
+async function refreshTeacherRosterIfActive() {
+  if (!teacherCurrentClass?.grade || !teacherCurrentClass?.section) return;
+
+  const panel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
+  const { grade, section } = teacherCurrentClass;
+  const subjectMode = isSubjectAttendanceGrade(grade);
+  const canLoadRoster = !subjectMode || !!teacherCurrentClass.subjectId;
+
+  // Always refresh roster + stats when a usable class context exists (even if panel is hidden),
+  // so admin enrolls show up as soon as the teacher opens Classroom / Attendance Sheet.
+  if (canLoadRoster) {
+    await loadRoster(grade, section);
+    loadClassStats(grade, section);
+    if (panel === 'classroom') refreshClassroomAttendanceStatus();
+  }
+
+  if (panel === 'attendance-sheet' || canLoadRoster) {
+    // Refresh sheet data whenever we have a valid subject/class context
+    if (!subjectMode || teacherCurrentClass.subjectId) {
+      await loadAttendanceSheet();
+    }
+  }
+}
+
+async function refreshAdminSubjectPickers() {
+  const caWrap = document.getElementById('class-adviser-subjects-wrap');
+  if (caWrap && caWrap.style.display !== 'none' && typeof loadClassAdviserSubjects === 'function') {
+    await loadClassAdviserSubjects();
+  }
+
+  const editCaWrap = document.getElementById('edit-class-adviser-subjects-wrap');
+  if (editCaWrap && !editCaWrap.hidden && typeof loadEditClassAdviserSubjects === 'function') {
+    const gradeSelect = document.getElementById('edit-class-adviser-grade');
+    const preselected = Array.from(document.querySelectorAll('#edit-class-adviser-subjects-list .edit-ca-subject-checkbox:checked'))
+      .map((cb) => parseInt(cb.value, 10))
+      .filter((n) => Number.isFinite(n));
+    if (gradeSelect?.value) {
+      await loadEditClassAdviserSubjects(preselected);
+    }
+  }
+
+  document.querySelectorAll('.subject-id-select').forEach(async (sel) => {
+    const prev = sel.value;
+    try {
+      const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
+      const subjects = await res.json();
+      if (!res.ok || !Array.isArray(subjects)) return;
+      sel.innerHTML = '<option value="">-- Select Subject --</option>' +
+        subjects.map((s) => `<option value="${s.id}">${s.subject_name || s.name || 'Unnamed'}</option>`).join('');
+      if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    } catch (_) { /* ignore */ }
+  });
 }
 
 async function loadActivityLog() {
@@ -2177,7 +2559,9 @@ window.replyToConcern = async function(id, btn) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showToast(role === 'parent' ? 'Reply sent to the teacher.' : 'Reply sent to the parent.');
-    if (role === 'parent') loadParentConcerns();
+    if (role === 'parent') {
+      loadParentConcerns(document.getElementById('contact-student')?.value || parentCurrentChild?.id);
+    }
     else if (role === 'teacher') loadTeacherInbox(document.querySelector('[data-inbox-filter].active')?.dataset.inboxFilter || 'all');
   } catch (err) {
     showToast(err.message, 'error');
@@ -2486,6 +2870,72 @@ async function markAllAnnouncementsRead() {
 }
 
 // ========== ADMIN TAB SWITCHING (single source of truth) ==========
+function scrollPortalMain(viewId) {
+  const view = document.getElementById(viewId);
+  const main = view?.querySelector('.dash-main') || view?.querySelector('.admin-main');
+  if (main) main.scrollTop = 0;
+}
+
+const ADMIN_ADD_MODAL_IDS = [
+  'add-account-modal',
+  'add-student-modal',
+  'add-subject-modal',
+  'compose-announcement-modal'
+];
+
+function closeAllAdminAddModals() {
+  ADMIN_ADD_MODAL_IDS.forEach((id) => {
+    const modal = document.getElementById(id);
+    if (modal && !modal.hasAttribute('hidden')) closeAdminModal(id);
+  });
+}
+
+function resetAdminTabState(tabId) {
+  if (tabId === 'students') {
+    clearStudentFilters();
+  }
+  if (tabId === 'accounts') {
+    currentAccountRoleFilter = 'all';
+    currentAccountStatusFilter = 'active';
+    applyAccountFilters();
+  }
+}
+
+function resetTeacherPanelState(panelId) {
+  if (panelId === 'progress') {
+    showProgressCreateForm(false);
+    const editor = document.getElementById('progress-editor');
+    const listWrap = document.getElementById('progress-list-wrap');
+    if (editor) editor.hidden = true;
+    if (listWrap) listWrap.hidden = false;
+    const progressSearch = document.getElementById('progress-search-input');
+    if (progressSearch) progressSearch.value = '';
+    progressTypeFilter = 'all';
+    document.querySelectorAll('[data-progress-type]').forEach((btn) => {
+      btn.classList.toggle('active', (btn.dataset.progressType || 'all') === 'all');
+    });
+  }
+
+  if (panelId === 'quiz-bank') {
+    questionBankCurrentSetId = null;
+    questionBankCurrentSet = null;
+    questionBankCurrentCategory = null;
+    questionBankSelected.clear();
+    showQuizBankListView();
+    if (typeof updateQuizBankSelectionMeta === 'function') updateQuizBankSelectionMeta();
+  }
+
+  if (panelId === 'inbox') {
+    document.querySelectorAll('[data-inbox-filter]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.inboxFilter === 'all');
+    });
+  }
+}
+
+function resetParentTabState(tabId) {
+  if (tabId === 'inbox') parentInboxFilter = 'all';
+}
+
 const adminTabHistory = [];
 let isNavigatingBack = false;
 
@@ -2514,10 +2964,13 @@ document.querySelectorAll('[data-admin-tab]').forEach(btn => {
 
     // Record history
     if (!isNavigatingBack && currentTab && currentTab !== tabId) {
+      resetAdminTabState(currentTab);
       adminTabHistory.push(currentTab);
       updateBackButton();
     }
     isNavigatingBack = false;
+
+    closeAllAdminAddModals();
 
     document.querySelectorAll('[data-admin-tab]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -2533,6 +2986,7 @@ document.querySelectorAll('[data-admin-tab]').forEach(btn => {
     if (tabId === 'students') { loadDropdowns(); loadStudentsTable(); }
     if (tabId === 'subjects') loadSubjectsTable();
     if (tabId === 'announcements') loadAdminAnnouncements();
+    scrollPortalMain('view-admin');
     closeMobileNav();
   });
 });
@@ -2558,6 +3012,7 @@ document.querySelectorAll('[data-admin-tab-click]').forEach(link => {
     e.preventDefault();
     const tabId = link.dataset.adminTabClick;
     const roleFilter = link.dataset.roleFilter;
+    const openModal = link.dataset.openModal;
     document.querySelector(`[data-admin-tab="${tabId}"]`)?.click();
 
     if (roleFilter) {
@@ -2565,8 +3020,38 @@ document.querySelectorAll('[data-admin-tab-click]').forEach(link => {
       currentAccountStatusFilter = 'active';
       setTimeout(() => applyAccountFilters(), 50);
     }
+
+    if (openModal) {
+      setTimeout(() => {
+        openAdminModal(openModal);
+        if (openModal === 'add-student-modal') loadDropdowns();
+      }, 80);
+    }
   });
 });
+
+wireAdminModal('add-account-modal', 'open-add-account-modal');
+wireAdminModal('add-student-modal', 'open-add-student-modal');
+wireAdminModal('add-subject-modal', 'open-add-subject-modal');
+wireAdminModal('compose-announcement-modal', 'open-compose-announcement-modal');
+wireSimpleModal('teacher-add-student-modal');
+wireSimpleModal('progress-create-modal');
+wireSimpleModal('teacher-notice-modal');
+
+document.getElementById('open-teacher-notice-modal')?.addEventListener('click', async () => {
+  await ensureTeacherAssignedClasses();
+  fillTeacherNoticeClasses();
+  const msgEl = document.getElementById('teacher-notice-msg');
+  if (msgEl) msgEl.textContent = '';
+  const modal = document.getElementById('teacher-notice-modal');
+  if (modal) {
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
+  }
+});
+
+document.getElementById('open-add-student-modal')?.addEventListener('click', () => loadDropdowns());
+document.getElementById('open-compose-announcement-modal')?.addEventListener('click', () => updateAnnouncementScopeFields());
 
 
 // ========== TEACHER INBOX ==========
@@ -2775,7 +3260,7 @@ const TEACHER_PANEL_TITLES = {
   'attendance-sheet': 'Attendance Sheet',
   progress: 'Progress',
   'lesson-plans': 'Lesson Plans',
-  'quiz-bank': 'Quiz Bank',
+  'quiz-bank': 'Classwork',
   inbox: 'Inbox'
 };
 
@@ -2798,15 +3283,15 @@ function applyTeacherPanel(panelId) {
   const classroomSidebar = document.getElementById('teacher-sidebar-classroom');
   classroomSidebar?.classList.toggle('is-hidden', !classScoped);
 
+  // Topbar search only where the roster/sheet needs it (Progress has its own search)
   const classroomTopbar = document.getElementById('teacher-classroom-topbar-actions');
-  if (classroomTopbar) classroomTopbar.hidden = !classScoped;
+  const showTopbarSearch = panelId === 'classroom' || panelId === 'attendance-sheet';
+  if (classroomTopbar) classroomTopbar.hidden = !showTopbarSearch;
 
   const searchInput = document.getElementById('teacher-search-input');
   if (searchInput) {
     searchInput.placeholder =
-      panelId === 'progress' ? 'Search record'
-        : panelId === 'attendance-sheet' ? 'Search student'
-          : 'Search Student';
+      panelId === 'attendance-sheet' ? 'Search student' : 'Search Student';
     searchInput.value = '';
   }
 
@@ -2836,6 +3321,15 @@ function applyTeacherPanel(panelId) {
       attendanceSheetWeekStart = weekStartMondayClient(localISODate());
     }
     loadAttendanceSheet();
+  }
+  if (panelId === 'classroom') {
+    if (teacherCurrentClass?.grade && teacherCurrentClass?.section) {
+      syncClassroomAttendanceChrome();
+      Promise.all([
+        loadClassStats(teacherCurrentClass.grade, teacherCurrentClass.section),
+        loadRoster(teacherCurrentClass.grade, teacherCurrentClass.section)
+      ]);
+    }
   }
   if (panelId === 'progress') {
     applyQuarterUnlockUI();
@@ -2868,12 +3362,14 @@ document.querySelectorAll('[data-teacher-panel]').forEach(btn => {
     const panelId = btn.dataset.teacherPanel;
 
     if (!isTeacherNavigatingBack && currentPanel && currentPanel !== panelId) {
+      resetTeacherPanelState(currentPanel);
       teacherTabHistory.push(currentPanel);
       updateTeacherBackButton();
     }
     isTeacherNavigatingBack = false;
 
     applyTeacherPanel(panelId);
+    scrollPortalMain('view-teacher');
     closeMobileNav();
   });
 });
@@ -3001,7 +3497,7 @@ function syncClassroomAttendanceChrome() {
     if (bar) bar.hidden = true;
     if (hint) {
       hint.textContent = teacherCurrentClass.subjectName
-        ? `Grades 4–6: mark attendance for ${teacherCurrentClass.subjectName} before class starts (P / A / L).`
+        ? `Grades 4–6: mark attendance for ${teacherCurrentClass.subjectName} before class starts (P / A / L / E).`
         : 'Grades 4–6: open a subject from My Classes to take attendance before class starts.';
     }
   } else {
@@ -3010,7 +3506,7 @@ function syncClassroomAttendanceChrome() {
       chip.classList.toggle('active', chip.dataset.session === attendanceCurrentSession);
     });
     if (hint) {
-      hint.textContent = `Click P, A, or L to save ${attendanceCurrentSession === 'PM' ? 'afternoon' : 'morning'} attendance. Unmarked students are not notified.`;
+      hint.textContent = `Click P, A, L, or E to save ${attendanceCurrentSession === 'PM' ? 'afternoon' : 'morning'} attendance. Mark every student before enabling a quiz.`;
     }
     if (sessionHint) {
       sessionHint.textContent = 'Grades 1–3: class-wide morning and afternoon attendance.';
@@ -3019,6 +3515,7 @@ function syncClassroomAttendanceChrome() {
 }
 
 let teacherSubjectsLoaded = false;
+let teacherSubjectsCache = [];
 let teacherCurrentQuarter = 'Q1';
 let progressAssessments = [];
 let progressEditorMax = 100;
@@ -3138,12 +3635,14 @@ if (myClassesTrigger && myClassesFlyout) {
     e.stopPropagation();
 
     if (subjectBtn) {
+      const grade = subjectBtn.dataset.grade;
+      const goClassroom = isSubjectAttendanceGrade(grade);
       await selectTeacherClassContext({
-        grade: subjectBtn.dataset.grade,
+        grade,
         section: subjectBtn.dataset.section,
         subjectName: subjectBtn.dataset.subjectName || null,
         subjectId: subjectBtn.dataset.subjectId || null,
-        goToPanel: 'progress',
+        goToPanel: goClassroom ? 'classroom' : 'progress',
         expandGroup: true
       });
       return;
@@ -3192,6 +3691,7 @@ async function selectTeacherClassContext({
     subjectId: subjectId || null
   };
   progressSubjectFilter = subjectName || null;
+  if (teacherSubjectsCache.length) fillTeacherSubjectSelects();
 
   document.querySelectorAll('#teacher-class-list .class-nav-group').forEach(g => {
     const match = String(g.dataset.grade) === String(grade) && String(g.dataset.section) === String(section);
@@ -3310,11 +3810,13 @@ function attendanceActionButtons(studentId, status) {
   const presentActive = current === 'present' ? ' is-att-active att-present' : '';
   const absentActive = current === 'absent' ? ' is-att-active att-absent' : '';
   const lateActive = current === 'late' ? ' is-att-active att-late' : '';
+  const excusedActive = current === 'excused' ? ' is-att-active att-excused' : '';
   return `
-    <div class="att-actions" data-student-id="${studentId}" style="display:flex;gap:6px;">
+    <div class="att-actions" data-student-id="${studentId}" style="display:flex;gap:6px;flex-wrap:wrap;">
       <button type="button" class="chip-ghost att-btn att-present${presentActive}" onclick="markAttendance(${studentId}, 'Present')" title="Present">P</button>
       <button type="button" class="chip-ghost att-btn att-absent${absentActive}" onclick="markAttendance(${studentId}, 'Absent')" title="Absent">A</button>
       <button type="button" class="chip-ghost att-btn att-late${lateActive}" onclick="markAttendance(${studentId}, 'Late')" title="Late">L</button>
+      <button type="button" class="chip-ghost att-btn att-excused${excusedActive}" onclick="markAttendance(${studentId}, 'Excused')" title="Excused (sick / excuse letter)">E</button>
     </div>`;
 }
 
@@ -3325,7 +3827,7 @@ function syncAttendanceActionButtons(studentId, status) {
   wrap.querySelectorAll('.att-btn').forEach(btn => {
     btn.classList.remove('is-att-active', 'primary');
   });
-  const map = { present: '.att-present', absent: '.att-absent', late: '.att-late' };
+  const map = { present: '.att-present', absent: '.att-absent', late: '.att-late', excused: '.att-excused' };
   const sel = map[current];
   if (sel) wrap.querySelector(sel)?.classList.add('is-att-active');
 }
@@ -3378,6 +3880,40 @@ function filterRoster() {
   renderRoster(filtered);
 }
 
+async function refreshClassroomAttendanceStatus() {
+  const el = document.getElementById('classroom-attendance-status');
+  if (!el || !teacherCurrentClass) return;
+  if (isSubjectAttendanceGrade(teacherCurrentClass.grade) && !teacherCurrentClass.subjectId) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  try {
+    const qs = attendanceQueryParams().toString();
+    const res = await fetch(
+      `${API_URL}/teacher/attendance/${encodeURIComponent(teacherCurrentClass.grade)}/${encodeURIComponent(String(teacherCurrentClass.section).trim())}/completion${qs ? `?${qs}` : ''}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    if (data.complete) {
+      el.style.display = 'block';
+      el.style.color = '#1b5e20';
+      el.textContent = `Attendance complete for today (${data.total} students). You can enable a shared quiz in Progress.`;
+    } else {
+      const n = Array.isArray(data.unmarked) ? data.unmarked.length : 0;
+      el.style.display = 'block';
+      el.style.color = '#b71c1c';
+      el.textContent = n
+        ? `${n} student(s) still unmarked — finish attendance before enabling a quiz.`
+        : 'Mark attendance for every student before enabling a quiz.';
+    }
+  } catch (_) {
+    el.style.display = 'none';
+    el.textContent = '';
+  }
+}
+
 async function loadRoster(grade, section) {
   const tbody = document.querySelector('#teacher-roster-table tbody');
   if (!tbody) return;
@@ -3398,6 +3934,7 @@ async function loadRoster(grade, section) {
     rosterData = await res.json();
     if (!res.ok) throw new Error(rosterData.error || 'Failed to load roster');
     filterRoster();
+    refreshClassroomAttendanceStatus();
   } catch (err) {
     console.error('Load roster error:', err);
     tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">${err.message || 'Failed to load roster'}</td></tr>`;
@@ -3460,6 +3997,7 @@ window.markAttendance = async function(studentId, status, opts = {}) {
     syncAttendanceActionButtons(studentId, status);
 
     loadClassStats(teacherCurrentClass.grade, teacherCurrentClass.section);
+    refreshClassroomAttendanceStatus();
 
     const activePanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
     if (activePanel === 'attendance-sheet') loadAttendanceSheet();
@@ -3607,6 +4145,11 @@ document.getElementById('teacher-announcement-form')?.addEventListener('submit',
     e.target.reset();
     fillTeacherNoticeClasses();
     if (msgEl) { msgEl.textContent = ''; }
+    const modal = document.getElementById('teacher-notice-modal');
+    if (modal) {
+      modal.hidden = true;
+      modal.setAttribute('hidden', '');
+    }
     showToast(data.message || 'Class notice sent to parents.');
   } catch (err) {
     if (msgEl) { msgEl.textContent = err.message; msgEl.style.color = '#b71c1c'; }
@@ -3659,6 +4202,7 @@ function statusToLetter(status) {
   if (st === 'present') return 'P';
   if (st === 'absent') return 'A';
   if (st === 'late') return 'L';
+  if (st === 'excused') return 'E';
   return '';
 }
 
@@ -3666,6 +4210,7 @@ function letterClass(letter) {
   if (letter === 'P') return 'att-mark att-mark-p';
   if (letter === 'A') return 'att-mark att-mark-a';
   if (letter === 'L') return 'att-mark att-mark-l';
+  if (letter === 'E') return 'att-mark att-mark-e';
   return 'att-mark att-mark-empty';
 }
 
@@ -3988,12 +4533,6 @@ document.querySelectorAll('.session-chip').forEach((chip) => {
   });
 });
 
-document.getElementById('add-record-btn')?.addEventListener('click', () => {
-  const progressBtn = document.querySelector('[data-teacher-panel="progress"]');
-  if (progressBtn) progressBtn.click();
-  showProgressCreateForm(true);
-});
-
 document.getElementById('view-ai-insights-btn')?.addEventListener('click', () => {
   document.querySelector('[data-teacher-panel="progress"]')?.click();
 });
@@ -4044,28 +4583,44 @@ document.getElementById('admin-save-quarter-btn')?.addEventListener('click', asy
 });
 
 function showProgressCreateForm(show) {
-  const form = document.getElementById('progress-create-form');
+  const modal = document.getElementById('progress-create-modal');
   const listWrap = document.getElementById('progress-list-wrap');
   const editor = document.getElementById('progress-editor');
-  if (!form) return;
-  form.hidden = !show;
+  if (!modal) return;
+
   if (show) {
+    if (!teacherCurrentClass) {
+      showToast('Select a class from My Classes first.', 'error');
+      return;
+    }
     if (editor) editor.hidden = true;
     if (listWrap) listWrap.hidden = false;
     const msg = document.getElementById('progress-create-msg');
     if (msg) msg.textContent = '';
-    loadTeacherSubjects().then(() => {
+    const titleEl = document.getElementById('progress-title');
+    const linkEl = document.getElementById('progress-quiz-link');
+    const maxEl = document.getElementById('progress-max');
+    const typeEl = document.getElementById('progress-type');
+    if (titleEl) titleEl.value = '';
+    if (linkEl) linkEl.value = '';
+    if (maxEl) maxEl.value = '100';
+    if (typeEl) typeEl.value = 'quiz';
+    modal.hidden = false;
+    loadTeacherSubjects(true).then(() => {
+      fillTeacherSubjectSelects();
       const progressSelect = document.getElementById('progress-subject');
       if (!progressSelect) return;
       if (teacherCurrentClass?.subjectId) {
         progressSelect.value = String(teacherCurrentClass.subjectId);
       } else if (progressSubjectFilter) {
         const opt = Array.from(progressSelect.options).find(
-          o => o.textContent.trim().toLowerCase() === String(progressSubjectFilter).toLowerCase()
+          (o) => o.textContent.trim().toLowerCase() === String(progressSubjectFilter).toLowerCase()
         );
         if (opt) progressSelect.value = opt.value;
       }
     });
+  } else {
+    modal.hidden = true;
   }
 }
 
@@ -4074,27 +4629,31 @@ function renderProgressCards(records) {
   if (!listEl) return;
 
   if (!records.length) {
-    listEl.innerHTML = '<p class="empty-state">No progress records for this class yet. Click + New Record to add a quiz, activity, or exam.</p>';
+    listEl.innerHTML = '<p class="empty-state">No progress records yet. For a live ConnectED quiz, create from Classwork. Use + New Record for manual scores only.</p>';
     return;
   }
 
   listEl.innerHTML = records.map(r => {
     const shareActive = Number(r.share_enabled) === 1 && r.share_token;
+    const hasQuestions = Number(r.question_count) > 0;
     return `
     <article class="lesson-plan-card">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
         <h4 style="margin:0;">${escapeHtml(r.title)}</h4>
         ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
+        ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live quiz</span>' : ''}
       </div>
       <p>${escapeHtml(r.subject_name || 'No subject')} · Max ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}</p>
       <div class="lesson-plan-card-actions">
         <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'view')">View scores</button>
         ${shareActive
-          ? `<button type="button" class="chip-ghost chip-icon" title="Copy link" aria-label="Copy link" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">⧉</button>
-             <button type="button" class="chip-ghost chip-icon chip-danger" title="Turn off link" aria-label="Turn off link" onclick="revokeSharedQuizLink(${r.id})">✕</button>`
-          : `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable</button>`}
-        ${r.quiz_link ? `<a class="chip-ghost chip-icon" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener" title="Open external link" aria-label="Open external link">↗</a>` : ''}
+          ? `<button type="button" class="chip-ghost" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy link</button>
+             <button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn off link</button>`
+          : hasQuestions
+            ? `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable link</button>`
+            : `<button type="button" class="chip-ghost" disabled title="Create from Classwork with questions first">Enable link</button>`}
+        ${r.quiz_link ? `<a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open external link</a>` : ''}
         <button type="button" class="chip-ghost chip-danger" onclick="deleteProgressRecord(${r.id})">Delete</button>
       </div>
     </article>`;
@@ -4169,8 +4728,7 @@ async function loadProgressList() {
 window.openProgressEditor = async function(id, mode = 'view') {
   const editor = document.getElementById('progress-editor');
   const listWrap = document.getElementById('progress-list-wrap');
-  const form = document.getElementById('progress-create-form');
-  if (form) form.hidden = true;
+  showProgressCreateForm(false);
   if (listWrap) listWrap.hidden = true;
   if (editor) editor.hidden = false;
 
@@ -4211,14 +4769,15 @@ window.openProgressEditor = async function(id, mode = 'view') {
       }
     }
 
-    updateProgressShareUi(a);
+    updateProgressMakeupUi(a, data.makeup_candidates);
 
     const qWrap = document.getElementById('progress-attached-questions');
     const qList = document.getElementById('progress-questions-list');
     const questions = Array.isArray(data.questions) ? data.questions : [];
     window._progressEditorQuestions = questions;
+    updateProgressShareUi(a, data.attendance_meta, questions.length);
     if (qWrap && qList) {
-      if (questions.length) {
+      if (editMode && questions.length) {
         qWrap.hidden = false;
         qList.innerHTML = questions.map((q) => {
           const choices = Array.isArray(q.choices) && q.choices.length
@@ -4284,6 +4843,21 @@ function setProgressEditorMode(editMode) {
   if (viewBtn) viewBtn.hidden = !editMode;
   if (editBtn) editBtn.hidden = editMode;
   if (linkSave) linkSave.hidden = !editMode;
+
+  // View scores = scores only; share / makeup / links / questions stay in Edit
+  document.querySelectorAll('#progress-editor .progress-manage-only').forEach((el) => {
+    if (el.id === 'progress-attached-questions' || el.id === 'progress-makeup-section') {
+      // These also have their own visibility rules; force-hide in view mode.
+      if (!editMode) {
+        el.hidden = true;
+        el.setAttribute('hidden', '');
+      }
+      return;
+    }
+    el.hidden = !editMode;
+    if (editMode) el.removeAttribute('hidden');
+    else el.setAttribute('hidden', '');
+  });
 }
 
 document.getElementById('progress-mode-edit')?.addEventListener('click', () => {
@@ -4402,17 +4976,25 @@ function sharedQuizAbsoluteUrl(token) {
   return `${window.location.origin}/quiz/${token}`;
 }
 
-function updateProgressShareUi(assessment) {
+function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   const urlInput = document.getElementById('progress-share-url');
   const assignBtn = document.getElementById('progress-share-assign');
   const copyBtn = document.getElementById('progress-share-copy');
   const revokeBtn = document.getElementById('progress-share-revoke');
   const openBtn = document.getElementById('progress-share-open');
+  const noteEl = document.getElementById('progress-share-attendance-note');
   const active = assessment && Number(assessment.share_enabled) === 1 && assessment.share_token;
+  const hasQuestions = Number(questionCount) > 0;
   if (urlInput) {
     urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token) : '';
   }
-  if (assignBtn) assignBtn.hidden = !!active;
+  if (assignBtn) {
+    assignBtn.hidden = !!active;
+    assignBtn.disabled = !active && !hasQuestions;
+    assignBtn.title = !hasQuestions && !active
+      ? 'Create this quiz from Classwork with selected questions first'
+      : '';
+  }
   if (copyBtn) copyBtn.hidden = !active;
   if (revokeBtn) revokeBtn.hidden = !active;
   if (openBtn) {
@@ -4424,7 +5006,106 @@ function updateProgressShareUi(assessment) {
       openBtn.hidden = true;
     }
   }
+  if (noteEl) {
+    if (!hasQuestions && !active) {
+      noteEl.textContent = 'No questions attached. Create a Progress quiz from Classwork (select items → Next), then Enable link here. + New Record is for manual scores only.';
+      noteEl.style.color = '#b71c1c';
+    } else if (active) {
+      noteEl.textContent = 'Live quiz: Present and Late students can submit (name + LRN required). Grant make-up below for Absent or Excused students.';
+      noteEl.style.color = 'var(--text-muted)';
+    } else if (attendanceMeta) {
+      if (attendanceMeta.complete) {
+        noteEl.textContent = 'Attendance is complete for today. You can enable the shared quiz link.';
+        noteEl.style.color = '#1b5e20';
+      } else {
+        const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
+        noteEl.textContent = `Mark attendance for every student in Classroom before enabling the quiz (${n} unmarked).`;
+        noteEl.style.color = '#b71c1c';
+      }
+    } else {
+      noteEl.textContent = 'Mark complete attendance in Classroom before enabling a shared quiz link.';
+      noteEl.style.color = 'var(--text-muted)';
+    }
+  }
 }
+
+function updateProgressMakeupUi(assessment, makeupCandidates) {
+  const section = document.getElementById('progress-makeup-section');
+  const list = document.getElementById('progress-makeup-list');
+  const hint = document.getElementById('progress-makeup-hint');
+  const allBtn = document.getElementById('progress-makeup-all');
+  const selectedBtn = document.getElementById('progress-makeup-selected');
+  const active = assessment && Number(assessment.share_enabled) === 1;
+  const editMode = document.getElementById('progress-editor')?.dataset.mode === 'edit';
+  if (!section) return;
+  if (!active || !editMode) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const makeupIds = new Set(
+    Array.isArray(assessment.quiz_makeup_student_ids) ? assessment.quiz_makeup_student_ids.map(Number) : []
+  );
+  const candidates = Array.isArray(makeupCandidates) ? makeupCandidates : [];
+  if (!candidates.length) {
+    if (hint) hint.textContent = 'No absent or excused students need make-up (or all have already submitted).';
+    if (list) list.innerHTML = '';
+    allBtn?.setAttribute('disabled', 'disabled');
+    selectedBtn?.setAttribute('disabled', 'disabled');
+    return;
+  }
+  if (hint) {
+    hint.textContent = 'Check students below, then allow all or selected. Already granted make-up stays checked.';
+  }
+  allBtn?.removeAttribute('disabled');
+  selectedBtn?.removeAttribute('disabled');
+  if (list) {
+    list.innerHTML = candidates.map((c) => {
+      const granted = makeupIds.has(Number(c.id));
+      const status = c.attendance_status || '';
+      return `
+        <label class="progress-makeup-row">
+          <input type="checkbox" data-student-id="${c.id}" ${granted ? 'checked disabled' : ''} />
+          <span class="progress-makeup-name">${formatStudentNameStacked(c)}</span>
+          <span class="badge ${status.toLowerCase()}">${escapeHtml(status)}</span>
+          ${granted ? '<span class="progress-makeup-granted">Make-up allowed</span>' : ''}
+        </label>`;
+    }).join('');
+  }
+}
+
+async function grantMakeupQuiz(mode) {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  if (!id) return;
+  const body = { mode };
+  if (mode === 'selected') {
+    const ids = [...document.querySelectorAll('#progress-makeup-list input[type="checkbox"]:checked:not(:disabled)')]
+      .map((cb) => Number(cb.dataset.studentId))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) {
+      showToast('Select at least one student for make-up.', 'error');
+      return;
+    }
+    body.student_ids = ids;
+  } else if (mode === 'all') {
+    if (!confirm('Allow make-up quiz access for all absent and excused students who have not submitted?')) return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}/makeup-quiz`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast(data.message || 'Make-up access granted.');
+    openProgressEditor(id, document.getElementById('progress-editor')?.dataset.mode === 'edit' ? 'edit' : 'view');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+window.grantMakeupQuiz = grantMakeupQuiz;
 
 window.copySharedQuizLink = async function(token) {
   const url = sharedQuizAbsoluteUrl(token);
@@ -4501,6 +5182,9 @@ document.getElementById('progress-share-revoke')?.addEventListener('click', () =
   if (id) revokeSharedQuizLink(id);
 });
 
+document.getElementById('progress-makeup-all')?.addEventListener('click', () => grantMakeupQuiz('all'));
+document.getElementById('progress-makeup-selected')?.addEventListener('click', () => grantMakeupQuiz('selected'));
+
 document.getElementById('progress-scores-save')?.addEventListener('click', async () => {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
   const inputs = document.querySelectorAll('.progress-score-input');
@@ -4530,33 +5214,76 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
   }
 });
 
-async function loadTeacherSubjects() {
+async function loadTeacherSubjects(forceReload = false) {
   try {
     const res = await fetch(`${API_URL}/teacher/subjects`, { headers: getAuthHeaders() });
     const subjects = await res.json();
     if (!res.ok) throw new Error(subjects.error);
 
-    const options = '<option value="">-- Select --</option>' +
-      subjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-
-    const lpSelect = document.getElementById('lp-subject');
-    const progressSelect = document.getElementById('progress-subject');
-    if (lpSelect && !teacherSubjectsLoaded) lpSelect.innerHTML = options;
-    if (progressSelect) {
-      progressSelect.innerHTML = options;
-      if (teacherCurrentClass?.subjectId) {
-        progressSelect.value = String(teacherCurrentClass.subjectId);
-      } else if (progressSubjectFilter) {
-        const opt = Array.from(progressSelect.options).find(
-          o => o.textContent.trim().toLowerCase() === String(progressSubjectFilter).toLowerCase()
-        );
-        if (opt) progressSelect.value = opt.value;
-      }
-    }
+    teacherSubjectsCache = Array.isArray(subjects) ? subjects : [];
+    fillTeacherSubjectSelects();
     teacherSubjectsLoaded = true;
   } catch (err) {
     console.error('Load teacher subjects error:', err);
   }
+}
+
+/** Assigned subjects only; optionally limited to a grade. */
+function getAssignedSubjectsForGrade(grade) {
+  const list = Array.isArray(teacherSubjectsCache) ? teacherSubjectsCache : [];
+  const g = Number(grade);
+  if (!g) return list.slice();
+  return list.filter((s) => {
+    const grades = Array.isArray(s.grade_levels) ? s.grade_levels.map(Number) : [];
+    // Older payloads without grade_levels: keep visible (should be rare after API update)
+    if (!grades.length) return true;
+    return grades.includes(g);
+  });
+}
+
+function subjectSelectOptionsHtml(subjects, { emptyLabel = '-- Select --', includeEmpty = true } = {}) {
+  const opts = (subjects || []).map(
+    (s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`
+  ).join('');
+  return (includeEmpty ? `<option value="">${escapeHtml(emptyLabel)}</option>` : '') + opts;
+}
+
+function fillTeacherSubjectSelects() {
+  const lpGrade = document.getElementById('lp-grade')?.value;
+  const progressGrade = teacherCurrentClass?.grade;
+  const lpSubjects = getAssignedSubjectsForGrade(lpGrade);
+  const progressSubjects = getAssignedSubjectsForGrade(progressGrade);
+
+  const lpSelect = document.getElementById('lp-subject');
+  const progressSelect = document.getElementById('progress-subject');
+
+  if (lpSelect) {
+    const prev = lpSelect.value;
+    lpSelect.innerHTML = subjectSelectOptionsHtml(lpSubjects);
+    if (prev && [...lpSelect.options].some((o) => o.value === prev)) lpSelect.value = prev;
+  }
+
+  if (progressSelect) {
+    const prev = progressSelect.value;
+    progressSelect.innerHTML = subjectSelectOptionsHtml(progressSubjects, {
+      emptyLabel: '-- Select Subject --'
+    });
+    if (teacherCurrentClass?.subjectId &&
+      [...progressSelect.options].some((o) => o.value === String(teacherCurrentClass.subjectId))) {
+      progressSelect.value = String(teacherCurrentClass.subjectId);
+    } else if (progressSubjectFilter) {
+      const opt = Array.from(progressSelect.options).find(
+        (o) => o.textContent.trim().toLowerCase() === String(progressSubjectFilter).toLowerCase()
+      );
+      if (opt) progressSelect.value = opt.value;
+      else if (prev && [...progressSelect.options].some((o) => o.value === prev)) progressSelect.value = prev;
+    } else if (prev && [...progressSelect.options].some((o) => o.value === prev)) {
+      progressSelect.value = prev;
+    }
+  }
+
+  fillQuizBankSubjectFilter();
+  fillAddQuizSubjectOptions();
 }
 
 async function loadLessonPlans() {
@@ -4688,7 +5415,7 @@ async function loadAiRecommendations() {
         <div class="lesson-plan-card-actions">
           ${r.status === 'pending' ? `
             <button type="button" class="chip-ghost primary" onclick="openAiApproveModal(${r.id})">Approve</button>
-            <button type="button" class="chip-ghost" onclick="saveAiDraftToBank(${r.id})">Save to Quiz Bank</button>
+            <button type="button" class="chip-ghost" onclick="saveAiDraftToBank(${r.id})">Save to Classwork</button>
             <button type="button" class="chip-ghost" onclick="regenerateAiRecommendation(${r.id})">Regenerate</button>
           ` : r.assessment_id ? `<span class="page-subheading">Linked #${r.assessment_id}</span>` : ''}
           <button type="button" class="chip-ghost" onclick="deleteAiRecommendation(${r.id})">Delete</button>
@@ -4768,7 +5495,7 @@ window.deleteAiRecommendation = async function(id) {
 
 window.saveAiDraftToBank = async function(id) {
   try {
-    showToast('Saving to Quiz Bank…');
+    showToast('Saving to Classwork…');
     const res = await fetch(`${API_URL}/teacher/question-bank/from-ai/${id}`, {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
@@ -4776,7 +5503,7 @@ window.saveAiDraftToBank = async function(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.details || 'Save failed');
-    showToast(data.message || 'Saved to Quiz Bank.');
+    showToast(data.message || 'Saved to Classwork.');
     questionBankCurrentSetId = null;
     questionBankCurrentSet = null;
     if (typeof loadQuestionBank === 'function') {
@@ -4890,8 +5617,8 @@ let questionBankCurrentSet = null;
 let questionBankCurrentCategory = null; // 'quizzes' | 'activity' | null
 const questionBankSelected = new Set();
 
-async function ensureTeacherAssignedClasses() {
-  if (teacherAssignedClasses.length) return teacherAssignedClasses;
+async function ensureTeacherAssignedClasses(force = false) {
+  if (!force && teacherAssignedClasses.length) return teacherAssignedClasses;
   try {
     const res = await fetch(`${API_URL}/teacher/classes`, { headers: getAuthHeaders() });
     const classes = await res.json();
@@ -4940,19 +5667,44 @@ function fillLessonPlanGradeOptions() {
   sel.innerHTML = grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('');
   if (current && grades.some((g) => String(g) === String(current))) sel.value = current;
   else sel.value = String(grades[0]);
+  fillTeacherSubjectSelects();
 }
+
+document.getElementById('lp-grade')?.addEventListener('change', () => {
+  fillTeacherSubjectSelects();
+});
 
 function fillQuizBankSubjectFilter() {
   const sel = document.getElementById('qb-filter-subject');
   if (!sel) return;
   const current = sel.value;
-  const subjectSelect = document.getElementById('lp-subject') || document.getElementById('progress-subject');
-  const opts = subjectSelect
-    ? Array.from(subjectSelect.options).filter((o) => o.value)
-    : [];
-  sel.innerHTML = '<option value="">All subjects</option>' +
-    opts.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.textContent)}</option>`).join('');
-  if (current) sel.value = current;
+  const grade = document.getElementById('qb-filter-grade')?.value;
+  const subjects = getAssignedSubjectsForGrade(grade);
+  sel.innerHTML = subjectSelectOptionsHtml(subjects, { emptyLabel: 'All subjects' });
+  if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+}
+
+function fillAddQuizSubjectOptions() {
+  const subjectSel = document.getElementById('qb-add-subject');
+  if (!subjectSel) return;
+  const prev = subjectSel.value;
+  const grade = document.getElementById('qb-add-grade')?.value;
+  const subjects = getAssignedSubjectsForGrade(grade);
+  subjectSel.innerHTML = subjectSelectOptionsHtml(subjects, {
+    emptyLabel: subjects.length ? '-- Select Subject --' : 'No assigned subject for this grade'
+  });
+  if (!subjects.length) {
+    subjectSel.removeAttribute('required');
+  } else {
+    subjectSel.setAttribute('required', 'required');
+  }
+  if (teacherCurrentClass?.subjectId &&
+    String(teacherCurrentClass.grade) === String(grade) &&
+    [...subjectSel.options].some((o) => o.value === String(teacherCurrentClass.subjectId))) {
+    subjectSel.value = String(teacherCurrentClass.subjectId);
+  } else if (prev && [...subjectSel.options].some((o) => o.value === prev)) {
+    subjectSel.value = prev;
+  }
 }
 
 function bankItemTypeLabel(type) {
@@ -4968,27 +5720,49 @@ function bankItemTypeLabel(type) {
 function updateQuizBankSelectionMeta() {
   const meta = document.getElementById('qb-selection-meta');
   const titleEl = document.getElementById('qb-page-title');
-  const btn = document.getElementById('qb-create-progress-btn');
+  const headerBtn = document.getElementById('qb-create-progress-btn');
+  const nextBar = document.getElementById('qb-next-step-bar');
+  const nextBtn = document.getElementById('qb-create-progress-next');
+  const nextMeta = document.getElementById('qb-next-step-meta');
   const n = questionBankSelected.size;
+  const pickingItems = !!questionBankCurrentCategory;
+
   if (titleEl) {
     if (questionBankCurrentCategory) {
       titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Activity' : 'Quizzes';
     } else if (questionBankCurrentSetId) {
       titleEl.textContent = questionBankCurrentSet?.title || 'Quiz set';
     } else {
-      titleEl.textContent = 'Saved sets';
+      titleEl.textContent = 'Classwork';
     }
   }
   if (meta) {
     if (questionBankCurrentCategory) {
-      meta.textContent = `${n} selected`;
+      meta.textContent = n ? `${n} selected` : 'Select items to create a Progress quiz';
     } else if (questionBankCurrentSetId) {
       meta.textContent = 'Open Quizzes or Activity';
     } else {
-      meta.textContent = n ? `${n} selected` : 'Open a set to pick items';
+      meta.textContent = 'Open a set to pick items';
     }
   }
-  if (btn) btn.disabled = n === 0;
+
+  // Create stays off the landing header; bottom next-step appears when items are selected
+  if (headerBtn) {
+    headerBtn.hidden = true;
+    headerBtn.disabled = true;
+  }
+  if (nextBar) {
+    const showNext = pickingItems && n > 0;
+    nextBar.hidden = !showNext;
+    if (showNext) nextBar.removeAttribute('hidden');
+    else nextBar.setAttribute('hidden', '');
+  }
+  if (nextBtn) nextBtn.disabled = n === 0;
+  if (nextMeta) {
+    nextMeta.textContent = n
+      ? `${n} item(s) selected — create a Progress record next`
+      : 'Select items to continue';
+  }
 }
 
 function showQuizBankListView() {
@@ -5028,7 +5802,7 @@ function renderQuizBankSets() {
   showQuizBankListView();
 
   if (!questionBankSets.length) {
-    listEl.innerHTML = '<p class="empty-state">Quiz Bank is empty. Save an AI draft to create a set.</p>';
+    listEl.innerHTML = '<p class="empty-state">No classwork sets yet. Click + Add Quiz or save an AI draft.</p>';
     updateQuizBankSelectionMeta();
     return;
   }
@@ -5120,7 +5894,18 @@ function renderQuizBankCategoryFolders() {
   if (!groupsEl) return;
 
   if (!questionBankCategories.length) {
-    groupsEl.innerHTML = '<p class="empty-state">This set has no items.</p>';
+    groupsEl.innerHTML = `
+      <p class="empty-state" style="margin-bottom:12px;">
+        This set has no questions yet.
+      </p>
+      <p class="page-subheading" style="margin:0 0 12px;">
+        Generate an AI draft in <strong>Lesson Plans</strong>, then use <strong>Save to Classwork</strong>.
+        Or create Progress records from other Classwork sets that already have items.
+      </p>
+      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-empty-goto-lessons">Go to Lesson Plans</button>`;
+    document.getElementById('qb-empty-goto-lessons')?.addEventListener('click', () => {
+      applyTeacherPanel('lesson-plans');
+    });
     updateQuizBankSelectionMeta();
     return;
   }
@@ -5298,7 +6083,7 @@ async function loadQuestionBank() {
     renderQuizBankSets();
   } catch (err) {
     console.error('Load quiz sets error:', err);
-    listEl.innerHTML = `<p class="empty-state">Failed to load Quiz Bank.${err?.message ? ` (${escapeHtml(err.message)})` : ''}</p>`;
+    listEl.innerHTML = `<p class="empty-state">Failed to load Classwork.${err?.message ? ` (${escapeHtml(err.message)})` : ''}</p>`;
   }
 }
 
@@ -5372,7 +6157,7 @@ window.copyQuizBankItem = async function(id) {
 };
 
 window.deleteQuizBankItem = async function(id) {
-  if (!confirm('Remove this item from Quiz Bank?')) return;
+  if (!confirm('Remove this item from Classwork?')) return;
   try {
     const res = await fetch(`${API_URL}/teacher/question-bank/${id}`, {
       method: 'DELETE',
@@ -5417,6 +6202,7 @@ document.getElementById('qb-filter-grade')?.addEventListener('change', () => {
   questionBankCurrentSetId = null;
   questionBankCurrentCategory = null;
   questionBankSelected.clear();
+  fillQuizBankSubjectFilter();
   loadQuestionBank();
 });
 document.getElementById('qb-filter-subject')?.addEventListener('change', () => {
@@ -5506,7 +6292,7 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
   }
 });
 
-document.getElementById('qb-create-progress-btn')?.addEventListener('click', async () => {
+async function openCreateProgressFromBank() {
   const modal = document.getElementById('qb-create-modal');
   if (!modal || !questionBankSelected.size) return;
 
@@ -5549,9 +6335,9 @@ document.getElementById('qb-create-progress-btn')?.addEventListener('click', asy
     const set = questionBankCurrentSet || questionBankSets.find((s) => s.id === questionBankCurrentSetId);
     const lesson = selectedItems.find((i) => i.lesson_title)?.lesson_title;
     if (questionBankCurrentCategory === 'activity') {
-      titleEl.value = lesson ? `Activity — ${lesson}` : (set?.title ? `Activity — ${set.title}` : 'Activity from bank');
+      titleEl.value = lesson ? `Activity — ${lesson}` : (set?.title ? `Activity — ${set.title}` : 'Activity from Classwork');
     } else {
-      titleEl.value = (set && set.title) || (lesson ? `Quiz — ${lesson}` : 'Quiz from bank');
+      titleEl.value = (set && set.title) || (lesson ? `Quiz — ${lesson}` : 'Quiz from Classwork');
     }
   }
 
@@ -5564,6 +6350,83 @@ document.getElementById('qb-create-progress-btn')?.addEventListener('click', asy
   if (qtrSel && teacherCurrentQuarter) qtrSel.value = teacherCurrentQuarter;
 
   modal.hidden = false;
+}
+
+document.getElementById('qb-create-progress-btn')?.addEventListener('click', () => openCreateProgressFromBank());
+document.getElementById('qb-create-progress-next')?.addEventListener('click', () => openCreateProgressFromBank());
+
+async function openAddQuizModal() {
+  const modal = document.getElementById('qb-add-quiz-modal');
+  if (!modal) return;
+  await ensureTeacherAssignedClasses();
+  await loadTeacherSubjects(true);
+
+  const gradeSel = document.getElementById('qb-add-grade');
+  const grades = getTeacherAssignedGrades();
+  if (gradeSel) {
+    gradeSel.innerHTML = grades.length
+      ? '<option value="">Select grade</option>' + grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('')
+      : '<option value="">No assigned grades</option>';
+    if (teacherCurrentClass?.grade && grades.includes(Number(teacherCurrentClass.grade))) {
+      gradeSel.value = String(teacherCurrentClass.grade);
+    } else if (grades[0]) {
+      gradeSel.value = String(grades[0]);
+    }
+  }
+  fillAddQuizSubjectOptions();
+  const titleInput = document.getElementById('qb-add-title');
+  if (titleInput) titleInput.value = '';
+  modal.hidden = false;
+}
+
+document.getElementById('qb-add-quiz-btn')?.addEventListener('click', () => openAddQuizModal());
+
+document.getElementById('qb-add-grade')?.addEventListener('change', () => {
+  fillAddQuizSubjectOptions();
+});
+
+document.getElementById('qb-add-quiz-cancel')?.addEventListener('click', () => {
+  const modal = document.getElementById('qb-add-quiz-modal');
+  if (modal) modal.hidden = true;
+});
+
+document.getElementById('qb-add-quiz-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = document.getElementById('qb-add-title')?.value?.trim();
+  const grade_level = Number(document.getElementById('qb-add-grade')?.value);
+  const subjectRaw = document.getElementById('qb-add-subject')?.value;
+  const subject_id = subjectRaw ? Number(subjectRaw) : null;
+  if (!title) {
+    showToast('Enter a title.', 'error');
+    return;
+  }
+  if (!grade_level) {
+    showToast('Select a grade.', 'error');
+    return;
+  }
+  if (!subject_id) {
+    showToast('Select a subject.', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/teacher/question-bank/sets`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, grade_level, subject_id })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    const modal = document.getElementById('qb-add-quiz-modal');
+    if (modal) modal.hidden = true;
+    showToast(data.message || 'Classwork set created.');
+    questionBankCurrentSetId = null;
+    questionBankCurrentCategory = null;
+    questionBankSelected.clear();
+    await loadQuestionBank();
+    if (data.id) await openQuizBankSet(data.id);
+  } catch (err) {
+    showToast(err.message || 'Could not create set.', 'error');
+  }
 });
 
 document.getElementById('qb-create-cancel')?.addEventListener('click', () => {
@@ -5998,6 +6861,7 @@ document.querySelectorAll('[data-parent-tab]').forEach(btn => {
     const tabId = btn.dataset.parentTab;
 
     if (!isParentNavigatingBack && currentTab && currentTab !== tabId) {
+      resetParentTabState(currentTab);
       parentTabHistory.push(currentTab);
       updateParentBackButton();
     }
@@ -6020,6 +6884,7 @@ document.querySelectorAll('[data-parent-tab]').forEach(btn => {
           <p>${tabId.charAt(0).toUpperCase() + tabId.slice(1)} coming soon.</p>
         </div>`;
     }
+    scrollPortalMain('view-parent');
     closeMobileNav();
   });
 });
@@ -6166,11 +7031,12 @@ function renderParentContact() {
     const selected = children.find(c => String(c.id) === studentSelect.value);
     if (selected) parentCurrentChild = selected;
     loadContactTeachers(studentSelect.value);
+    loadParentConcerns(studentSelect.value);
   });
 
   document.getElementById('parent-contact-form')?.addEventListener('submit', submitParentConcern);
   if (studentSelect?.value) loadContactTeachers(studentSelect.value);
-  loadParentConcerns();
+  loadParentConcerns(studentSelect?.value || selectedId);
 }
 
 async function loadContactTeachers(studentId) {
@@ -6218,22 +7084,33 @@ async function submitParentConcern(e) {
     document.getElementById('contact-subject').value = '';
     if (msg) msg.textContent = 'Concern sent. The teacher will see it in their inbox.';
     showToast('Concern sent to the teacher.');
-    loadParentConcerns();
+    const studentId = document.getElementById('contact-student')?.value;
+    loadParentConcerns(studentId);
   } catch (err) {
     if (msg) msg.textContent = err.message;
     showToast(err.message, 'error');
   }
 }
 
-async function loadParentConcerns() {
+async function loadParentConcerns(studentId) {
   const wrap = document.getElementById('parent-concerns-list');
   if (!wrap) return;
+
+  const selectedId = studentId || document.getElementById('contact-student')?.value || parentCurrentChild?.id || '';
+  const child = (parentAllChildren || []).find((c) => String(c.id) === String(selectedId));
+  const childLabel = child
+    ? `${child.first_name || ''} ${child.last_name || ''}`.trim()
+    : '';
+
   try {
-    const res = await fetch(`${API_URL}/parent/concerns`, { headers: getAuthHeaders() });
+    const qs = selectedId ? `?student_id=${encodeURIComponent(selectedId)}` : '';
+    const res = await fetch(`${API_URL}/parent/concerns${qs}`, { headers: getAuthHeaders() });
     const rows = await res.json();
     if (!res.ok) throw new Error(rows.error);
     if (!rows.length) {
-      wrap.innerHTML = '<p style="color:var(--text-muted);">You have not sent any concerns yet.</p>';
+      wrap.innerHTML = childLabel
+        ? `<p style="color:var(--text-muted);">No concerns sent for ${escapeHtml(childLabel)} yet.</p>`
+        : '<p style="color:var(--text-muted);">You have not sent any concerns yet.</p>';
       return;
     }
     wrap.innerHTML = `<ul class="inbox-list">${rows.map(c => {
@@ -6454,7 +7331,8 @@ if (subjectForm) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       e.target.reset();
-      loadSubjectsTable();
+      closeAdminModal('add-subject-modal', { reset: false });
+      await refreshSchoolData({ subjects: true, teachers: true, overview: true });
     } catch (err) {
       alert(err.message);
     }
@@ -6551,7 +7429,7 @@ window.saveSubjectEdit = async function(id) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    loadSubjectsTable();
+    await refreshSchoolData({ subjects: true, teachers: true, overview: true });
 
   } catch (err) {
     alert(err.message);
@@ -6568,7 +7446,7 @@ window.deleteSubject = async function(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    loadSubjectsTable();
+    await refreshSchoolData({ subjects: true, teachers: true, overview: true });
   } catch (err) {
     alert(err.message);
   }
@@ -6589,6 +7467,8 @@ function openChangePasswordModal(forced) {
   if (title) title.textContent = forcePasswordChange ? 'Set a new password' : 'Change Password';
   if (changePasswordCancel) changePasswordCancel.hidden = forcePasswordChange;
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  changePasswordForm?.reset();
+  resetChangePasswordFields();
   changePasswordModal?.classList.toggle('is-forced', forcePasswordChange);
   changePasswordModal?.removeAttribute('hidden');
 }
@@ -6668,6 +7548,7 @@ if (changePasswordForm) {
       changePasswordModal?.classList.remove('is-forced');
       showToast('Password changed successfully');
       e.target.reset();
+      resetChangePasswordFields();
       changePasswordModal?.setAttribute('hidden', '');
 
     } catch (err) {
@@ -6743,11 +7624,25 @@ loadAdminAnnouncements = function() {
   updateAnnouncementScopeFields();
   return _origLoadAdminAnnouncements.apply(this, arguments);
 };
-// Student table search
+// Student table search & filters
 document.getElementById('admin-student-search')?.addEventListener('input', (e) => {
   currentStudentFilter = e.target.value.trim();
   filterStudentsTable();
 });
+
+document.getElementById('admin-student-filter-grade')?.addEventListener('change', async (e) => {
+  currentStudentGradeFilter = e.target.value;
+  currentStudentSectionFilter = '';
+  await loadStudentFilterSections(currentStudentGradeFilter);
+  filterStudentsTable();
+});
+
+document.getElementById('admin-student-filter-section')?.addEventListener('change', (e) => {
+  currentStudentSectionFilter = e.target.value;
+  filterStudentsTable();
+});
+
+document.getElementById('admin-student-filter-clear')?.addEventListener('click', clearStudentFilters);
 
 // Announcements form
 function buildAnnouncementPayload(prefix) {
@@ -6816,8 +7711,8 @@ document.getElementById('admin-announcement-form')?.addEventListener('submit', a
     e.target.reset();
     document.getElementById('announcement-grade-wrap').hidden = true;
     document.getElementById('announcement-section-wrap').hidden = true;
-    loadAdminAnnouncements();
-    refreshAdminOverview();
+    closeAdminModal('compose-announcement-modal', { reset: false });
+    await refreshSchoolData({ announcements: true, overview: true });
   } catch (err) {
     console.error('[Announcements] Error:', err);
     let displayMsg = err.message;
@@ -7003,7 +7898,7 @@ window.openTeacherDetailModal = async function(teacherId) {
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:0.88rem;margin-bottom:16px;">
         <div><strong>Email:</strong> ${data.email || '-'}</div>
         <div><strong>Phone:</strong> ${data.phone || '-'}</div>
-        <div><strong>Status:</strong> <span class="badge ${data.status}">${data.status}</span></div>
+        <div><strong>Status:</strong> ${statusBadgeHtml(data.status)}</div>
         <div><strong>Teaching Mode:</strong> ${teachingModeDisplay(data.teaching_mode, data.teaching_mode_label)}</div>
       </div>
     `;
@@ -7098,7 +7993,7 @@ window.openParentDetailModal = async function(parentId) {
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:0.88rem;margin-bottom:16px;">
         <div><strong>Email:</strong> ${data.email || '-'}</div>
         <div><strong>Phone:</strong> ${data.phone || '-'}</div>
-        <div><strong>Status:</strong> <span class="badge ${data.status}">${data.status}</span></div>
+        <div><strong>Status:</strong> ${statusBadgeHtml(data.status)}</div>
         <div><strong>Emergency Contact:</strong> ${data.emergency_contact || '-'}</div>
       </div>
     `;
@@ -7127,7 +8022,7 @@ window.openParentDetailModal = async function(parentId) {
           <td style="padding:6px;">${s.lrn || '-'}</td>
           <td style="padding:6px;">Grade ${s.grade_level}-${s.section}</td>
           <td style="padding:6px;">${s.gender === 'M' ? 'Male' : s.gender === 'F' ? 'Female' : '-'}</td>
-          <td style="padding:6px;"><span class="badge ${s.student_status}">${s.student_status}</span></td>
+          <td style="padding:6px;">${statusBadgeHtml(s.student_status)}</td>
         </tr>`;
       });
       html += `</tbody></table>`;
@@ -7251,7 +8146,7 @@ document.getElementById('edit-account-info-form')?.addEventListener('submit', as
     document.getElementById('edit-account-info-modal')?.setAttribute('hidden', '');
     showToast(data.message || 'Account updated');
 
-    if (typeof loadAccountsTable === 'function') loadAccountsTable();
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
 
     if (role === 'teacher') openTeacherDetailModal(id);
     else if (role === 'parent') openParentDetailModal(id);

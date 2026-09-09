@@ -405,18 +405,34 @@ exports.createConcern = async (req, res) => {
 exports.getMyConcerns = async (req, res) => {
   try {
     const parentId = req.user.id;
-    const [rows] = await db.query(
-      `SELECT c.id, c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
+    const studentId = req.query.student_id ? parseInt(req.query.student_id, 10) : null;
+
+    if (studentId) {
+      const [owned] = await db.query(
+        'SELECT id FROM parent_student_links WHERE parent_id = ? AND student_id = ?',
+        [parentId, studentId]
+      );
+      if (!owned.length) {
+        return res.status(403).json({ error: 'You can only view concerns for your linked children' });
+      }
+    }
+
+    const params = [parentId];
+    let sql = `SELECT c.id, c.student_id, c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
               c.created_at, c.teacher_reply, c.replied_at,
               CONCAT(t.first_name, ' ', t.last_name) as teacher_name,
               CONCAT(s.first_name, ' ', s.last_name) as student_name
        FROM concerns c
        LEFT JOIN users t ON c.teacher_id = t.id
        LEFT JOIN students s ON c.student_id = s.id
-       WHERE c.parent_id = ?
-       ORDER BY c.created_at DESC`,
-      [parentId]
-    );
+       WHERE c.parent_id = ?`;
+    if (studentId) {
+      sql += ' AND c.student_id = ?';
+      params.push(studentId);
+    }
+    sql += ' ORDER BY c.created_at DESC';
+
+    const [rows] = await db.query(sql, params);
     res.json(await attachReplies(rows));
   } catch (error) {
     console.error('Get parent concerns error:', error);

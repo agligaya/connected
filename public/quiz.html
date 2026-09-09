@@ -18,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260823a1" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260828a2" />
   <style>
     body { margin: 0; background: #f4ebe4; }
     .quiz-page { max-width: 720px; margin: 0 auto; padding: 16px 12px 40px; box-sizing: border-box; }
@@ -42,7 +42,7 @@
     .quiz-success { color: #1b5e20; }
     .quiz-meta { color: #666; margin: 4px 0 16px; font-size: 0.9rem; word-break: break-word; }
     textarea.quiz-sa { width: 100%; min-height: 88px; border-radius: 10px; border: 1px solid #ccc; padding: 12px; font: inherit; font-size: 16px; box-sizing: border-box; }
-    #quiz-student, #quiz-submit { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 16px; }
+    #quiz-student, #quiz-lrn, #quiz-submit { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 16px; }
     #quiz-submit { margin-top: 8px; }
     #quiz-title { font-size: 1.25rem; line-height: 1.3; word-break: break-word; }
     @media (max-width: 480px) {
@@ -72,6 +72,16 @@
         </select>
       </div>
 
+      <div class="field-small" style="margin-bottom:16px;">
+        <label for="quiz-lrn"><strong>Confirm with your LRN</strong></label>
+        <input type="text" id="quiz-lrn" inputmode="numeric" autocomplete="off"
+               maxlength="12" placeholder="12-digit LRN" aria-describedby="quiz-lrn-hint" />
+        <p id="quiz-lrn-hint" class="quiz-meta" style="margin:6px 0 0;">
+          Enter your Learner Reference Number to verify it is really you.
+        </p>
+        <p id="quiz-lrn-warn" class="quiz-error" style="margin:6px 0 0;display:none;"></p>
+      </div>
+
       <div id="quiz-questions"></div>
       <p id="quiz-form-error" class="quiz-error" hidden></p>
       <button type="button" class="btn-solid" id="quiz-submit">Submit answers</button>
@@ -91,8 +101,11 @@
       const doneWrap = document.getElementById('quiz-done');
       const qBox = document.getElementById('quiz-questions');
       const studentSel = document.getElementById('quiz-student');
+      const lrnInput = document.getElementById('quiz-lrn');
+      const lrnWarn = document.getElementById('quiz-lrn-warn');
       const errEl = document.getElementById('quiz-form-error');
       let quizData = null;
+      const studentMeta = {};
 
       function esc(s) {
         return String(s ?? '')
@@ -100,6 +113,29 @@
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;');
+      }
+
+      function normalizeLrn(value) {
+        const digits = String(value || '').replace(/\D/g, '').slice(0, 12);
+        return digits;
+      }
+
+      function updateLrnHint() {
+        if (!lrnWarn) return;
+        const id = studentSel.value;
+        if (!id) {
+          lrnWarn.style.display = 'none';
+          lrnWarn.textContent = '';
+          return;
+        }
+        const meta = studentMeta[id];
+        if (meta && meta.has_lrn === false) {
+          lrnWarn.style.display = 'block';
+          lrnWarn.textContent = 'No LRN on file for this name. Ask your teacher to add your LRN before you can submit.';
+        } else {
+          lrnWarn.style.display = 'none';
+          lrnWarn.textContent = '';
+        }
       }
 
       async function load() {
@@ -126,6 +162,7 @@
               if (ln !== 0) return ln;
               return String(a.first_name || '').localeCompare(String(b.first_name || ''), undefined, { sensitivity: 'base' });
             }).map(function (s) {
+              studentMeta[s.id] = { has_lrn: !!s.has_lrn };
               const disabled = s.submitted ? ' disabled' : '';
               const base = (s.last_name && s.first_name)
                 ? (s.last_name + ', ' + s.first_name)
@@ -133,6 +170,9 @@
               const label = s.submitted ? base + ' (already submitted)' : base;
               return '<option value="' + s.id + '"' + disabled + '>' + esc(label) + '</option>';
             }).join('');
+
+          if (lrnInput) lrnInput.value = '';
+          updateLrnHint();
 
           qBox.innerHTML = (data.questions || []).map(function (q, i) {
             const isMcq = q.item_type === 'mcq' || (q.choices && q.choices.length);
@@ -154,12 +194,38 @@
         }
       }
 
+      studentSel.addEventListener('change', function () {
+        if (lrnInput) lrnInput.value = '';
+        updateLrnHint();
+      });
+
+      if (lrnInput) {
+        lrnInput.addEventListener('input', function () {
+          lrnInput.value = normalizeLrn(lrnInput.value);
+        });
+      }
+
       document.getElementById('quiz-submit').addEventListener('click', async function () {
         errEl.hidden = true;
         const studentId = studentSel.value;
         if (!studentId) {
           errEl.textContent = 'Please select your name.';
           errEl.hidden = false;
+          return;
+        }
+
+        const meta = studentMeta[studentId];
+        if (meta && meta.has_lrn === false) {
+          errEl.textContent = 'No LRN on file for this name. Ask your teacher to add your LRN first.';
+          errEl.hidden = false;
+          return;
+        }
+
+        const lrn = normalizeLrn(lrnInput ? lrnInput.value : '');
+        if (lrn.length !== 12) {
+          errEl.textContent = 'Enter your 12-digit LRN to confirm your identity.';
+          errEl.hidden = false;
+          if (lrnInput) lrnInput.focus();
           return;
         }
 
@@ -182,7 +248,7 @@
           const res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id: Number(studentId), answers: answers })
+            body: JSON.stringify({ student_id: Number(studentId), lrn: lrn, answers: answers })
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Submit failed');

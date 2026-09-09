@@ -39,6 +39,16 @@ const {
   groupItemsByCategory,
   migrateOrphanBankItems
 } = require('../utils/questionBank');
+const {
+  ensureQuizAttendanceSchema,
+  parseMakeupIds,
+  attendanceSlotForAssessment,
+  getAttendanceCompletion,
+  getMakeupCandidates,
+  getSubmittedStudentIds,
+  isMakeupStatus,
+  VALID_STATUSES
+} = require('../utils/quizAttendance');
 
 /** Returns assigned class rows for the teacher (current school year). */
 async function getTeacherAssignmentRows(teacherId) {
@@ -314,7 +324,7 @@ async function weeklySheetToXlsx(sheet) {
   ws.getCell(2, 1).font = { size: 10, color: { argb: 'FF555555' } };
 
   ws.mergeCells(3, 1, 3, totalCols);
-  ws.getCell(3, 1).value = 'P – Present    A – Absent    L – Late';
+  ws.getCell(3, 1).value = 'P – Present    A – Absent    L – Late    E – Excused';
   ws.getCell(3, 1).font = { size: 10, color: { argb: 'FF555555' } };
 
   const headerRow = 5;
@@ -497,7 +507,7 @@ function weeklySheetToPrintHtml(sheet) {
 <button onclick="window.print()">Print / Save as PDF</button>
 <h1>${title}</h1>
 <p class="meta">Students ${sheet.students.length} · Week ${weekLabel} (weekdays only)</p>
-<p class="legend"><span><strong>P</strong> – Present</span><span><strong>A</strong> – Absent</span><span><strong>L</strong> – Late</span></p>
+<p class="legend"><span><strong>P</strong> – Present</span><span><strong>A</strong> – Absent</span><span><strong>L</strong> – Late</span><span><strong>E</strong> – Excused</span></p>
 <table>
 ${colgroup}
 <thead>
@@ -637,13 +647,14 @@ router.get('/attendance/:grade/:section', verifyToken, async (req, res) => {
 router.post('/attendance', verifyToken, async (req, res) => {
   try {
     await ensureAttendanceSchema();
+    await ensureQuizAttendanceSchema();
     const { student_id, status, date: dateBody, session: sessionBody, subject_id: subjectBody } = req.body;
     const teacherId = req.user?.id || req.user?.userId;
     const dateParam = String(dateBody || '').trim();
     const today = /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : manilaISODate();
 
-    if (!['Present', 'Absent', 'Late'].includes(status)) {
-      return res.status(400).json({ error: 'Status must be Present, Absent, or Late' });
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ error: 'Status must be Present, Absent, Late, or Excused' });
     }
 
     const [[student]] = await db.query(
@@ -693,6 +704,39 @@ router.post('/attendance', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('Save attendance error:', error);
     res.status(500).json({ error: 'Server error saving attendance', details: error.message });
+  }
+});
+
+router.get('/attendance/:grade/:section/completion', verifyToken, async (req, res) => {
+  try {
+    await ensureQuizAttendanceSchema();
+    const { grade, section } = req.params;
+    const today = manilaISODate();
+    const subjectMode = isSubjectGrade(grade);
+    const subjectIdRaw = req.query.subject_id;
+    const subjectId = subjectIdRaw != null && String(subjectIdRaw).trim() !== ''
+      ? Number(subjectIdRaw)
+      : null;
+    const session = normalizeSession(req.query.session, { subjectMode: subjectMode && !!subjectId });
+    const slot = {
+      date: today,
+      session: subjectMode ? 'AM' : session,
+      subjectKey: subjectMode && subjectId ? subjectId : 0,
+      subjectMode,
+      subjectId
+    };
+    const completion = await getAttendanceCompletion(grade, section, slot);
+    res.json({
+      date: today,
+      session: slot.session,
+      subject_id: subjectId,
+      complete: completion.complete,
+      total: completion.total,
+      unmarked: completion.unmarked
+    });
+  } catch (error) {
+    console.error('Attendance completion error:', error);
+    res.status(500).json({ error: 'Server error checking attendance', details: error.message });
   }
 });
 
@@ -1074,7 +1118,84 @@ router.get('/inbox', verifyToken, async (req, res) => {
 
 router.get('/subjects', verifyToken, async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT id, NAME as name FROM subjects ORDER BY NAME');
+    const teacherId = req.user?.id || req.user?.userId;
+    const [assignmentRows] = await db.query(
+      `SELECT ta.grade_level, ta.subject_id, s.NAME as subject_name
+       FROM teacher_assignments ta
+       LEFT JOIN subjects s ON s.id = ta.subject_id
+       WHERE ta.teacher_id = ? AND ta.school_year = '${schoolYear}'`,
+      [teacherId]
+    );
+
+    // id -> { id, name, grade_levels: Set }
+    const byId = new Map();
+
+    const addSubjectGrade = (id, name, grade) => {
+      const sid = Number(id);
+      const g = Number(grade);
+      if (!sid || !name || !g) return;
+      if (!byId.has(sid)) {
+        byId.set(sid, { id: sid, name, grade_levels: new Set() });
+      }
+      byId.get(sid).grade_levels.add(g);
+    };
+
+    // Explicit subject-teacher rows (any grade, including G4–6)
+    for (const row of assignmentRows) {
+      if (row.subject_id != null && row.subject_name) {
+        addSubjectGrade(row.subject_id, row.subject_name, row.grade_level);
+      }
+    }
+
+    // Class adviser rows (subject_id NULL) for Grades 1–3 only →
+    // subjects that apply to those adviser grades (homeroom teaches all subjects)
+    const adviserGrades = [
+      ...new Set(
+        assignmentRows
+          .filter((r) => r.subject_id == null && Number(r.grade_level) >= 1 && Number(r.grade_level) <= 3)
+          .map((r) => Number(r.grade_level))
+      )
+    ];
+
+    if (adviserGrades.length) {
+      const [allSubjects] = await db.query(
+        'SELECT id, NAME as name, applicable_grades FROM subjects ORDER BY NAME'
+      );
+      const gradeMatches = (gradeLevel, applicableGrades) => {
+        if (!applicableGrades) return false;
+        const grade = parseInt(gradeLevel, 10);
+        if (Number.isNaN(grade)) return false;
+        const str = String(applicableGrades).trim();
+        const rangeMatch = str.match(/^(\d+)\s*-\s*(\d+)$/);
+        if (rangeMatch) {
+          const start = parseInt(rangeMatch[1], 10);
+          const end = parseInt(rangeMatch[2], 10);
+          return grade >= start && grade <= end;
+        }
+        if (str.includes(',')) {
+          return str.split(',').map((x) => parseInt(x.trim(), 10)).includes(grade);
+        }
+        return parseInt(str, 10) === grade;
+      };
+
+      for (const s of allSubjects) {
+        for (const g of adviserGrades) {
+          if (gradeMatches(g, s.applicable_grades)) {
+            addSubjectGrade(s.id, s.name, g);
+          }
+        }
+      }
+    }
+
+    const rows = [...byId.values()]
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        grade_levels: [...s.grade_levels].sort((a, b) => a - b)
+      }))
+      .sort((a, b) =>
+        String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+      );
     res.json(rows);
   } catch (error) {
     console.error('Get teacher subjects error:', error);
@@ -1320,7 +1441,7 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
       message:
         generated.provider === 'mock'
           ? 'Mock AI draft created (set OPENAI_API_KEY and AI_DRY_RUN=false for live generation).'
-          : 'AI draft created. Review quiz/activity, save to Quiz Bank, or approve into Progress.',
+          : 'AI draft created. Review quiz/activity, save to Classwork, or approve into Progress.',
       content: generated.content
     });
   } catch (error) {
@@ -1462,7 +1583,7 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
       message:
         generated.provider === 'mock'
           ? 'Draft regenerated (mock). Set OPENAI_API_KEY and AI_DRY_RUN=false for live AI.'
-          : 'Draft regenerated. Review, then save to Quiz Bank or Approve.',
+          : 'Draft regenerated. Review, then save to Classwork or Approve.',
       content: generated.content
     });
   } catch (error) {
@@ -1622,11 +1743,11 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
 
     const bankNote =
       bankSave && bankSave.created
-        ? ` Saved as Quiz Bank set “${bankSave.title}” (${bankSave.created} items).`
+        ? ` Saved as Classwork set “${bankSave.title}” (${bankSave.created} items).`
         : bankSave && bankSave.already_exists
-          ? ' Quiz set already in Quiz Bank.'
+          ? ' Classwork set already saved.'
           : bankSave && bankSave.skipped
-            ? ' Quiz items already in Quiz Bank.'
+            ? ' Quiz items already in Classwork.'
             : '';
 
     res.json({
@@ -1692,17 +1813,17 @@ router.post('/question-bank/from-ai/:id', verifyToken, async (req, res) => {
     res.status(201).json({
       message:
         result.created > 0
-          ? `Saved “${result.title}” to Quiz Bank (${result.created} items).`
+          ? `Saved “${result.title}” to Classwork (${result.created} items).`
           : result.already_exists
-            ? `“${result.title}” is already in your Quiz Bank.`
+            ? `“${result.title}” is already in your Classwork.`
             : result.skipped > 0
-              ? 'Those items are already in your Quiz Bank.'
+              ? 'Those items are already in your Classwork.'
               : 'No quiz items found to save.',
       ...result
     });
   } catch (error) {
     console.error('Save AI to question bank error:', error);
-    res.status(500).json({ error: 'Server error saving to quiz bank', details: error.message });
+    res.status(500).json({ error: 'Server error saving to Classwork', details: error.message });
   }
 });
 
@@ -1750,6 +1871,89 @@ router.get('/question-bank/sets', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('List quiz sets error:', error);
     res.status(500).json({ error: 'Server error fetching quiz sets', details: error.message });
+  }
+});
+
+router.post('/question-bank/sets', verifyToken, async (req, res) => {
+  try {
+    await ensureQuestionBankSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const { title, grade_level, subject_id } = req.body || {};
+    const setTitle = String(title || '').trim().slice(0, 255);
+    const grade = Number(grade_level);
+
+    if (!setTitle) return res.status(400).json({ error: 'Title is required' });
+    if (!grade) return res.status(400).json({ error: 'Grade level is required' });
+
+    const assignmentRows = await getTeacherAssignmentRows(teacherId);
+    const allowedGrades = [...new Set(assignmentRows.map((r) => Number(r.grade_level)).filter(Boolean))];
+    if (!allowedGrades.includes(grade)) {
+      return res.status(403).json({ error: `Grade ${grade} is not in your assigned classes.` });
+    }
+
+    const subjectId = subject_id ? Number(subject_id) : null;
+    if (subjectId) {
+      const hasExplicit = assignmentRows.some(
+        (r) => Number(r.grade_level) === grade && Number(r.subject_id) === subjectId
+      );
+      const isG13Adviser = grade >= 1 && grade <= 3 && assignmentRows.some(
+        (r) => Number(r.grade_level) === grade && r.subject_id == null
+      );
+      if (!hasExplicit && !isG13Adviser) {
+        return res.status(403).json({
+          error: 'That subject is not assigned to you for this grade.'
+        });
+      }
+      if (!hasExplicit && isG13Adviser) {
+        const [[sub]] = await db.query(
+          'SELECT id, applicable_grades FROM subjects WHERE id = ?',
+          [subjectId]
+        );
+        if (!sub) return res.status(400).json({ error: 'Subject not found' });
+        const str = String(sub.applicable_grades || '').trim();
+        let ok = false;
+        const rangeMatch = str.match(/^(\d+)\s*-\s*(\d+)$/);
+        if (rangeMatch) {
+          ok = grade >= parseInt(rangeMatch[1], 10) && grade <= parseInt(rangeMatch[2], 10);
+        } else if (str.includes(',')) {
+          ok = str.split(',').map((x) => parseInt(x.trim(), 10)).includes(grade);
+        } else {
+          ok = parseInt(str, 10) === grade;
+        }
+        if (!ok) {
+          return res.status(403).json({
+            error: 'That subject is not assigned to you for this grade.'
+          });
+        }
+      }
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO quiz_sets
+        (teacher_id, title, subject_id, grade_level, source, status)
+       VALUES (?, ?, ?, ?, 'manual', 'active')`,
+      [teacherId, setTitle, subjectId, grade]
+    );
+
+    await logActivity(
+      db,
+      teacherId,
+      'Created classwork set',
+      'question_bank',
+      setTitle,
+      `Grade ${grade}${subjectId ? ` · subject #${subjectId}` : ''}`
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      title: setTitle,
+      grade_level: grade,
+      subject_id: subjectId,
+      message: 'Classwork set created'
+    });
+  } catch (error) {
+    console.error('Create quiz set error:', error);
+    res.status(500).json({ error: 'Server error creating classwork set', details: error.message });
   }
 });
 
@@ -2207,7 +2411,7 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
 
     res.status(201).json({
       id: assessmentId,
-      message: 'Progress record created from Quiz Bank. Enter scores when ready.',
+      message: 'Progress record created from Classwork. Enter scores when ready.',
       question_count: ordered.length,
       max_score: maxScore
     });
@@ -2259,6 +2463,11 @@ async function ensureAssessmentSchema() {
   } catch (e) {
     console.warn('[quiz-share] schema ensure:', e.message);
   }
+  try {
+    await ensureQuizAttendanceSchema();
+  } catch (e) {
+    console.warn('[quiz-attendance] schema ensure:', e.message);
+  }
 }
 
 ensureAssessmentSchema();
@@ -2266,13 +2475,14 @@ ensureAssessmentSchema();
 router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
   try {
     await ensureAssessmentSchema();
+    await ensureQuizAttendanceSchema();
     const { generateShareToken, getAssessmentQuestions, ensureQuizShareSchema } = require('../utils/quizShare');
     await ensureQuizShareSchema();
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
 
     const [[assessment]] = await db.query(
-      `SELECT id, title, grade_level, section, share_token, share_enabled, created_by
+      `SELECT id, title, grade_level, section, subject_id, share_token, share_enabled, created_by
        FROM assessments WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
@@ -2287,18 +2497,48 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
       return res.status(400).json({
-        error: 'Add questions first (create from Quiz Bank) before assigning a shared link.'
+        error: 'Add questions first (create from Classwork) before assigning a shared link.'
+      });
+    }
+
+    const today = manilaISODate();
+    const slot = attendanceSlotForAssessment(
+      { ...assessment, quiz_attendance_date: today },
+      { session: req.body?.session, subject_id: assessment.subject_id }
+    );
+    const completion = await getAttendanceCompletion(
+      assessment.grade_level,
+      assessment.section,
+      slot
+    );
+    if (!completion.complete) {
+      const names = completion.unmarked.slice(0, 5).map((u) => u.name).join('; ');
+      const more = completion.unmarked.length > 5 ? ` (+${completion.unmarked.length - 5} more)` : '';
+      return res.status(400).json({
+        error: `Mark attendance for every student before enabling the quiz (${completion.unmarked.length} unmarked).`,
+        unmarked: completion.unmarked,
+        hint: names ? `Unmarked: ${names}${more}` : undefined
       });
     }
 
     let token = assessment.share_token;
+    const attendanceUpdates = [
+      today,
+      slot.session,
+      isSubjectGrade(assessment.grade_level) ? assessment.subject_id : null,
+      JSON.stringify([])
+    ];
+
     if (!token) {
       for (let i = 0; i < 5; i++) {
         token = generateShareToken();
         try {
           await db.query(
-            `UPDATE assessments SET share_token = ?, share_enabled = 1 WHERE id = ? AND created_by = ?`,
-            [token, id, teacherId]
+            `UPDATE assessments SET share_token = ?, share_enabled = 1,
+             quiz_attendance_date = ?, quiz_attendance_session = ?,
+             quiz_subject_id = ?, quiz_makeup_student_ids = ?
+             WHERE id = ? AND created_by = ?`,
+            [token, ...attendanceUpdates, id, teacherId]
           );
           break;
         } catch (err) {
@@ -2309,8 +2549,11 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
       if (!token) return res.status(500).json({ error: 'Could not generate a unique quiz link' });
     } else {
       await db.query(
-        `UPDATE assessments SET share_enabled = 1 WHERE id = ? AND created_by = ?`,
-        [id, teacherId]
+        `UPDATE assessments SET share_enabled = 1,
+         quiz_attendance_date = ?, quiz_attendance_session = ?,
+         quiz_subject_id = ?, quiz_makeup_student_ids = ?
+         WHERE id = ? AND created_by = ?`,
+        [...attendanceUpdates, id, teacherId]
       );
     }
 
@@ -2324,11 +2567,13 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     );
 
     res.json({
-      message: 'Shared quiz link is active. Students open the link, pick their name, and submit.',
+      message: 'Shared quiz link is active. Present and Late students can take the quiz.',
       share_token: token,
       share_enabled: true,
       share_path: `/quiz/${token}`,
-      question_count: questions.length
+      question_count: questions.length,
+      attendance_date: today,
+      attendance_session: slot.session
     });
   } catch (error) {
     console.error('Assign quiz link error:', error);
@@ -2348,7 +2593,7 @@ router.post('/assessments/:id/revoke-link', verifyToken, async (req, res) => {
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
 
     await db.query(
-      `UPDATE assessments SET share_enabled = 0 WHERE id = ? AND created_by = ?`,
+      `UPDATE assessments SET share_enabled = 0, quiz_makeup_student_ids = NULL WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
 
@@ -2368,6 +2613,82 @@ router.post('/assessments/:id/revoke-link', verifyToken, async (req, res) => {
   }
 });
 
+router.post('/assessments/:id/makeup-quiz', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    await ensureQuizAttendanceSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const { id } = req.params;
+    const { mode, student_ids: studentIdsBody } = req.body || {};
+
+    const [[assessment]] = await db.query(
+      `SELECT id, title, grade_level, section, subject_id, share_enabled, share_token,
+              quiz_attendance_date, quiz_attendance_session, quiz_subject_id, quiz_makeup_student_ids
+       FROM assessments WHERE id = ? AND created_by = ?`,
+      [id, teacherId]
+    );
+    if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (!assessment.share_enabled || !assessment.share_token) {
+      return res.status(400).json({ error: 'Enable the shared quiz link first.' });
+    }
+    if (!assessment.quiz_attendance_date) {
+      return res.status(400).json({
+        error: 'This quiz has no attendance session yet. Re-enable the link after marking attendance.'
+      });
+    }
+
+    const candidates = await getMakeupCandidates(assessment);
+    const candidateIds = new Set(candidates.map((c) => c.id));
+    let grantIds = [];
+
+    if (mode === 'all') {
+      grantIds = candidates.map((c) => c.id);
+    } else if (mode === 'selected' && Array.isArray(studentIdsBody)) {
+      grantIds = studentIdsBody.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+      const invalid = grantIds.filter((sid) => !candidateIds.has(sid));
+      if (invalid.length) {
+        return res.status(400).json({
+          error: 'Some selected students are not eligible for make-up (must be Absent or Excused and not yet submitted).',
+          invalid_ids: invalid
+        });
+      }
+    } else {
+      return res.status(400).json({ error: 'Use mode "all" or "selected" with student_ids.' });
+    }
+
+    if (!grantIds.length) {
+      return res.status(400).json({ error: 'No eligible absent or excused students to grant make-up access.' });
+    }
+
+    const existing = parseMakeupIds(assessment.quiz_makeup_student_ids);
+    const submittedSet = await getSubmittedStudentIds(assessment.id);
+    const merged = [...new Set([...existing, ...grantIds])].filter((sid) => !submittedSet.has(sid));
+
+    await db.query(
+      `UPDATE assessments SET quiz_makeup_student_ids = ? WHERE id = ? AND created_by = ?`,
+      [JSON.stringify(merged), id, teacherId]
+    );
+
+    await logActivity(
+      db,
+      teacherId,
+      'Granted quiz make-up access',
+      'assessment',
+      assessment.title,
+      `${grantIds.length} student(s)`
+    );
+
+    res.json({
+      message: `Make-up access granted for ${grantIds.length} student(s).`,
+      granted_count: grantIds.length,
+      makeup_student_ids: merged
+    });
+  } catch (error) {
+    console.error('Makeup quiz error:', error);
+    res.status(500).json({ error: 'Server error granting make-up access', details: error.message });
+  }
+});
+
 router.get('/assessments', verifyToken, async (req, res) => {
   try {
     const { grade, section, quarter } = req.query;
@@ -2377,7 +2698,8 @@ router.get('/assessments', verifyToken, async (req, res) => {
 
     let sql = `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
                       a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at, s.NAME as subject_name,
-                      (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count
+                      (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count,
+                      (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.id) as question_count
                FROM assessments a
                LEFT JOIN subjects s ON a.subject_id = s.id
                WHERE a.grade_level = ? AND a.section = ?`;
@@ -2536,7 +2858,9 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
     try {
       const [[row]] = await db.query(
         `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
-                a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at, s.NAME as subject_name
+                a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
+                a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id, a.quiz_makeup_student_ids,
+                s.NAME as subject_name
          FROM assessments a
          LEFT JOIN subjects s ON a.subject_id = s.id
          WHERE a.id = ?`,
@@ -2555,6 +2879,32 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       assessment = row;
     }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+
+    await ensureQuizAttendanceSchema();
+    let attendance_meta = null;
+    let makeup_candidates = [];
+    try {
+      const slot = attendanceSlotForAssessment(assessment);
+      const completion = await getAttendanceCompletion(
+        assessment.grade_level,
+        assessment.section,
+        slot
+      );
+      attendance_meta = {
+        date: slot.date,
+        session: slot.session,
+        complete: completion.complete,
+        unmarked_count: completion.unmarked.length,
+        unmarked: completion.unmarked
+      };
+      if (Number(assessment.share_enabled) === 1) {
+        makeup_candidates = await getMakeupCandidates(assessment);
+      }
+    } catch (metaErr) {
+      console.warn('[assessment] attendance meta:', metaErr.message);
+    }
+
+    assessment.quiz_makeup_student_ids = parseMakeupIds(assessment.quiz_makeup_student_ids);
 
     const [students] = await db.query(
       `SELECT s.id, s.lrn, s.first_name, s.last_name, sc.score
@@ -2584,7 +2934,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       questions = [];
     }
 
-    res.json({ assessment, students, questions });
+    res.json({ assessment, students, questions, attendance_meta, makeup_candidates });
   } catch (error) {
     console.error('Get assessment error:', error);
     res.status(500).json({ error: 'Server error fetching assessment', details: error.message });
