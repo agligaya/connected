@@ -27,6 +27,7 @@ router.put('/announcements/:id', verifyToken, requireRole('admin'), adminControl
 router.delete('/announcements/:id', verifyToken, requireRole('admin'), adminController.deleteAnnouncement);
 router.patch('/concerns/:id/resolve', verifyToken, requireRole('admin'), adminController.resolveConcern);
 router.post('/concerns/:id/reply', verifyToken, requireRole('admin'), adminController.replyToConcern);
+router.post('/concerns/:id/read', verifyToken, requireRole('admin'), adminController.markConcernRead);
 router.post('/announcements/:id/read', verifyToken, adminController.markAnnouncementRead);
 router.delete('/announcements/:id/read', verifyToken, adminController.markAnnouncementUnread);
 router.post('/announcements/mark-all-read', verifyToken, adminController.markAllAnnouncementsRead);

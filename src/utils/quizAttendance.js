@@ -1,5 +1,11 @@
 const db = require('../../db');
-const { ensureAttendanceSchema, manilaISODate, isSubjectGrade, normalizeSession } = require('./attendanceSchema');
+const {
+  ensureAttendanceSchema,
+  manilaISODate,
+  sqlDateToISO,
+  isSubjectGrade,
+  normalizeSession
+} = require('./attendanceSchema');
 
 const VALID_STATUSES = ['Present', 'Absent', 'Late', 'Excused'];
 const LIVE_QUIZ_STATUSES = ['Present', 'Late'];
@@ -51,10 +57,24 @@ function parseMakeupIds(raw) {
   return [];
 }
 
+/** Coerce MySQL DATE / string to YYYY-MM-DD in Asia/Manila (no UTC day-shift). */
+function coerceAttendanceDate(value) {
+  if (value == null || value === '') return manilaISODate();
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return manilaISODate(value);
+  }
+  const fromSql = sqlDateToISO(value);
+  return fromSql || manilaISODate();
+}
+
 function attendanceSlotForAssessment(assessment, overrides = {}) {
   const grade = Number(assessment.grade_level);
   const subjectMode = isSubjectGrade(grade);
-  const date = overrides.date || assessment.quiz_attendance_date || manilaISODate();
+  const rawDate = overrides.date != null && overrides.date !== ''
+    ? overrides.date
+    : (assessment.quiz_attendance_date || manilaISODate());
+  const date = coerceAttendanceDate(rawDate);
   const session = subjectMode
     ? 'AM'
     : normalizeSession(overrides.session || assessment.quiz_attendance_session || 'AM', { subjectMode: false });

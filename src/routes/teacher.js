@@ -5,6 +5,9 @@ const { schoolYear } = require('../config');
 const db = require('../../db');
 const {
   attachReplies,
+  attachConcernReadState,
+  markConcernRead,
+  markConcernReadForParticipants,
   addConcernReply
 } = require('../utils/concernReplies');
 const { announcementTargets, ensureAnnouncementAudience } = require('../utils/announcements');
@@ -1093,18 +1096,18 @@ router.get('/inbox', verifyToken, async (req, res) => {
 
       const sql = `SELECT c.id, c.parent_id, c.teacher_id, c.student_id,
                      c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
-                     c.created_at, c.teacher_reply, c.replied_at,
+                     c.created_at, c.updated_at, c.teacher_reply, c.replied_at,
                      CONCAT(p.first_name, ' ', p.last_name) as parent_name,
                      CONCAT(s.first_name, ' ', s.last_name) as student_name,
                      s.grade_level, s.section
                    FROM concerns c
                    LEFT JOIN users p ON c.parent_id = p.id
                    LEFT JOIN students s ON c.student_id = s.id
-                   WHERE COALESCE(c.STATUS, 'open') != 'closed'
-                     AND (${conditions.join(' OR ')})
+                   WHERE (${conditions.join(' OR ')})
                    ORDER BY c.created_at DESC`;
       [concerns] = await db.query(sql, params);
       concerns = await attachReplies(concerns);
+      concerns = await attachConcernReadState(concerns, teacherId);
     } catch (e) {
       console.error('[Inbox] concerns error:', e.message);
     }
@@ -2104,7 +2107,8 @@ router.post('/question-bank', verifyToken, async (req, res) => {
       subject_id,
       lesson_plan_id,
       lesson_title,
-      item_type
+      item_type,
+      quiz_set_id
     } = req.body || {};
 
     const qText = String(question || '').trim();
@@ -2119,7 +2123,25 @@ router.post('/question-bank', verifyToken, async (req, res) => {
       });
     }
 
-    const type = ['mcq', 'short_answer', 'activity_prompt'].includes(item_type)
+    let quizSetId = quiz_set_id ? Number(quiz_set_id) : null;
+    let inheritedSubjectId = subject_id ? Number(subject_id) : null;
+    if (quizSetId) {
+      const [[setRow]] = await db.query(
+        `SELECT id, grade_level, subject_id FROM quiz_sets
+         WHERE id = ? AND teacher_id = ? AND status = 'active'`,
+        [quizSetId, teacherId]
+      );
+      if (!setRow) return res.status(404).json({ error: 'Classwork set not found' });
+      if (Number(setRow.grade_level) !== Number(grade_level)) {
+        return res.status(400).json({ error: 'Question grade must match the Classwork set grade.' });
+      }
+      if (!inheritedSubjectId && setRow.subject_id) {
+        inheritedSubjectId = Number(setRow.subject_id);
+      }
+    }
+
+    const allowedTypes = ['mcq', 'short_answer', 'identification', 'enumeration', 'activity_prompt'];
+    const type = allowedTypes.includes(item_type)
       ? item_type
       : normalizeChoices(choices)?.length
         ? 'mcq'
@@ -2131,12 +2153,13 @@ router.post('/question-bank', verifyToken, async (req, res) => {
 
     const [result] = await db.query(
       `INSERT INTO question_bank
-        (teacher_id, subject_id, grade_level, lesson_plan_id, lesson_title,
+        (teacher_id, quiz_set_id, subject_id, grade_level, lesson_plan_id, lesson_title,
          item_type, question, choices, answer, points, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
       [
         teacherId,
-        subject_id ? Number(subject_id) : null,
+        quizSetId,
+        inheritedSubjectId,
         Number(grade_level),
         lesson_plan_id ? Number(lesson_plan_id) : null,
         lesson_title ? String(lesson_title).slice(0, 255) : null,
@@ -2148,7 +2171,7 @@ router.post('/question-bank', verifyToken, async (req, res) => {
       ]
     );
 
-    res.status(201).json({ id: result.insertId, message: 'Question saved to bank' });
+    res.status(201).json({ id: result.insertId, quiz_set_id: quizSetId, message: 'Question added' });
   } catch (error) {
     console.error('Create question bank item error:', error);
     res.status(500).json({ error: 'Server error creating bank item', details: error.message });
@@ -2184,7 +2207,7 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
     if (choices !== undefined) choiceList = normalizeChoices(choices);
 
     let type = row.item_type;
-    if (item_type && ['mcq', 'short_answer', 'activity_prompt'].includes(item_type)) {
+    if (item_type && ['mcq', 'short_answer', 'identification', 'enumeration', 'activity_prompt'].includes(item_type)) {
       type = item_type;
     } else if (choices !== undefined) {
       type = choiceList && choiceList.length >= 2 ? 'mcq' : row.item_type === 'activity_prompt' ? 'activity_prompt' : 'short_answer';
@@ -2503,8 +2526,8 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
 
     const today = manilaISODate();
     const slot = attendanceSlotForAssessment(
-      { ...assessment, quiz_attendance_date: today },
-      { session: req.body?.session, subject_id: assessment.subject_id }
+      { ...assessment, quiz_attendance_date: today, quiz_attendance_session: null },
+      { date: today, session: req.body?.session, subject_id: assessment.subject_id }
     );
     const completion = await getAttendanceCompletion(
       assessment.grade_level,
@@ -2523,7 +2546,7 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
 
     let token = assessment.share_token;
     const attendanceUpdates = [
-      today,
+      slot.date,
       slot.session,
       isSubjectGrade(assessment.grade_level) ? assessment.subject_id : null,
       JSON.stringify([])
@@ -2697,7 +2720,9 @@ router.get('/assessments', verifyToken, async (req, res) => {
     }
 
     let sql = `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
-                      a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at, s.NAME as subject_name,
+                      a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
+                      a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
+                      s.NAME as subject_name,
                       (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count,
                       (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.id) as question_count
                FROM assessments a
@@ -2884,7 +2909,18 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
     let attendance_meta = null;
     let makeup_candidates = [];
     try {
-      const slot = attendanceSlotForAssessment(assessment);
+      const shareOn = Number(assessment.share_enabled) === 1;
+      // Link off: preview today + teacher's current session. Link on: frozen quiz gate slot.
+      const slot = shareOn
+        ? attendanceSlotForAssessment(assessment)
+        : attendanceSlotForAssessment(
+          { ...assessment, quiz_attendance_date: manilaISODate(), quiz_attendance_session: null },
+          {
+            date: manilaISODate(),
+            session: req.query.session,
+            subject_id: assessment.subject_id
+          }
+        );
       const completion = await getAttendanceCompletion(
         assessment.grade_level,
         assessment.section,
@@ -2893,11 +2929,13 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       attendance_meta = {
         date: slot.date,
         session: slot.session,
+        subject_id: slot.subjectId,
+        locked: shareOn,
         complete: completion.complete,
         unmarked_count: completion.unmarked.length,
         unmarked: completion.unmarked
       };
-      if (Number(assessment.share_enabled) === 1) {
+      if (shareOn) {
         makeup_candidates = await getMakeupCandidates(assessment);
       }
     } catch (metaErr) {
@@ -3017,6 +3055,26 @@ router.delete('/assessments/:id', verifyToken, async (req, res) => {
   }
 });
 
+router.post('/concerns/:id/read', verifyToken, async (req, res) => {
+  try {
+    const teacherId = req.user?.id || req.user?.userId;
+    const { id } = req.params;
+    const [rows] = await db.query(
+      'SELECT id FROM concerns WHERE id = ? AND (teacher_id = ? OR teacher_id IS NULL)',
+      [id, teacherId]
+    );
+    if (!rows.length) {
+      const [any] = await db.query('SELECT id FROM concerns WHERE id = ?', [id]);
+      if (!any.length) return res.status(404).json({ error: 'Concern not found' });
+    }
+    await markConcernRead(id, teacherId);
+    res.json({ message: 'Marked as read' });
+  } catch (error) {
+    console.error('Teacher mark concern read error:', error);
+    res.status(500).json({ error: 'Server error marking concern read', details: error.message });
+  }
+});
+
 router.post('/concerns/:id/reply', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
@@ -3078,6 +3136,11 @@ router.patch('/concerns/:id/resolve', verifyToken, async (req, res) => {
       [id]
     );
     await db.query("UPDATE concerns SET STATUS = 'resolved' WHERE id = ?", [id]);
+    try {
+      await markConcernReadForParticipants(id, teacherId);
+    } catch (e) {
+      console.error('[concern_reads] mark on resolve:', e.message);
+    }
     await logActivity(
       db,
       teacherId,

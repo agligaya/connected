@@ -2,6 +2,8 @@ const db = require('../../db');
 const { schoolYear } = require('../config');
 const {
   attachReplies,
+  attachConcernReadState,
+  markConcernRead,
   addConcernReply
 } = require('../utils/concernReplies');
 const { audienceSql } = require('../utils/announcements');
@@ -52,7 +54,7 @@ exports.getChildAttendance = async (req, res) => {
        LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE a.student_id = ?
        ORDER BY a.\`DATE\` DESC, a.session ASC, sub.NAME ASC
-       LIMIT 60`,
+       LIMIT 500`,
       [studentId]
     );
 
@@ -419,7 +421,7 @@ exports.getMyConcerns = async (req, res) => {
 
     const params = [parentId];
     let sql = `SELECT c.id, c.student_id, c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
-              c.created_at, c.teacher_reply, c.replied_at,
+              c.created_at, c.updated_at, c.teacher_reply, c.replied_at,
               CONCAT(t.first_name, ' ', t.last_name) as teacher_name,
               CONCAT(s.first_name, ' ', s.last_name) as student_name
        FROM concerns c
@@ -433,10 +435,27 @@ exports.getMyConcerns = async (req, res) => {
     sql += ' ORDER BY c.created_at DESC';
 
     const [rows] = await db.query(sql, params);
-    res.json(await attachReplies(rows));
+    res.json(await attachConcernReadState(await attachReplies(rows), parentId));
   } catch (error) {
     console.error('Get parent concerns error:', error);
     res.status(500).json({ error: 'Server error fetching concerns', details: error.message });
+  }
+};
+
+exports.markConcernRead = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id } = req.params;
+    const [owned] = await db.query(
+      'SELECT id FROM concerns WHERE id = ? AND parent_id = ?',
+      [id, parentId]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Concern not found' });
+    await markConcernRead(id, parentId);
+    res.json({ message: 'Marked as read' });
+  } catch (error) {
+    console.error('Parent mark concern read error:', error);
+    res.status(500).json({ error: 'Server error marking concern read', details: error.message });
   }
 };
 

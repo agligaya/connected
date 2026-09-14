@@ -92,6 +92,106 @@ function isConcernOpen(status) {
   return s !== 'resolved' && s !== 'closed';
 }
 
+async function ensureConcernReadsSchema() {
+  await ensureConcernRepliesSchema();
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS concern_reads (
+      user_id INT NOT NULL,
+      concern_id INT NOT NULL,
+      read_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, concern_id),
+      INDEX idx_concern_reads_concern (concern_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
+
+function concernLastActivityMs(concern) {
+  let last = new Date(concern.created_at || 0).getTime() || 0;
+  if (concern.replied_at) {
+    const t = new Date(concern.replied_at).getTime();
+    if (t > last) last = t;
+  }
+  if (concern.updated_at) {
+    const t = new Date(concern.updated_at).getTime();
+    if (t > last) last = t;
+  }
+  const replies = Array.isArray(concern.replies) ? concern.replies : [];
+  for (const r of replies) {
+    const t = new Date(r.created_at || 0).getTime();
+    if (t > last) last = t;
+  }
+  return last;
+}
+
+/**
+ * Attach is_read + last_activity for a viewer.
+ * Unread when never opened, or when activity is newer than read_at.
+ */
+async function attachConcernReadState(concerns, userId) {
+  await ensureConcernReadsSchema();
+  if (!concerns || !concerns.length || !userId) {
+    return (concerns || []).map((c) => ({
+      ...c,
+      last_activity: new Date(concernLastActivityMs(c) || Date.now()).toISOString(),
+      is_read: isConcernOpen(c.status) ? 0 : 1
+    }));
+  }
+
+  const ids = concerns.map((c) => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const [reads] = await db.query(
+    `SELECT concern_id, read_at
+     FROM concern_reads
+     WHERE user_id = ? AND concern_id IN (${placeholders})`,
+    [userId, ...ids]
+  );
+  const readMap = {};
+  for (const row of reads) {
+    readMap[row.concern_id] = row.read_at;
+  }
+
+  return concerns.map((c) => {
+    const lastMs = concernLastActivityMs(c);
+    const readAt = readMap[c.id] ? new Date(readMap[c.id]).getTime() : null;
+    // Resolved/closed conversations are treated as read
+    const isRead = !isConcernOpen(c.status) || (readAt != null && readAt >= lastMs);
+    return {
+      ...c,
+      last_activity: new Date(lastMs || Date.now()).toISOString(),
+      read_at: readMap[c.id] || null,
+      is_read: isRead ? 1 : 0
+    };
+  });
+}
+
+async function markConcernRead(concernId, userId) {
+  await ensureConcernReadsSchema();
+  if (!concernId || !userId) return;
+  await db.query(
+    `INSERT INTO concern_reads (user_id, concern_id, read_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP`,
+    [userId, concernId]
+  );
+}
+
+/** Mark resolved for actor + parent + assigned teacher so Resolved stays neutral for everyone. */
+async function markConcernReadForParticipants(concernId, actorId = null) {
+  await ensureConcernReadsSchema();
+  const [rows] = await db.query(
+    'SELECT parent_id, teacher_id FROM concerns WHERE id = ?',
+    [concernId]
+  );
+  if (!rows.length) return;
+  const ids = new Set();
+  if (actorId) ids.add(Number(actorId));
+  if (rows[0].parent_id) ids.add(Number(rows[0].parent_id));
+  if (rows[0].teacher_id) ids.add(Number(rows[0].teacher_id));
+  for (const uid of ids) {
+    if (uid) await markConcernRead(concernId, uid);
+  }
+}
+
 /**
  * Insert a follow-up reply. Fails if concern is resolved/closed.
  * For teacher/admin senders, also mirrors into teacher_reply for older clients.
@@ -139,6 +239,12 @@ async function addConcernReply({ concernId, senderId, senderRole, message }) {
     );
   }
 
+  try {
+    await markConcernRead(concernId, senderId);
+  } catch (e) {
+    console.error('[concern_reads] mark after reply:', e.message);
+  }
+
   return { id: result.insertId, concern };
 }
 
@@ -148,7 +254,11 @@ ensureConcernRepliesSchema().catch((e) => {
 
 module.exports = {
   ensureConcernRepliesSchema,
+  ensureConcernReadsSchema,
   attachReplies,
+  attachConcernReadState,
+  markConcernRead,
+  markConcernReadForParticipants,
   addConcernReply,
   isConcernOpen
 };

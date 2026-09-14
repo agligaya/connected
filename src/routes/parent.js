@@ -15,5 +15,6 @@ router.get('/child/:id/teachers', verifyToken, requireRole('parent'), parentCont
 router.get('/concerns', verifyToken, requireRole('parent'), parentController.getMyConcerns);
 router.post('/concerns', verifyToken, requireRole('parent'), parentController.createConcern);
 router.post('/concerns/:id/reply', verifyToken, requireRole('parent'), parentController.replyToConcern);
+router.post('/concerns/:id/read', verifyToken, requireRole('parent'), parentController.markConcernRead);
 
 module.exports = router;

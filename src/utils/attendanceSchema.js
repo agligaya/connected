@@ -114,23 +114,18 @@ function manilaISODate(d = new Date()) {
   }).format(d);
 }
 
-/** Normalize MySQL DATE / JS Date to YYYY-MM-DD without UTC day-shift. */
+/** Normalize MySQL DATE / JS Date to YYYY-MM-DD without UTC day-shift (Asia/Manila). */
 function sqlDateToISO(value) {
   if (value == null) return '';
-  if (value instanceof Date) {
-    const y = value.getFullYear();
-    const m = String(value.getMonth() + 1).padStart(2, '0');
-    const day = String(value.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return manilaISODate(value);
   }
   const s = String(value);
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const parsed = new Date(s);
   if (!Number.isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear();
-    const m = String(parsed.getMonth() + 1).padStart(2, '0');
-    const day = String(parsed.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return manilaISODate(parsed);
   }
   return s.slice(0, 10);
 }

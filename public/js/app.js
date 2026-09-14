@@ -770,6 +770,8 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
       alert('Please enter a valid email address for the parent');
       return;
     }
+    payload.address = document.getElementById('admin-account-address')?.value.trim() || null;
+    payload.emergency_contact = document.getElementById('admin-account-emergency')?.value.trim() || null;
   }
 
   if (payload.role === 'teacher') {
@@ -1000,7 +1002,13 @@ function applyAccountFilters() {
               : (u.assignments && u.assignments.some(a => a.subject_id !== null))
               ? 'Subject Teacher'
               : 'Teacher — No assignments set')
-          : (u.emergency_contact || '-')}
+          : (u.emergency_contact
+              ? `Emergency: ${u.emergency_contact}`
+              : u.phone
+              ? `Phone: ${u.phone}`
+              : u.address
+              ? u.address
+              : '-')}
       </td>
       <td>${statusBadgeHtml(u.status)}</td>
     </tr>
@@ -1396,6 +1404,23 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
   }
 });
 
+function generateTempPassword(length = 10) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = new Uint8Array(length);
+  (window.crypto || window.msCrypto).getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+function fillTempPasswordInput(inputId) {
+  const el = document.getElementById(inputId);
+  if (!el) return '';
+  const pw = generateTempPassword();
+  el.value = pw;
+  return pw;
+}
+
 window.resetAccountPassword = async function(id) {
   const user = lastAccountsData.find(u => u.id === id);
   const label = user ? `${user.first_name} ${user.last_name}` : 'this account';
@@ -1403,7 +1428,7 @@ window.resetAccountPassword = async function(id) {
   const subtitle = document.getElementById('reset-password-subtitle');
   const errEl = document.getElementById('reset-password-error');
   document.getElementById('reset-password-user-id').value = id;
-  document.getElementById('reset-password-temp').value = 'changeme123';
+  fillTempPasswordInput('reset-password-temp');
   if (subtitle) subtitle.textContent = `Set a temporary password for ${label}. They must change it after they sign in.`;
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   modal?.removeAttribute('hidden');
@@ -1589,7 +1614,14 @@ async function loadClassAdviserForStudent() {
 
 // Helper to render a single student row from cached data (no API call)
 function renderStudentRow(student) {
+  const checked = selectedStudentIds.has(Number(student.id)) ? 'checked' : '';
+  const statusAction = student.status === 'inactive'
+    ? `<button type="button" class="row-menu-item" data-action="reenroll-student" data-student-id="${student.id}">Re-enroll</button>`
+    : `<button type="button" class="row-menu-item" data-action="unenroll-student" data-student-id="${student.id}">Unenroll</button>`;
   return `
+    <td class="col-check">
+      <input type="checkbox" class="admin-student-check" data-student-id="${student.id}" ${checked} aria-label="Select student" />
+    </td>
     <td class="att-lrn-cell">${escapeHtml(student.lrn || '-')}</td>
     <td class="att-name-cell">${formatStudentNameStacked(student)}</td>
     <td>Grade ${escapeHtml(String(student.grade_level))}</td>
@@ -1597,28 +1629,44 @@ function renderStudentRow(student) {
     <td>${student.parent_last ? escapeHtml(student.parent_last + ', ' + student.parent_first) : '<span style="color:#b71c1c">Unlinked</span>'}</td>
     <td>${statusBadgeHtml(student.status)}</td>
     <td class="row-actions">
-      <button type="button" class="icon-btn" title="Edit student" aria-label="Edit student" onclick="startEditStudent(${student.id})">✎</button>
-      ${student.status === 'inactive'
-        ? `<button type="button" class="icon-btn icon-btn--ok" title="Re-enroll student" aria-label="Re-enroll student" onclick="reenrollStudent(${student.id})">↻</button>`
-        : `<button type="button" class="icon-btn icon-btn--warn" title="Unenroll student" aria-label="Unenroll student" onclick="unenrollStudent(${student.id})">⊘</button>`
-      }
-      <button type="button" class="icon-btn icon-btn--danger" title="Delete student" aria-label="Delete student" onclick="deleteStudent(${student.id})">🗑</button>
+      <div class="row-menu-wrap">
+        <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
+        <div class="row-menu" hidden>
+          <button type="button" class="row-menu-item" data-action="edit-student" data-student-id="${student.id}">Edit</button>
+          ${statusAction}
+          <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-student" data-student-id="${student.id}">Delete</button>
+        </div>
+      </div>
     </td>
   `;
 }
 
+const selectedStudentIds = new Set();
+const selectedSubjectIds = new Set();
+
 let currentStudentFilter = '';
 let currentStudentGradeFilter = '';
 let currentStudentSectionFilter = '';
+let studentGradeMenuApi = null;
+let studentSectionMenuApi = null;
+
+const STUDENT_GRADE_FILTER_OPTS = [
+  { value: '', label: 'All grades' },
+  { value: '1', label: 'Grade 1' },
+  { value: '2', label: 'Grade 2' },
+  { value: '3', label: 'Grade 3' },
+  { value: '4', label: 'Grade 4' },
+  { value: '5', label: 'Grade 5' },
+  { value: '6', label: 'Grade 6' }
+];
 
 async function loadStudentFilterSections(grade) {
-  const sel = document.getElementById('admin-student-filter-section');
-  if (!sel) return;
+  if (!studentSectionMenuApi) return;
 
   if (!grade) {
-    sel.innerHTML = '<option value="">All sections</option>';
-    sel.disabled = true;
-    sel.value = '';
+    currentStudentSectionFilter = '';
+    studentSectionMenuApi.setOptions([{ value: '', label: 'All sections' }]);
+    studentSectionMenuApi.setDisabled(true);
     return;
   }
 
@@ -1628,27 +1676,25 @@ async function loadStudentFilterSections(grade) {
     if (!res.ok) throw new Error(sections.error);
 
     if (!sections.length) {
-      sel.innerHTML = '<option value="">No sections yet</option>';
-      sel.disabled = true;
-      sel.value = '';
+      currentStudentSectionFilter = '';
+      studentSectionMenuApi.setOptions([{ value: '', label: 'No sections yet' }]);
+      studentSectionMenuApi.setDisabled(true);
       return;
     }
 
-    sel.innerHTML = '<option value="">All sections</option>' +
-      sections.map((sec) => `<option value="${sec}">${sec}</option>`).join('');
-    sel.disabled = false;
-
-    if (currentStudentSectionFilter && sections.includes(currentStudentSectionFilter)) {
-      sel.value = currentStudentSectionFilter;
-    } else {
+    if (currentStudentSectionFilter && !sections.includes(currentStudentSectionFilter)) {
       currentStudentSectionFilter = '';
-      sel.value = '';
     }
+    studentSectionMenuApi.setOptions([
+      { value: '', label: 'All sections' },
+      ...sections.map((sec) => ({ value: sec, label: sec }))
+    ]);
+    studentSectionMenuApi.setDisabled(false);
   } catch (err) {
     console.error('Load student filter sections error:', err);
-    sel.innerHTML = '<option value="">Failed to load</option>';
-    sel.disabled = true;
-    sel.value = '';
+    currentStudentSectionFilter = '';
+    studentSectionMenuApi.setOptions([{ value: '', label: 'Failed to load' }]);
+    studentSectionMenuApi.setDisabled(true);
   }
 }
 
@@ -1684,11 +1730,32 @@ function clearStudentFilters() {
   currentStudentSectionFilter = '';
 
   const search = document.getElementById('admin-student-search');
-  const gradeSel = document.getElementById('admin-student-filter-grade');
   if (search) search.value = '';
-  if (gradeSel) gradeSel.value = '';
+  studentGradeMenuApi?.sync();
   loadStudentFilterSections('');
   filterStudentsTable();
+}
+
+function updateStudentsBulkBar() {
+  const bar = document.getElementById('admin-students-bulk-bar');
+  const countEl = document.getElementById('admin-students-bulk-count');
+  const selectAll = document.getElementById('admin-students-select-all');
+  const n = selectedStudentIds.size;
+  if (countEl) countEl.textContent = `${n} selected`;
+  if (bar) {
+    bar.hidden = n === 0;
+    if (n === 0) bar.setAttribute('hidden', '');
+    else bar.removeAttribute('hidden');
+  }
+  const checks = [...document.querySelectorAll('#admin-students-table .admin-student-check')];
+  if (selectAll) {
+    const anyChecked = checks.some((c) => c.checked);
+    const allChecked = checks.length > 0 && checks.every((c) => c.checked);
+    // Clear indeterminate first so the checked mark can render reliably
+    selectAll.indeterminate = false;
+    selectAll.checked = allChecked;
+    selectAll.indeterminate = anyChecked && !allChecked;
+  }
 }
 
 function filterStudentsTable() {
@@ -1696,29 +1763,38 @@ function filterStudentsTable() {
   if (!tbody) return;
 
   if (!lastStudentsData.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">No students enrolled</td></tr>';
+    selectedStudentIds.clear();
+    updateStudentsBulkBar();
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No students enrolled</td></tr>';
     return;
   }
 
   const filtered = getFilteredStudents();
 
   if (!filtered.length) {
+    selectedStudentIds.clear();
+    updateStudentsBulkBar();
     const parts = [];
     if (currentStudentGradeFilter) parts.push(`Grade ${currentStudentGradeFilter}`);
     if (currentStudentSectionFilter) parts.push(`Section ${currentStudentSectionFilter}`);
     if (currentStudentFilter) parts.push(`"${currentStudentFilter}"`);
     const label = parts.length ? parts.join(', ') : 'your filters';
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">No students match ${label}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">No students match ${label}</td></tr>`;
     return;
   }
 
   const sorted = [...filtered].sort(compareStudentsByName);
+  const visibleIds = new Set(sorted.map((s) => Number(s.id)));
+  [...selectedStudentIds].forEach((id) => {
+    if (!visibleIds.has(id)) selectedStudentIds.delete(id);
+  });
 
   tbody.innerHTML = sorted.map(s => `
     <tr data-student-id="${s.id}" style="${s.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
       ${renderStudentRow(s)}
     </tr>
   `).join('');
+  updateStudentsBulkBar();
 }
 
 async function loadStudentsTable() {
@@ -1735,18 +1811,109 @@ async function loadStudentsTable() {
 
   } catch (err) {
     console.error('Load students error:', err);
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">Failed to load students</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">Failed to load students</td></tr>`;
   }
 }
 
 
+// Fixed-position row menus so they never expand .dash-body scroll height
+function closeAllRowMenus() {
+  document.querySelectorAll('.row-menu').forEach((menu) => {
+    menu.setAttribute('hidden', '');
+    menu.classList.remove('row-menu--up', 'row-menu--fixed');
+    menu.style.top = '';
+    menu.style.left = '';
+    menu.style.right = '';
+    menu.style.bottom = '';
+    menu.style.position = '';
+    menu.style.zIndex = '';
+  });
+  document.querySelectorAll('.row-menu-toggle').forEach((btn) => {
+    btn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function positionFixedRowMenu(toggle, menu) {
+  menu.classList.add('row-menu--fixed');
+  menu.style.position = 'fixed';
+  menu.style.right = 'auto';
+  menu.style.bottom = 'auto';
+  menu.style.zIndex = '5000';
+
+  const btnRect = toggle.getBoundingClientRect();
+  const menuWidth = Math.max(menu.offsetWidth || 0, 148);
+  const menuHeight = Math.max(menu.offsetHeight || 0, 40);
+  let top = btnRect.bottom + 4;
+  let left = btnRect.right - menuWidth;
+
+  if (top + menuHeight > window.innerHeight - 8) {
+    top = Math.max(8, btnRect.top - menuHeight - 4);
+  }
+  if (left < 8) left = 8;
+  if (left + menuWidth > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - menuWidth - 8);
+  }
+
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(left)}px`;
+}
+
+function toggleRowMenu(toggle, scopeSelector) {
+  const wrap = toggle.closest('.row-menu-wrap');
+  const menu = wrap?.querySelector('.row-menu');
+  if (!menu) return;
+
+  const wasOpen = !menu.hasAttribute('hidden');
+  document.querySelectorAll(`${scopeSelector} .row-menu`).forEach((m) => {
+    if (m === menu) return;
+    m.setAttribute('hidden', '');
+    m.classList.remove('row-menu--up', 'row-menu--fixed');
+    m.style.top = '';
+    m.style.left = '';
+    m.style.right = '';
+    m.style.bottom = '';
+    m.style.position = '';
+    m.style.zIndex = '';
+  });
+  document.querySelectorAll(`${scopeSelector} .row-menu-toggle`).forEach((btn) => {
+    if (btn !== toggle) btn.setAttribute('aria-expanded', 'false');
+  });
+
+  if (wasOpen) {
+    menu.setAttribute('hidden', '');
+    menu.classList.remove('row-menu--up', 'row-menu--fixed');
+    menu.style.top = '';
+    menu.style.left = '';
+    menu.style.right = '';
+    menu.style.bottom = '';
+    menu.style.position = '';
+    menu.style.zIndex = '';
+    toggle.setAttribute('aria-expanded', 'false');
+    return;
+  }
+
+  document.getElementById('admin-students-export-panel')?.setAttribute('hidden', '');
+  document.getElementById('admin-students-export-btn')?.setAttribute('aria-expanded', 'false');
+  menu.removeAttribute('hidden');
+  positionFixedRowMenu(toggle, menu);
+  requestAnimationFrame(() => positionFixedRowMenu(toggle, menu));
+  toggle.setAttribute('aria-expanded', 'true');
+}
+
 // Event delegation for student table action buttons (Edit/Unenroll/Re-enroll/Delete)
-// This ensures buttons work even after table re-renders
 (function setupStudentTableDelegation() {
   const tbody = document.querySelector('#admin-students-table tbody');
   if (!tbody) return;
 
   tbody.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.row-menu-toggle');
+    if (toggle) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleRowMenu(toggle, '#admin-students-table');
+      return;
+    }
+
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
 
@@ -1756,6 +1923,7 @@ async function loadStudentsTable() {
 
     e.preventDefault();
     e.stopPropagation();
+    closeAllRowMenus();
 
     switch (action) {
       case 'edit-student': startEditStudent(studentId); break;
@@ -1764,66 +1932,515 @@ async function loadStudentsTable() {
       case 'delete-student': deleteStudent(studentId); break;
     }
   });
+
+  tbody.addEventListener('change', (e) => {
+    const check = e.target.closest('.admin-student-check');
+    if (!check) return;
+    const id = Number(check.dataset.studentId);
+    if (!id) return;
+    if (check.checked) selectedStudentIds.add(id);
+    else selectedStudentIds.delete(id);
+    updateStudentsBulkBar();
+  });
 })();
 
-window.startEditStudent = function(id) {
-  const student = lastStudentsData.find(s => s.id === id);
-  if (!student) return;
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.row-menu-wrap') && !e.target.closest('.row-menu')) {
+    closeAllRowMenus();
+  }
+});
 
-  const row = document.querySelector(`tr[data-student-id="${id}"]`);
-  if (!row) return;
+document.querySelector('.dash-body')?.addEventListener('scroll', () => {
+  closeAllRowMenus();
+  if (typeof closeStudentsExportMenu === 'function') closeStudentsExportMenu();
+}, { passive: true });
 
-  row.innerHTML = `
-    <td><input type="text" class="sub-input sub-input-lrn" value="${(student.lrn || '').replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;" placeholder="12-digit LRN" maxlength="12" oninput="this.value=this.value.replace(/\D/g,'').slice(0,12)"></td>
-    <td>
-      <input type="text" class="sub-input sub-input-last" value="${student.last_name.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;margin-bottom:4px;" placeholder="Last Name">
-      <input type="text" class="sub-input sub-input-first" value="${student.first_name.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;margin-bottom:4px;" placeholder="First Name">
-      <input type="text" class="sub-input sub-input-middle" value="${(student.middle_name || '').replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;" placeholder="Middle Name">
-    </td>
-    <td>Grade ${student.grade_level}</td>
-    <td>${student.section}</td>
-    <td>${student.parent_last ? student.parent_last + ', ' + student.parent_first : '<span style="color:#b71c1c">Unlinked</span>'}</td>
-    <td>${statusBadgeHtml(student.status)}</td>
-    <td class="row-actions">
-      <button type="button" class="icon-btn icon-btn--ok" title="Save changes" aria-label="Save changes" onclick="saveStudentEdit(${id})">✓</button>
-      <button type="button" class="icon-btn" title="Cancel" aria-label="Cancel" onclick="cancelStudentEdit(${id})">✕</button>
-    </td>
-  `;
-};
+window.addEventListener('resize', () => {
+  closeAllRowMenus();
+  if (typeof closeStudentsExportMenu === 'function') closeStudentsExportMenu();
+});
 
-// Cancel now re-renders from cached data instantly (no API call)
-window.cancelStudentEdit = function(id) {
-  const student = lastStudentsData.find(s => s.id === id);
-  if (!student) {
-    loadStudentsTable(); // fallback
+(function wireStudentsSelectAll() {
+  const selectAll = document.getElementById('admin-students-select-all');
+  if (!selectAll) return;
+  let wasIndeterminate = false;
+
+  const captureState = () => {
+    wasIndeterminate = !!selectAll.indeterminate;
+  };
+  selectAll.addEventListener('pointerdown', captureState);
+  selectAll.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') captureState();
+  });
+
+  selectAll.addEventListener('click', () => {
+    const checks = [...document.querySelectorAll('#admin-students-table .admin-student-check')];
+    // After browser toggle:
+    // - was minus → force clear (don't keep checked/select-all)
+    // - was empty → now checked → select all rows
+    // - was all checked → now empty → clear all rows
+    const shouldSelectAll = !wasIndeterminate && selectAll.checked;
+
+    checks.forEach((cb) => {
+      cb.checked = shouldSelectAll;
+      const id = Number(cb.dataset.studentId);
+      if (!id) return;
+      if (shouldSelectAll) selectedStudentIds.add(id);
+      else selectedStudentIds.delete(id);
+    });
+    if (!shouldSelectAll) selectedStudentIds.clear();
+
+    selectAll.indeterminate = false;
+    selectAll.checked = shouldSelectAll;
+    wasIndeterminate = false;
+    updateStudentsBulkBar();
+  });
+})();
+
+document.getElementById('admin-students-bulk-unenroll')?.addEventListener('click', async () => {
+  const ids = [...selectedStudentIds];
+  if (!ids.length) return;
+  if (!confirm(`Unenroll ${ids.length} selected student(s)? They will be marked inactive.`)) return;
+  try {
+    for (const id of ids) {
+      const student = lastStudentsData.find((s) => Number(s.id) === Number(id));
+      if (!student || student.status === 'inactive') continue;
+      const res = await fetch(`${API_URL}/admin/students/${id}/status`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ status: 'inactive' })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to unenroll student #${id}`);
+      student.status = 'inactive';
+    }
+    selectedStudentIds.clear();
+    showToast('Selected students unenrolled.');
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+document.getElementById('admin-students-bulk-delete')?.addEventListener('click', async () => {
+  const ids = [...selectedStudentIds];
+  if (!ids.length) return;
+  if (!confirm(`Permanently delete ${ids.length} selected student(s)? This cannot be undone.`)) return;
+  try {
+    for (const id of ids) {
+      const res = await fetch(`${API_URL}/admin/students/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to delete student #${id}`);
+    }
+    selectedStudentIds.clear();
+    showToast('Selected students deleted.');
+    await refreshSchoolData({ students: true, teachers: true, overview: true });
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+function getStudentsExportRows() {
+  return getFilteredStudents().slice().sort(compareStudentsByName);
+}
+
+function exportStudentsExcel() {
+  const rows = getStudentsExportRows();
+  if (!rows.length) {
+    showToast('No students to export for the current filters.', 'error');
     return;
   }
+  const header = ['LRN', 'Last Name', 'First Name', 'Middle Name', 'Grade', 'Section', 'Parent', 'Status'];
+  const lines = [header.join(',')];
+  const esc = (v) => {
+    const s = String(v ?? '');
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  rows.forEach((s) => {
+    const parent = s.parent_last ? `${s.parent_last}, ${s.parent_first}` : '';
+    lines.push([
+      s.lrn || '',
+      s.last_name || '',
+      s.first_name || '',
+      s.middle_name || '',
+      s.grade_level || '',
+      s.section || '',
+      parent,
+      s.status || ''
+    ].map(esc).join(','));
+  });
+  // UTF-8 BOM so Excel opens special characters correctly
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `students-${stamp}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${rows.length} student(s) to Excel.`);
+}
 
-  const row = document.querySelector(`tr[data-student-id="${id}"]`);
-  if (!row) return;
+/** Shared hidden-iframe print (no new tab). Used by Parent / Admin / Teacher PDF exports. */
+function printHtmlInHiddenFrame(fullHtml) {
+  document.getElementById('connected-print-frame')?.remove();
 
-  row.innerHTML = renderStudentRow(student);
+  const iframe = document.createElement('iframe');
+  iframe.id = 'connected-print-frame';
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.title = 'Print report';
+  // Keep in layout but invisible — display:none can block printing in some browsers
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(iframe);
+
+  const cleanup = () => {
+    setTimeout(() => {
+      try { iframe.remove(); } catch { /* ignore */ }
+    }, 500);
+  };
+
+  const runPrint = () => {
+    const win = iframe.contentWindow;
+    if (!win) {
+      showToast('Unable to open print dialog.', 'error');
+      cleanup();
+      return;
+    }
+    const after = () => {
+      win.removeEventListener('afterprint', after);
+      cleanup();
+    };
+    win.addEventListener('afterprint', after);
+    setTimeout(cleanup, 120000);
+    try {
+      win.focus();
+      win.print();
+    } catch (err) {
+      showToast('Unable to open print dialog.', 'error');
+      cleanup();
+    }
+  };
+
+  iframe.onload = () => {
+    requestAnimationFrame(() => setTimeout(runPrint, 50));
+  };
+
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) {
+    showToast('Unable to prepare print report.', 'error');
+    cleanup();
+    return false;
+  }
+  doc.open();
+  doc.write(fullHtml);
+  doc.close();
+  return true;
+}
+
+/** Wrap body content in a clean print document (blank title = no name in browser header). */
+function openPrintHtmlDocument(title, bodyHtml) {
+  const docTitle = title == null || title === '' ? '\u00A0' : String(title);
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(docTitle)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #222; padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      h2 { font-size: 14px; margin: 20px 0 8px; color: #5c1010; }
+      p { margin: 0 0 12px; color: #555; font-size: 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+      th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+      th { background: #f5ebe8; }
+      .meta { margin: 0 0 16px; color: #555; font-size: 12px; }
+      .kpi-row td { font-weight: 600; }
+      @media print {
+        body { padding: 0; }
+        @page { margin: 12mm; }
+      }
+    </style>
+  </head><body>
+    ${bodyHtml}
+  </body></html>`;
+  return printHtmlInHiddenFrame(html);
+}
+
+/** Print a full HTML document (e.g. server-built attendance sheet) via hidden iframe. */
+function openPrintFullDocument(fullHtml) {
+  let html = String(fullHtml || '');
+  // Blank title so browser print chrome doesn't show the report name
+  html = html.replace(/<title>[^<]*<\/title>/i, '<title>\u00A0</title>');
+  // Remove auto-print scripts — we trigger print once from the iframe helper
+  html = html.replace(/<script\b[^>]*>[\s\S]*?window\.print[\s\S]*?<\/script>/gi, '');
+  return printHtmlInHiddenFrame(html);
+}
+
+function exportStudentsPdf() {
+  const rows = getStudentsExportRows();
+  if (!rows.length) {
+    showToast('No students to export for the current filters.', 'error');
+    return;
+  }
+  const stamp = new Date().toLocaleString();
+  const bodyRows = rows.map((s) => {
+    const parent = s.parent_last ? `${s.parent_last}, ${s.parent_first}` : 'Unlinked';
+    const name = [s.last_name, s.first_name, s.middle_name].filter(Boolean).join(', ');
+    return `<tr>
+      <td>${escapeHtml(s.lrn || '')}</td>
+      <td>${escapeHtml(name)}</td>
+      <td>${escapeHtml(String(s.grade_level ?? ''))}</td>
+      <td>${escapeHtml(s.section || '')}</td>
+      <td>${escapeHtml(parent)}</td>
+      <td>${escapeHtml(s.status || '')}</td>
+    </tr>`;
+  }).join('');
+
+  openPrintHtmlDocument('', `
+    <h1>Student List</h1>
+    <p>Exported ${rows.length} student(s) · ${escapeHtml(stamp)}</p>
+    <table>
+      <thead><tr><th>LRN</th><th>Name</th><th>Grade</th><th>Section</th><th>Parent</th><th>Status</th></tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>`);
+}
+
+/** Shared Export-style dropdown (`.download-menu`) used across portals. */
+function closeDownloadMenu(panel, btn) {
+  if (panel) {
+    panel.setAttribute('hidden', '');
+    panel.hidden = true;
+    panel.classList.remove('download-menu-panel--fixed');
+    panel.style.top = '';
+    panel.style.left = '';
+    panel.style.right = '';
+    panel.style.position = '';
+    panel.style.zIndex = '';
+  }
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function closeAllDownloadMenus(exceptPanel = null) {
+  document.querySelectorAll('.download-menu-panel').forEach((panel) => {
+    if (exceptPanel && panel === exceptPanel) return;
+    if (!isDownloadMenuOpen(panel)) return;
+    const menu = panel.closest('.download-menu');
+    const btn = menu?.querySelector('[aria-haspopup="true"]') || null;
+    closeDownloadMenu(panel, btn);
+  });
+}
+
+function positionFixedExportPanel(btn, panel) {
+  panel.classList.add('download-menu-panel--fixed');
+  panel.style.position = 'fixed';
+  panel.style.right = 'auto';
+  panel.style.zIndex = '5000';
+  const btnRect = btn.getBoundingClientRect();
+  const width = Math.max(panel.offsetWidth || 0, 140);
+  const height = Math.max(panel.offsetHeight || 0, 40);
+  let top = btnRect.bottom + 6;
+  let left = btnRect.right - width;
+  if (top + height > window.innerHeight - 8) top = Math.max(8, btnRect.top - height - 6);
+  if (left < 8) left = 8;
+  if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+  panel.style.top = `${Math.round(top)}px`;
+  panel.style.left = `${Math.round(left)}px`;
+}
+
+function isDownloadMenuOpen(panel) {
+  if (!panel) return false;
+  return !(panel.hasAttribute('hidden') || panel.hidden === true);
+}
+
+function toggleDownloadMenu(btn, panel) {
+  if (!btn || !panel) return;
+  if (isDownloadMenuOpen(panel)) {
+    closeDownloadMenu(panel, btn);
+    return;
+  }
+  closeAllRowMenus();
+  closeAllDownloadMenus();
+  panel.removeAttribute('hidden');
+  panel.hidden = false;
+  positionFixedExportPanel(btn, panel);
+  requestAnimationFrame(() => positionFixedExportPanel(btn, panel));
+  btn.setAttribute('aria-expanded', 'true');
+}
+
+/**
+ * Chip/filter dropdown matching Admin Export.
+ * options: [{ value, label }], getValue/setValue for current selection.
+ */
+function wireDownloadSelectMenu({
+  menuId,
+  btnId,
+  panelId,
+  options = [],
+  getValue,
+  setValue,
+  onPick,
+  emptyLabel = 'No options',
+  disabled = false,
+  formatButtonLabel = null
+} = {}) {
+  const menu = document.getElementById(menuId);
+  const btn = document.getElementById(btnId);
+  const panel = document.getElementById(panelId);
+  if (!menu || !btn || !panel) return null;
+
+  let currentOptions = Array.isArray(options) ? options : [];
+
+  function setDisabled(next) {
+    btn.disabled = !!next;
+    if (next) closeDownloadMenu(panel, btn);
+  }
+
+  function sync() {
+    const val = typeof getValue === 'function' ? getValue() : '';
+    const opt = currentOptions.find((o) => String(o.value) === String(val)) || currentOptions[0];
+    let label;
+    if (typeof formatButtonLabel === 'function') {
+      label = formatButtonLabel(opt, val) || emptyLabel;
+    } else {
+      label = opt ? opt.label : emptyLabel;
+    }
+    btn.textContent = String(label).includes('▾') ? String(label) : `${label} ▾`;
+    if (!currentOptions.length) {
+      panel.innerHTML = `<button type="button" class="download-menu-item" disabled>${escapeHtml(emptyLabel)}</button>`;
+      return;
+    }
+    panel.innerHTML = currentOptions.map((o) => {
+      const active = String(o.value) === String(val) ? ' download-menu-item--active' : '';
+      return `<button type="button" class="download-menu-item${active}" data-value="${escapeHtml(String(o.value))}">${escapeHtml(o.label)}</button>`;
+    }).join('');
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (btn.disabled) return;
+    sync();
+    toggleDownloadMenu(btn, panel);
+  });
+
+  panel.addEventListener('click', (e) => {
+    const item = e.target.closest('.download-menu-item');
+    if (!item || !panel.contains(item) || item.disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = item.dataset.value ?? '';
+    if (typeof setValue === 'function') setValue(next);
+    closeDownloadMenu(panel, btn);
+    sync();
+    if (typeof onPick === 'function') onPick(next);
+  });
+
+  setDisabled(disabled);
+  sync();
+  return {
+    sync,
+    setOptions(next) {
+      currentOptions = Array.isArray(next) ? next : [];
+      sync();
+    },
+    setDisabled
+  };
+}
+
+function closeStudentsExportMenu() {
+  closeDownloadMenu(
+    document.getElementById('admin-students-export-panel'),
+    document.getElementById('admin-students-export-btn')
+  );
+}
+
+document.getElementById('admin-students-export-btn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  toggleDownloadMenu(
+    document.getElementById('admin-students-export-btn'),
+    document.getElementById('admin-students-export-panel')
+  );
+});
+
+document.getElementById('admin-students-export-excel')?.addEventListener('click', () => {
+  closeStudentsExportMenu();
+  exportStudentsExcel();
+});
+document.getElementById('admin-students-export-pdf')?.addEventListener('click', () => {
+  closeStudentsExportMenu();
+  exportStudentsPdf();
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.download-menu')) return;
+  closeAllDownloadMenus();
+});
+
+window.startEditStudent = function(id) {
+  const student = lastStudentsData.find(s => Number(s.id) === Number(id));
+  if (!student) return;
+
+  const modal = document.getElementById('edit-student-modal');
+  const errEl = document.getElementById('edit-student-error');
+  const subtitle = document.getElementById('edit-student-subtitle');
+  document.getElementById('edit-student-id').value = String(student.id);
+  document.getElementById('edit-student-lrn').value = student.lrn || '';
+  document.getElementById('edit-student-last').value = student.last_name || '';
+  document.getElementById('edit-student-first').value = student.first_name || '';
+  document.getElementById('edit-student-middle').value = student.middle_name || '';
+
+  const classText = document.getElementById('edit-student-class-text');
+  if (classText) {
+    classText.textContent = `Grade ${student.grade_level || '—'} · ${student.section || '—'}`;
+  }
+  const parentText = document.getElementById('edit-student-parent-text');
+  if (parentText) {
+    parentText.textContent = student.parent_last
+      ? `${student.parent_last}, ${student.parent_first || ''}`.trim()
+      : 'Unlinked';
+  }
+  if (subtitle) {
+    subtitle.textContent = `Editing ${student.last_name || ''}, ${student.first_name || ''}`;
+  }
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  modal?.removeAttribute('hidden');
+  document.getElementById('edit-student-last')?.focus();
 };
 
-window.saveStudentEdit = async function(id) {
-  const row = document.querySelector(`tr[data-student-id="${id}"]`);
-  if (!row) return;
+function closeEditStudentModal() {
+  const modal = document.getElementById('edit-student-modal');
+  modal?.setAttribute('hidden', '');
+  document.getElementById('edit-student-form')?.reset();
+  document.getElementById('edit-student-id').value = '';
+  const errEl = document.getElementById('edit-student-error');
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+}
+
+document.getElementById('edit-student-cancel')?.addEventListener('click', () => closeEditStudentModal());
+document.getElementById('edit-student-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'edit-student-modal') closeEditStudentModal();
+});
+
+document.getElementById('edit-student-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = Number(document.getElementById('edit-student-id').value);
+  const errEl = document.getElementById('edit-student-error');
+  if (!id) return;
 
   const payload = {
-    lrn: row.querySelector('.sub-input-lrn')?.value.trim() || null,
-    last_name: row.querySelector('.sub-input-last')?.value.trim(),
-    first_name: row.querySelector('.sub-input-first')?.value.trim(),
-    middle_name: row.querySelector('.sub-input-middle')?.value.trim() || null
+    lrn: document.getElementById('edit-student-lrn')?.value.trim() || null,
+    last_name: document.getElementById('edit-student-last')?.value.trim(),
+    first_name: document.getElementById('edit-student-first')?.value.trim(),
+    middle_name: document.getElementById('edit-student-middle')?.value.trim() || null
   };
 
   if (!payload.last_name || !payload.first_name) {
-    alert('First and last name are required');
+    if (errEl) { errEl.hidden = false; errEl.textContent = 'First and last name are required.'; }
     return;
   }
-
-  // LRN must be exactly 12 digits if provided
   if (payload.lrn && payload.lrn.length !== 12) {
-    alert('LRN must be exactly 12 digits');
+    if (errEl) { errEl.hidden = false; errEl.textContent = 'LRN must be exactly 12 digits.'; }
     return;
   }
 
@@ -1833,22 +2450,21 @@ window.saveStudentEdit = async function(id) {
       headers: getAuthHeaders(),
       body: JSON.stringify(payload)
     });
-
-    // Check if response is JSON before parsing
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
-      const text = await res.text();
-      throw new Error('Server returned HTML instead of JSON. The update endpoint may not exist.');
+      throw new Error('Server returned an unexpected response. The update endpoint may not exist.');
     }
-
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    if (!res.ok) throw new Error(data.error || 'Failed to update student');
 
+    closeEditStudentModal();
+    showToast('Student updated.');
     await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
-    alert(err.message);
+    if (errEl) { errEl.hidden = false; errEl.textContent = err.message; }
+    else alert(err.message);
   }
-};
+});
 
 window.unenrollStudent = async function(id) {
   if (!confirm('Unenroll this student? They will be marked as inactive but their records will be preserved.')) return;
@@ -2171,6 +2787,10 @@ function statusBadgeHtml(status) {
 function openAdminModal(modalId) {
   const modal = document.getElementById(modalId);
   if (!modal) return;
+  if (modalId === 'add-account-modal') {
+    resetAdminModalForm(modalId);
+    fillTempPasswordInput('admin-account-password');
+  }
   modal.removeAttribute('hidden');
 }
 
@@ -2194,6 +2814,7 @@ function resetAdminModalForm(modalId) {
     }
     const caError = document.getElementById('class-adviser-section-error');
     if (caError) caError.style.display = 'none';
+    fillTempPasswordInput('admin-account-password');
     if (typeof toggleRoleFields === 'function') toggleRoleFields();
   }
 
@@ -2529,7 +3150,17 @@ window.resolveConcern = async function(id) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showToast('Concern marked as resolved.');
-    if (role === 'teacher') loadTeacherInbox(document.querySelector('[data-inbox-filter].active')?.dataset.inboxFilter || 'all');
+    if (role === 'teacher') {
+      teacherExpandedConcernId = null;
+      loadTeacherInbox(teacherInboxFilter || 'unresolved');
+    } else if (role === 'admin') {
+      adminExpandedConcernId = null;
+      loadAdminInbox(adminInboxFilter || 'unresolved');
+    } else if (role === 'parent') {
+      parentExpandedConcernId = null;
+      parentInboxFilter = 'resolved';
+      renderParentInbox();
+    }
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -2560,14 +3191,28 @@ window.replyToConcern = async function(id, btn) {
     if (!res.ok) throw new Error(data.error);
     showToast(role === 'parent' ? 'Reply sent to the teacher.' : 'Reply sent to the parent.');
     if (role === 'parent') {
-      loadParentConcerns(document.getElementById('contact-student')?.value || parentCurrentChild?.id);
+      parentExpandedConcernId = Number(id);
+      parentInboxFilter = 'unresolved';
+      renderParentInbox();
+    } else if (role === 'teacher') {
+      teacherExpandedConcernId = Number(id);
+      loadTeacherInbox(teacherInboxFilter || 'unresolved');
+    } else if (role === 'admin') {
+      adminExpandedConcernId = Number(id);
+      loadAdminInbox(adminInboxFilter || 'unresolved');
     }
-    else if (role === 'teacher') loadTeacherInbox(document.querySelector('[data-inbox-filter].active')?.dataset.inboxFilter || 'all');
   } catch (err) {
     showToast(err.message, 'error');
   }
 };
 
+
+let adminInboxFilter = 'unresolved';
+let adminExpandedConcernId = null;
+let adminInboxSearchQuery = '';
+let adminAnnouncementSearchQuery = '';
+let adminInboxCache = { concerns: [], announcements: [] };
+let adminExpandedAnnouncementId = null;
 
 async function loadAdminAnnouncements() {
   const listEl = document.getElementById('admin-announcement-list');
@@ -2578,42 +3223,145 @@ async function loadAdminAnnouncements() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    const announcements = data.announcements || [];
-    announcements.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-    if (!announcements.length) {
-      listEl.innerHTML = '<li class="empty-state"><p>No announcements sent yet</p></li>';
-      return;
-    }
-
-    listEl.innerHTML = announcements.map(a => {
-      const isEdited = a.updated_at && new Date(a.updated_at).getTime() > new Date(a.created_at).getTime() + 1000;
-      const editedLabel = isEdited ? `<span style="font-size:0.72rem;color:var(--text-muted);margin-left:6px;">(Edited ${new Date(a.updated_at).toLocaleString()})</span>` : '';
-      return `
-        <li class="inbox-item inbox-item--announcement ${priorityCardClass(a)}">
-          <div class="inbox-item-header" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span class="badge" style="background:var(--maroon);color:#fff;">Announcement</span>
-            ${priorityBadgeHtml(a)}
-            <span style="font-size:0.75rem;color:var(--text-muted);flex:1;">${new Date(a.created_at).toLocaleString()}${editedLabel}</span>
-          </div>
-          <div style="margin-top:6px;font-weight:600;">${a.title}</div>
-          <p style="margin-top:4px;color:var(--text-dark);font-size:0.85rem;">${a.body}</p>
-          <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);">
-            ${announcementMeta(a)}
-          </div>
-          <div style="margin-top:8px;display:flex;gap:8px;">
-            <button class="chip-ghost" onclick="startEditAnnouncement(${a.id})">Edit</button>
-            <button class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="deleteAnnouncement(${a.id})">Delete</button>
-          </div>
-        </li>
-      `;
-    }).join('');
-
+    adminInboxCache.announcements = Array.isArray(data.announcements) ? data.announcements : [];
+    if (Array.isArray(data.concerns)) adminInboxCache.concerns = data.concerns;
+    paintAdminAnnouncementsList();
+    wireInboxSearch({
+      inputId: 'admin-announcement-search',
+      clearId: 'admin-announcement-search-clear',
+      getValue: () => adminAnnouncementSearchQuery,
+      setValue: (v) => { adminAnnouncementSearchQuery = v; },
+      onChange: () => paintAdminAnnouncementsList()
+    });
   } catch (err) {
     console.error('Load announcements error:', err);
     listEl.innerHTML = '<li class="empty-state"><p>Failed to load announcements</p></li>';
   }
 }
+
+function paintAdminAnnouncementsList() {
+  const listEl = document.getElementById('admin-announcement-list');
+  if (!listEl) return;
+  let announcements = [...(adminInboxCache.announcements || [])];
+  announcements.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  announcements = announcements.filter((a) => matchesInboxSearch(a, adminAnnouncementSearchQuery));
+
+  if (!announcements.length) {
+    listEl.innerHTML = `<li class="empty-state"><p>${String(adminAnnouncementSearchQuery || '').trim() ? 'No matches' : 'No announcements sent yet'}</p></li>`;
+    return;
+  }
+
+  listEl.innerHTML = announcements.map((a) => {
+    const isEdited = a.updated_at && new Date(a.updated_at).getTime() > new Date(a.created_at).getTime() + 1000;
+    const editedBit = isEdited ? ` · Edited ${new Date(a.updated_at).toLocaleString()}` : '';
+    return renderMailAnnouncementRow(a, {
+      expandedId: adminExpandedAnnouncementId,
+      toggleFn: 'toggleAdminAnnouncement',
+      badgeLabel: 'Announcement',
+      badgeColor: 'var(--maroon)',
+      metaLine: `${escapeHtml(announcementMeta(a))}${editedBit}`,
+      actionsHtml: `
+        <button type="button" class="chip-ghost" onclick="startEditAnnouncement(${a.id})">Edit</button>
+        <button type="button" class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="deleteAnnouncement(${a.id})">Delete</button>`
+    });
+  }).join('');
+}
+
+window.toggleAdminAnnouncement = function(id) {
+  const announcementId = Number(id);
+  if (!announcementId) return;
+  adminExpandedAnnouncementId = Number(adminExpandedAnnouncementId) === announcementId ? null : announcementId;
+  paintAdminAnnouncementsList();
+};
+
+async function loadAdminInbox(filter = adminInboxFilter || 'unresolved') {
+  const listEl = document.getElementById('admin-inbox-list');
+  if (!listEl) return;
+  adminInboxFilter = filter || 'unresolved';
+
+  document.querySelectorAll('[data-admin-inbox-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.adminInboxFilter === adminInboxFilter);
+  });
+
+  try {
+    const res = await fetch(`${API_URL}/admin/inbox`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    adminInboxCache = {
+      concerns: Array.isArray(data.concerns) ? data.concerns : [],
+      announcements: Array.isArray(data.announcements) ? data.announcements : adminInboxCache.announcements
+    };
+    if (adminExpandedConcernId) {
+      const still = adminInboxCache.concerns.some((c) => Number(c.id) === Number(adminExpandedConcernId));
+      if (!still) adminExpandedConcernId = null;
+    }
+    paintAdminInboxList();
+    wireInboxSearch({
+      inputId: 'admin-inbox-search',
+      clearId: 'admin-inbox-search-clear',
+      getValue: () => adminInboxSearchQuery,
+      setValue: (v) => { adminInboxSearchQuery = v; },
+      onChange: () => paintAdminInboxList()
+    });
+  } catch (err) {
+    console.error('Load admin inbox error:', err);
+    listEl.innerHTML = '<li class="empty-state"><p>Failed to load inbox</p></li>';
+  }
+}
+
+function paintAdminInboxList() {
+  const listEl = document.getElementById('admin-inbox-list');
+  if (!listEl) return;
+  const filter = adminInboxFilter || 'unresolved';
+  document.querySelectorAll('[data-admin-inbox-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.adminInboxFilter === filter);
+  });
+
+  let items = (adminInboxCache.concerns || []).filter((c) =>
+    filter === 'resolved' ? !concernIsOpen(c) : concernIsOpen(c)
+  );
+  items.sort((a, b) => concernActivityTime(b) - concernActivityTime(a));
+  items = items.filter((c) => matchesInboxSearch(c, adminInboxSearchQuery));
+
+  if (!items.length) {
+    const emptyLabel = String(adminInboxSearchQuery || '').trim()
+      ? 'matches'
+      : filter === 'resolved' ? 'resolved concerns' : 'unresolved concerns';
+    listEl.innerHTML = `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
+    return;
+  }
+
+  listEl.innerHTML = items.map((item) => {
+    const studentBit = item.student_name
+      ? `${escapeHtml(item.student_name)} (Grade ${item.grade_level || '?'}-${escapeHtml(item.section || '?')})`
+      : 'N/A';
+    const teacherBit = item.teacher_name ? ` · Teacher: ${escapeHtml(item.teacher_name)}` : '';
+    return renderMailConcernRow(item, {
+      expandedId: adminExpandedConcernId,
+      toggleFn: 'toggleAdminConcern',
+      metaLine: `${escapeHtml(item.parent_name || 'Parent')} · ${studentBit}${teacherBit}`,
+      canReply: true
+    });
+  }).join('');
+}
+
+window.toggleAdminConcern = async function(id) {
+  const concernId = Number(id);
+  if (!concernId) return;
+  if (Number(adminExpandedConcernId) === concernId) {
+    adminExpandedConcernId = null;
+    paintAdminInboxList();
+    return;
+  }
+  adminExpandedConcernId = concernId;
+  await markConcernReadForRole(concernId);
+  const cached = adminInboxCache.concerns.find((c) => Number(c.id) === concernId);
+  if (cached) {
+    cached.is_read = 1;
+    cached.read_at = new Date().toISOString();
+  }
+  paintAdminInboxList();
+};
 
 function isUnread(item) {
   return item.is_read === 0 || item.is_read === false || !item.is_read;
@@ -2688,27 +3436,39 @@ function concernThreadHtml(item, canReply) {
     }];
   }
 
-  const thread = replies.length
-    ? `<div class="concern-thread">${replies.map(r => `
+  const original = `
+    <div class="concern-reply concern-reply--parent">
+      <div class="concern-reply-meta">
+        <strong>Parent</strong>
+        ${item.parent_name ? ` · ${escapeHtml(item.parent_name)}` : ''}
+        ${item.created_at ? ` <span style="color:var(--text-muted);font-size:0.75rem;">(${new Date(item.created_at).toLocaleString()})</span>` : ''}
+      </div>
+      <div class="concern-reply-body">${escapeHtml(item.message || '')}</div>
+    </div>`;
+
+  const followUps = replies.length
+    ? replies.map(r => `
         <div class="concern-reply concern-reply--${r.sender_role || 'user'}">
           <div class="concern-reply-meta">
             <strong>${roleLabel(r.sender_role)}</strong>
-            ${r.sender_name ? ` · ${r.sender_name}` : ''}
+            ${r.sender_name ? ` · ${escapeHtml(r.sender_name)}` : ''}
             ${r.created_at ? ` <span style="color:var(--text-muted);font-size:0.75rem;">(${new Date(r.created_at).toLocaleString()})</span>` : ''}
           </div>
-          <div class="concern-reply-body">${r.message}</div>
-        </div>`).join('')}</div>`
-    : '<p style="margin-top:6px;color:var(--text-muted);font-size:0.82rem;">No replies yet. You can keep messaging until this is marked resolved.</p>';
+          <div class="concern-reply-body">${escapeHtml(r.message || '')}</div>
+        </div>`).join('')
+    : '';
+
+  const thread = `<div class="concern-thread">${original}${followUps}</div>`;
 
   const replyForm = canReply && open
     ? `<textarea id="concern-reply-${item.id}" rows="2" class="concern-reply-input" placeholder="Write a follow-up message..."></textarea>`
     : '';
 
   const actions = canReply
-    ? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+    ? `<div class="inbox-item-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
          ${open ? `<button type="button" class="chip-ghost primary" onclick="replyToConcern(${item.id}, this)">Send Reply</button>` : ''}
          ${canReply && getAuthUser()?.role !== 'parent' && open
-           ? `<button class="chip-ghost" onclick="resolveConcern(${item.id})">Mark Resolved</button>`
+           ? `<button type="button" class="chip-ghost" onclick="resolveConcern(${item.id})">Mark Resolved</button>`
            : ''}
          ${!open ? '<span class="badge" style="background:#1b5e20;color:#fff;">Resolved — replies closed</span>' : ''}
        </div>`
@@ -2721,15 +3481,376 @@ function concernReplyHtml(item, canReply) {
   return concernThreadHtml(item, canReply);
 }
 
-async function refreshParentInboxBadge() {
+function concernPreviewText(item) {
+  const text = String(item.message || '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'No message';
+  return text.length > 110 ? `${text.slice(0, 110)}…` : text;
+}
+
+function concernActivityTime(item) {
+  return new Date(item.last_activity || item.created_at || 0).getTime() || 0;
+}
+
+function isConcernUnread(item) {
+  // Resolved/closed = already handled → always show as read/neutral
+  if (!concernIsOpen(item)) return false;
+  return !(item.is_read === 1 || item.is_read === true);
+}
+
+function inboxSearchHaystack(item) {
+  const parts = [
+    item.subject,
+    item.SUBJECT,
+    item.title,
+    item.message,
+    item.body,
+    item.parent_name,
+    item.teacher_name,
+    item.student_name,
+    item.sender_name,
+    item.admin_name,
+    item.grade_level,
+    item.section
+  ];
+  if (Array.isArray(item.replies)) {
+    item.replies.forEach((r) => {
+      parts.push(r.message, r.sender_name, r.sender_role);
+    });
+  }
+  return parts.filter((p) => p != null && String(p).trim() !== '').join(' ').toLowerCase();
+}
+
+function matchesInboxSearch(item, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return inboxSearchHaystack(item).includes(q);
+}
+
+function syncInboxSearchClearBtn(inputEl, clearBtn) {
+  if (!clearBtn || !inputEl) return;
+  const has = !!String(inputEl.value || '').trim();
+  clearBtn.hidden = !has;
+  if (has) clearBtn.removeAttribute('hidden');
+  else clearBtn.setAttribute('hidden', '');
+}
+
+function wireInboxSearch({ inputId, clearId, getValue, setValue, onChange }) {
+  const input = document.getElementById(inputId);
+  const clearBtn = document.getElementById(clearId);
+  if (!input || input.dataset.searchWired === '1') return;
+  input.dataset.searchWired = '1';
+  if (typeof getValue === 'function') input.value = getValue() || '';
+  syncInboxSearchClearBtn(input, clearBtn);
+  input.addEventListener('input', () => {
+    const val = input.value || '';
+    if (typeof setValue === 'function') setValue(val);
+    syncInboxSearchClearBtn(input, clearBtn);
+    onChange?.(val);
+  });
+  clearBtn?.addEventListener('click', () => {
+    input.value = '';
+    if (typeof setValue === 'function') setValue('');
+    syncInboxSearchClearBtn(input, clearBtn);
+    onChange?.('');
+    input.focus();
+  });
+}
+
+async function markConcernReadForRole(id) {
+  const role = getAuthUser()?.role;
+  const base = role === 'parent' ? 'parent' : role === 'admin' ? 'admin' : 'teacher';
   try {
-    const res = await fetch(`${API_URL}/parent/inbox`, { headers: getAuthHeaders() });
+    await fetch(`${API_URL}/${base}/concerns/${id}/read`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    });
+  } catch (err) {
+    console.error('Mark concern read error:', err);
+  }
+}
+
+function renderMailConcernRow(item, {
+  expandedId = null,
+  toggleFn = 'toggleTeacherConcern',
+  metaLine = '',
+  canReply = true
+} = {}) {
+  const unread = isConcernUnread(item);
+  const expanded = Number(expandedId) === Number(item.id);
+  const open = concernIsOpen(item);
+  const when = new Date(item.last_activity || item.created_at).toLocaleString();
+
+  return `
+    <li class="inbox-item inbox-item--concern ${unread ? 'inbox-item--unread' : 'inbox-item--read'} ${expanded ? 'is-expanded' : ''}" data-concern-id="${item.id}">
+      <button type="button" class="inbox-item-summary" onclick="${toggleFn}(${item.id})" aria-expanded="${expanded ? 'true' : 'false'}">
+        <div class="inbox-item-summary-top">
+          <span class="badge" style="background:#b71c1c;color:#fff;">Parent Concern</span>
+          ${open ? '' : '<span class="badge" style="background:#1b5e20;color:#fff;">Resolved</span>'}
+          ${unread ? '<span class="inbox-unread-dot" title="Unread"></span>' : ''}
+          <span class="inbox-item-time">${when}</span>
+          <span class="inbox-item-chev" aria-hidden="true">${expanded ? '▾' : '▸'}</span>
+        </div>
+        <div class="inbox-item-summary-title">${escapeHtml(concernSubject(item))}</div>
+        <div class="inbox-item-summary-meta">${metaLine}</div>
+        ${expanded ? '' : `<p class="inbox-item-preview">${escapeHtml(concernPreviewText(item))}</p>`}
+      </button>
+      ${expanded ? `<div class="inbox-item-detail">${concernThreadHtml(item, canReply)}</div>` : ''}
+    </li>`;
+}
+
+let teacherInboxFilter = 'unresolved';
+let teacherExpandedConcernId = null;
+let teacherExpandedAnnouncementId = null;
+let teacherInboxSearchQuery = '';
+let teacherInboxCache = { announcements: [], concerns: [] };
+
+function announcementPreviewText(item) {
+  const text = String(item.body || item.message || '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'No message';
+  return text.length > 110 ? `${text.slice(0, 110)}…` : text;
+}
+
+function renderMailAnnouncementRow(item, {
+  expandedId = null,
+  expanded = null,
+  toggleFn = 'toggleTeacherAnnouncement',
+  onToggle = null,
+  badgeLabel = 'Admin Announcement',
+  badgeColor = 'var(--maroon)',
+  metaLine = '',
+  actionsHtml = ''
+} = {}) {
+  const unread = isUnread(item);
+  const isExpanded = expanded != null
+    ? !!expanded
+    : Number(expandedId) === Number(item.id);
+  const when = new Date(item.created_at).toLocaleString();
+  const toggleAttr = onToggle || `${toggleFn}(${item.id})`;
+
+  return `
+    <li class="inbox-item inbox-item--announcement ${priorityCardClass(item)} ${unread ? 'inbox-item--unread' : 'inbox-item--read'} ${isExpanded ? 'is-expanded' : ''}" data-announcement-id="${item.id}">
+      <button type="button" class="inbox-item-summary" onclick="${toggleAttr}" aria-expanded="${isExpanded ? 'true' : 'false'}">
+        <div class="inbox-item-summary-top">
+          <span class="badge" style="background:${badgeColor};color:#fff;">${escapeHtml(badgeLabel)}</span>
+          ${priorityBadgeHtml(item)}
+          ${unread ? '<span class="inbox-unread-dot" title="Unread"></span>' : ''}
+          <span class="inbox-item-time">${when}</span>
+          <span class="inbox-item-chev" aria-hidden="true">${isExpanded ? '▾' : '▸'}</span>
+        </div>
+        <div class="inbox-item-summary-title">${escapeHtml(item.title || item.subject || 'Announcement')}</div>
+        <div class="inbox-item-summary-meta">${metaLine}</div>
+        ${isExpanded ? '' : `<p class="inbox-item-preview">${escapeHtml(announcementPreviewText(item))}</p>`}
+      </button>
+      ${isExpanded ? `
+        <div class="inbox-item-detail">
+          <p style="margin:0;color:var(--text-dark);font-size:0.85rem;white-space:pre-wrap;">${escapeHtml(item.body || item.message || '')}</p>
+          <div class="inbox-item-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            ${actionsHtml}
+          </div>
+        </div>` : ''}
+    </li>`;
+}
+
+function renderTeacherConcernRow(item) {
+  const studentBit = item.student_name
+    ? `${escapeHtml(item.student_name)} (Grade ${item.grade_level || '?'}-${escapeHtml(item.section || '?')})`
+    : 'N/A';
+  return renderMailConcernRow(item, {
+    expandedId: teacherExpandedConcernId,
+    toggleFn: 'toggleTeacherConcern',
+    metaLine: `${escapeHtml(item.parent_name || 'Parent')} · ${studentBit}`,
+    canReply: true
+  });
+}
+
+function renderTeacherAnnouncementRow(item) {
+  const unread = isUnread(item);
+  return renderMailAnnouncementRow(item, {
+    expandedId: teacherExpandedAnnouncementId,
+    toggleFn: 'toggleTeacherAnnouncement',
+    badgeLabel: 'Admin Announcement',
+    badgeColor: 'var(--maroon)',
+    metaLine: `From: ${escapeHtml(item.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(item))}`,
+    actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${item.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+  });
+}
+
+async function markTeacherConcernRead(id) {
+  await markConcernReadForRole(id);
+}
+
+window.toggleTeacherConcern = async function(id) {
+  const concernId = Number(id);
+  if (!concernId) return;
+  if (Number(teacherExpandedConcernId) === concernId) {
+    teacherExpandedConcernId = null;
+    paintTeacherInboxList();
+    return;
+  }
+  teacherExpandedConcernId = concernId;
+  teacherExpandedAnnouncementId = null;
+  await markTeacherConcernRead(concernId);
+  const cached = teacherInboxCache.concerns.find((c) => Number(c.id) === concernId);
+  if (cached) {
+    cached.is_read = 1;
+    cached.read_at = new Date().toISOString();
+  }
+  paintTeacherInboxList();
+  updateTeacherInboxBadge();
+};
+
+window.toggleTeacherAnnouncement = async function(id) {
+  const announcementId = Number(id);
+  if (!announcementId) return;
+  if (Number(teacherExpandedAnnouncementId) === announcementId) {
+    teacherExpandedAnnouncementId = null;
+    paintTeacherInboxList();
+    return;
+  }
+  teacherExpandedAnnouncementId = announcementId;
+  teacherExpandedConcernId = null;
+
+  const cached = teacherInboxCache.announcements.find((a) => Number(a.id) === announcementId);
+  if (cached && isUnread(cached)) {
+    try {
+      await fetch(`${API_URL}/admin/announcements/${announcementId}/read`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      cached.is_read = 1;
+    } catch (err) {
+      console.error('Mark announcement read error:', err);
+    }
+  }
+  paintTeacherInboxList();
+  updateTeacherInboxBadge();
+};
+
+function updateTeacherInboxBadge() {
+  const badgeEl = document.getElementById('teacher-inbox-badge');
+  if (!badgeEl) return;
+  const unreadAnnouncements = (teacherInboxCache.announcements || []).filter((a) => isUnread(a)).length;
+  const unreadOpenConcerns = (teacherInboxCache.concerns || []).filter(
+    (c) => concernIsOpen(c) && isConcernUnread(c)
+  ).length;
+  const badgeCount = unreadAnnouncements + unreadOpenConcerns;
+  badgeEl.textContent = badgeCount;
+  badgeEl.hidden = badgeCount === 0;
+}
+
+function paintTeacherInboxList() {
+  const listEl = document.getElementById('teacher-inbox-list');
+  if (!listEl) return;
+  const filter = teacherInboxFilter || 'unresolved';
+  const q = teacherInboxSearchQuery;
+
+  document.querySelectorAll('#teacher-panel-inbox [data-inbox-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.inboxFilter === filter);
+  });
+
+  let items = [];
+  if (filter === 'admin') {
+    items = (teacherInboxCache.announcements || []).map((a) => ({ ...a, type: 'admin' }));
+    items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  } else if (filter === 'resolved') {
+    items = (teacherInboxCache.concerns || [])
+      .filter((c) => !concernIsOpen(c))
+      .map((c) => ({ ...c, type: 'parent' }));
+    items.sort((a, b) => concernActivityTime(b) - concernActivityTime(a));
+  } else {
+    items = (teacherInboxCache.concerns || [])
+      .filter((c) => concernIsOpen(c))
+      .map((c) => ({ ...c, type: 'parent' }));
+    items.sort((a, b) => concernActivityTime(b) - concernActivityTime(a));
+  }
+
+  items = items.filter((item) => matchesInboxSearch(item, q));
+
+  const unreadAdmin = (teacherInboxCache.announcements || []).filter((a) => isUnread(a)).length;
+  const markAllBtn = filter === 'admin' && unreadAdmin > 0 && !String(q || '').trim()
+    ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All as Read (${unreadAdmin})</button></div>`
+    : '';
+
+  if (!items.length) {
+    const emptyLabel = String(q || '').trim()
+      ? 'matches'
+      : filter === 'admin'
+        ? 'admin announcements'
+        : filter === 'resolved'
+          ? 'resolved concerns'
+          : 'unresolved concerns';
+    listEl.innerHTML = markAllBtn + `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
+    return;
+  }
+
+  listEl.innerHTML = markAllBtn + items.map((item) => (
+    item.type === 'admin' ? renderTeacherAnnouncementRow(item) : renderTeacherConcernRow(item)
+  )).join('');
+}
+
+async function loadTeacherInbox(filter = teacherInboxFilter || 'unresolved') {
+  const listEl = document.getElementById('teacher-inbox-list');
+  if (!listEl) return;
+
+  teacherInboxFilter = filter || 'unresolved';
+  if (teacherInboxFilter === 'all' || teacherInboxFilter === 'parent') {
+    teacherInboxFilter = 'unresolved';
+  }
+
+  document.querySelectorAll('[data-inbox-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.inboxFilter === teacherInboxFilter);
+  });
+
+  try {
+    const res = await fetch(`${API_URL}/teacher/inbox`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
+
+    teacherInboxCache = {
+      announcements: Array.isArray(data.announcements) ? data.announcements : [],
+      concerns: Array.isArray(data.concerns) ? data.concerns : []
+    };
+
+    // Keep expanded only if still present
+    if (teacherExpandedConcernId) {
+      const stillThere = teacherInboxCache.concerns.some(
+        (c) => Number(c.id) === Number(teacherExpandedConcernId)
+      );
+      if (!stillThere) teacherExpandedConcernId = null;
+    }
+
+    updateTeacherInboxBadge();
+    paintTeacherInboxList();
+    wireInboxSearch({
+      inputId: 'teacher-inbox-search',
+      clearId: 'teacher-inbox-search-clear',
+      getValue: () => teacherInboxSearchQuery,
+      setValue: (v) => { teacherInboxSearchQuery = v; },
+      onChange: () => paintTeacherInboxList()
+    });
+  } catch (err) {
+    console.error('Load teacher inbox error:', err);
+    listEl.innerHTML = '<li class="empty-state"><p>Failed to load inbox</p></li>';
+    const badgeEl = document.getElementById('teacher-inbox-badge');
+    if (badgeEl) badgeEl.hidden = true;
+  }
+}
+
+async function refreshParentInboxBadge() {
+  try {
+    const [inboxRes, concernsRes] = await Promise.all([
+      fetch(`${API_URL}/parent/inbox`, { headers: getAuthHeaders() }),
+      fetch(`${API_URL}/parent/concerns`, { headers: getAuthHeaders() })
+    ]);
+    const data = await inboxRes.json();
+    const concerns = await concernsRes.json();
+    if (!inboxRes.ok) throw new Error(data.error);
     const announcements = data.announcements || [];
     const notices = data.messages || [];
-    const unreadCount = announcements.filter(a => isUnread(a)).length
-      + notices.filter(m => m.is_read === 0 || m.is_read === false).length;
+    const concernRows = Array.isArray(concerns) ? concerns : [];
+    const unreadCount = announcements.filter((a) => isUnread(a)).length
+      + notices.filter((m) => m.is_read === 0 || m.is_read === false).length
+      + concernRows.filter((c) => concernIsOpen(c) && isConcernUnread(c)).length;
     const badgeEl = document.getElementById('parent-inbox-badge');
     if (badgeEl) {
       badgeEl.textContent = unreadCount;
@@ -2905,9 +4026,16 @@ function resetTeacherPanelState(panelId) {
   if (panelId === 'progress') {
     showProgressCreateForm(false);
     const editor = document.getElementById('progress-editor');
+    if (editor) {
+      editor.hidden = true;
+      editor.setAttribute('hidden', '');
+    }
+    setProgressListChromeVisible(true);
     const listWrap = document.getElementById('progress-list-wrap');
-    if (editor) editor.hidden = true;
-    if (listWrap) listWrap.hidden = false;
+    if (listWrap) {
+      listWrap.hidden = false;
+      listWrap.removeAttribute('hidden');
+    }
     const progressSearch = document.getElementById('progress-search-input');
     if (progressSearch) progressSearch.value = '';
     progressTypeFilter = 'all';
@@ -2927,13 +4055,17 @@ function resetTeacherPanelState(panelId) {
 
   if (panelId === 'inbox') {
     document.querySelectorAll('[data-inbox-filter]').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.inboxFilter === 'all');
+      btn.classList.toggle('active', btn.dataset.inboxFilter === 'unresolved');
     });
   }
 }
 
 function resetParentTabState(tabId) {
-  if (tabId === 'inbox') parentInboxFilter = 'all';
+  if (tabId === 'inbox') parentInboxFilter = 'unresolved';
+  if (tabId === 'attendance') {
+    parentAttendanceStatus = 'all';
+    // keep month preference across visits
+  }
 }
 
 const adminTabHistory = [];
@@ -2985,6 +4117,7 @@ document.querySelectorAll('[data-admin-tab]').forEach(btn => {
     }
     if (tabId === 'students') { loadDropdowns(); loadStudentsTable(); }
     if (tabId === 'subjects') loadSubjectsTable();
+    if (tabId === 'inbox') loadAdminInbox('unresolved');
     if (tabId === 'announcements') loadAdminAnnouncements();
     scrollPortalMain('view-admin');
     closeMobileNav();
@@ -3037,6 +4170,34 @@ wireAdminModal('compose-announcement-modal', 'open-compose-announcement-modal');
 wireSimpleModal('teacher-add-student-modal');
 wireSimpleModal('progress-create-modal');
 wireSimpleModal('teacher-notice-modal');
+wireSimpleModal('upload-material-modal');
+wireSimpleModal('parent-concern-modal');
+
+document.getElementById('parent-concern-form')?.addEventListener('submit', submitParentConcern);
+document.getElementById('concern-student')?.addEventListener('change', (e) => {
+  const studentId = e.target.value;
+  const selected = (parentAllChildren || []).find((c) => String(c.id) === String(studentId));
+  if (selected) parentCurrentChild = selected;
+  loadContactTeachers(studentId);
+});
+
+document.getElementById('open-upload-material-modal')?.addEventListener('click', async () => {
+  await ensureTeacherAssignedClasses();
+  await loadTeacherSubjects(true);
+  fillLessonPlanGradeOptions();
+  fillTeacherSubjectSelects();
+  const msg = document.getElementById('lp-message');
+  if (msg) msg.textContent = '';
+  const form = document.getElementById('upload-material-form');
+  form?.reset();
+  fillLessonPlanGradeOptions();
+  fillTeacherSubjectSelects();
+  const modal = document.getElementById('upload-material-modal');
+  if (modal) {
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
+  }
+});
 
 document.getElementById('open-teacher-notice-modal')?.addEventListener('click', async () => {
   await ensureTeacherAssignedClasses();
@@ -3054,202 +4215,248 @@ document.getElementById('open-add-student-modal')?.addEventListener('click', () 
 document.getElementById('open-compose-announcement-modal')?.addEventListener('click', () => updateAnnouncementScopeFields());
 
 
-// ========== TEACHER INBOX ==========
-async function loadTeacherInbox(filter = 'all') {
-  const listEl = document.getElementById('teacher-inbox-list');
-  const badgeEl = document.getElementById('teacher-inbox-badge');
-  if (!listEl) return;
+let parentInboxFilter = 'unresolved';
+let parentInboxSearchQuery = '';
+let parentExpandedInboxKey = null;
+let parentExpandedConcernId = null;
+let parentInboxCache = { announcements: [], messages: [], concerns: [] };
 
-  document.querySelectorAll('[data-inbox-filter]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.inboxFilter === filter);
+function paintParentInboxList() {
+  const contentEl = document.getElementById('parent-content');
+  if (!contentEl) return;
+
+  const announcements = parentInboxCache.announcements || [];
+  const notices = parentInboxCache.messages || [];
+  const concerns = parentInboxCache.concerns || [];
+  const isAdminAnnouncement = (a) => String(a.sender_role || 'admin') !== 'teacher';
+  const filter = parentInboxFilter || 'unresolved';
+  const q = parentInboxSearchQuery;
+
+  const unreadAnn = announcements.filter((a) => isUnread(a)).length;
+  const unreadMsg = notices.filter((m) => m.is_read === 0 || m.is_read === false).length;
+  const unreadOpenConcerns = concerns.filter((c) => concernIsOpen(c) && isConcernUnread(c)).length;
+  const badgeCount = unreadAnn + unreadMsg + unreadOpenConcerns;
+
+  document.querySelectorAll('[data-parent-inbox-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.parentInboxFilter === filter);
   });
 
-  try {
-    const res = await fetch(`${API_URL}/teacher/inbox`, { headers: getAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+  let html = '';
+  let emptyLabel = 'messages';
 
-    let items = [];
-    if (data.announcements) items = items.concat(data.announcements.map(a => ({ ...a, type: 'admin' })));
-    if (data.concerns) items = items.concat(data.concerns.map(c => ({ ...c, type: 'parent' })));
+  if (filter === 'unresolved' || filter === 'resolved') {
+    let items = concerns.filter((c) =>
+      filter === 'resolved' ? !concernIsOpen(c) : concernIsOpen(c)
+    );
+    items.sort((a, b) => concernActivityTime(b) - concernActivityTime(a));
+    items = items.filter((c) => matchesInboxSearch(c, q));
+    emptyLabel = String(q || '').trim()
+      ? 'matches'
+      : filter === 'resolved' ? 'resolved concerns' : 'unresolved concerns';
+    html = items.map((c) => renderMailConcernRow(c, {
+      expandedId: parentExpandedConcernId,
+      toggleFn: 'toggleParentConcern',
+      metaLine: `To: ${escapeHtml(c.teacher_name || 'Teacher')} · Student: ${escapeHtml(c.student_name || 'N/A')}`,
+      canReply: true
+    })).join('');
+  } else if (filter === 'admin') {
+    let shownAnn = announcements.filter(isAdminAnnouncement);
+    shownAnn = shownAnn.filter((a) => matchesInboxSearch(a, q));
+    shownAnn.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    emptyLabel = String(q || '').trim() ? 'matches' : 'admin announcements';
+    html = shownAnn.map((a) => {
+      const key = `ann-${a.id}`;
+      const unread = isUnread(a);
+      return renderMailAnnouncementRow(a, {
+        expanded: parentExpandedInboxKey === key,
+        onToggle: `toggleParentInboxItem('${key}')`,
+        badgeLabel: 'Announcement',
+        badgeColor: 'var(--maroon)',
+        metaLine: `From: ${escapeHtml(a.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(a))}`,
+        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+      });
+    }).join('');
+  } else {
+    // teacher notices + teacher-sent announcements
+    let shownAnn = announcements.filter((a) => !isAdminAnnouncement(a));
+    let shownNotices = [...notices];
+    shownAnn = shownAnn.filter((a) => matchesInboxSearch(a, q));
+    shownNotices = shownNotices.filter((m) => matchesInboxSearch({
+      ...m,
+      title: m.subject,
+      body: m.message
+    }, q));
+    shownAnn.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    shownNotices.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    emptyLabel = String(q || '').trim() ? 'matches' : 'teacher notices';
 
-    items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-    if (filter !== 'all') {
-      items = items.filter(i => i.type === filter);
-    }
-
-    // Update badge to unread announcements only
-    const unreadAnnouncements = (data.announcements || []).filter(a => isUnread(a));
-    const openConcerns = (data.concerns || []).filter(c => concernStatus(c) === 'open').length;
-    const badgeCount = unreadAnnouncements.length + openConcerns;
-    if (badgeEl) {
-      badgeEl.textContent = badgeCount;
-      badgeEl.hidden = badgeCount === 0;
-    }
-
-    const unreadCount = items.filter(i => i.type === 'admin' && isUnread(i)).length;
-    const markAllBtn = unreadCount > 0
-      ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All as Read (${unreadCount})</button></div>`
-      : '';
-
-    if (!items.length) {
-      listEl.innerHTML = markAllBtn + `<li class="empty-state"><p>No ${filter === 'all' ? 'messages' : filter} found</p></li>`;
-      return;
-    }
-
-    listEl.innerHTML = markAllBtn + items.map(item => {
-      if (item.type === 'admin') {
-        const unread = isUnread(item);
-        const textStyle = unread ? 'font-weight:600;' : '';
-        return `
-          <li class="inbox-item inbox-item--announcement ${priorityCardClass(item)}" style="${unread ? '' : ''}">
-            <div class="inbox-item-header" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span class="badge" style="background:var(--maroon);color:#fff;">Admin Announcement</span>
-              ${priorityBadgeHtml(item)}
-              <span style="font-size:0.75rem;color:var(--text-muted);flex:1;">${new Date(item.created_at).toLocaleString()}</span>
-              <button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" data-id="${item.id}" data-unread="${unread}" onclick="toggleAnnouncementRead(${item.id}, ${!unread})" style="font-size:0.72rem;padding:4px 10px;">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>
-            </div>
-            <div style="margin-top:6px;font-weight:600;${textStyle}">${item.title}</div>
-            <p style="margin-top:4px;color:var(--text-dark);font-size:0.85rem;${textStyle}">${item.body}</p>
-            <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);">
-              From: ${item.sender_name || 'Admin'} | ${announcementMeta(item)}
-            </div>
-          </li>
-        `;
-      } else {
-        return `
-          <li class="inbox-item inbox-item--concern">
-            <div class="inbox-item-header">
-              <span class="badge" style="background:#b71c1c;color:#fff;">Parent Concern</span>
-              <span style="font-size:0.75rem;color:var(--text-muted);">${new Date(item.created_at).toLocaleString()}</span>
-            </div>
-            <div style="margin-top:6px;"><strong>From:</strong> ${item.parent_name || 'Parent'}</div>
-            <div><strong>Student:</strong> ${item.student_name || 'N/A'} (Grade ${item.grade_level || '?'}-${item.section || '?'}) | <strong>Subject:</strong> ${concernSubject(item)}</div>
-            <p style="margin-top:6px;color:var(--text-dark);font-size:0.85rem;">${item.message}</p>
-            ${concernReplyHtml(item, true)}
-          </li>
-        `;
-      }
+    const noticeHtml = shownNotices.map((m) => {
+      const key = `msg-${m.id}`;
+      const unread = m.is_read === 0 || m.is_read === false;
+      const item = { ...m, title: m.subject, body: m.message, is_read: unread ? 0 : 1 };
+      return renderMailAnnouncementRow(item, {
+        expanded: parentExpandedInboxKey === key,
+        onToggle: `toggleParentInboxItem('${key}')`,
+        badgeLabel: 'Teacher notice',
+        badgeColor: 'var(--orange)',
+        metaLine: `From: ${escapeHtml(m.sender_name || 'Teacher')}${m.student_name ? ` · Student: ${escapeHtml(m.student_name)}` : ''}`,
+        actionsHtml: `<button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+      });
     }).join('');
 
-  } catch (err) {
-    console.error('Load teacher inbox error:', err);
-    listEl.innerHTML = '<li class="empty-state"><p>Failed to load inbox</p></li>';
-    if (badgeEl) badgeEl.hidden = true;
+    const annHtml = shownAnn.map((a) => {
+      const key = `ann-${a.id}`;
+      const unread = isUnread(a);
+      return renderMailAnnouncementRow(a, {
+        expanded: parentExpandedInboxKey === key,
+        onToggle: `toggleParentInboxItem('${key}')`,
+        badgeLabel: 'Class notice',
+        badgeColor: 'var(--orange)',
+        metaLine: `From: ${escapeHtml(a.sender_name || 'Teacher')} | ${escapeHtml(announcementMeta(a))}`,
+        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+      });
+    }).join('');
+    html = `${noticeHtml}${annHtml}`;
+  }
+
+  const markAllBtn = filter === 'admin' && unreadAnn > 0 && !String(q || '').trim()
+    ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All Announcements Read (${unreadAnn})</button></div>`
+    : '';
+
+  const listHost = contentEl.querySelector('#parent-inbox-list');
+  const markAllHost = contentEl.querySelector('#parent-inbox-markall');
+  if (markAllHost) markAllHost.innerHTML = markAllBtn;
+  if (listHost) {
+    listHost.innerHTML = html || `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
+  }
+
+  const badgeEl = document.getElementById('parent-inbox-badge');
+  if (badgeEl) {
+    badgeEl.textContent = badgeCount;
+    badgeEl.hidden = badgeCount === 0;
   }
 }
-
-let parentInboxFilter = 'all';
 
 async function renderParentInbox() {
   const contentEl = document.getElementById('parent-content');
   if (!contentEl) return;
 
+  if (parentInboxFilter === 'all' || parentInboxFilter === 'contact') {
+    parentInboxFilter = 'unresolved';
+  }
+
   try {
-    const res = await fetch(`${API_URL}/parent/inbox`, { headers: getAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    const [inboxRes, concernsRes] = await Promise.all([
+      fetch(`${API_URL}/parent/inbox`, { headers: getAuthHeaders() }),
+      fetch(`${API_URL}/parent/concerns`, { headers: getAuthHeaders() })
+    ]);
+    const inboxData = await inboxRes.json();
+    const concernsData = await concernsRes.json();
+    if (!inboxRes.ok) throw new Error(inboxData.error);
+    if (!concernsRes.ok) throw new Error(concernsData.error);
 
-    const announcements = data.announcements || [];
-    const notices = data.messages || [];
-    const unreadAnn = announcements.filter(a => isUnread(a)).length;
-    const unreadMsg = notices.filter(m => m.is_read === 0 || m.is_read === false).length;
-    const unreadCount = unreadAnn + unreadMsg;
+    parentInboxCache = {
+      announcements: Array.isArray(inboxData.announcements) ? inboxData.announcements : [],
+      messages: Array.isArray(inboxData.messages) ? inboxData.messages : [],
+      concerns: Array.isArray(concernsData) ? concernsData : []
+    };
+    parentConcernsCache = parentInboxCache.concerns;
 
-    const isAdminAnnouncement = (a) => String(a.sender_role || 'admin') !== 'teacher';
-    const filter = parentInboxFilter || 'all';
-    let shownAnn = announcements;
-    let shownNotices = notices;
-    if (filter === 'admin') {
-      shownAnn = announcements.filter(isAdminAnnouncement);
-      shownNotices = [];
-    } else if (filter === 'teacher') {
-      shownAnn = announcements.filter(a => !isAdminAnnouncement(a));
-      shownNotices = notices;
+    if (parentExpandedConcernId) {
+      const still = parentInboxCache.concerns.some((c) => Number(c.id) === Number(parentExpandedConcernId));
+      if (!still) parentExpandedConcernId = null;
     }
 
-    const markAllBtn = unreadAnn > 0 && filter !== 'teacher'
-      ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All Announcements Read (${unreadAnn})</button></div>`
-      : '';
-
-    const noticeHtml = shownNotices.length
-      ? shownNotices.map(m => {
-          const unread = m.is_read === 0 || m.is_read === false;
-          return `
-            <li class="inbox-item inbox-item--concern" style="${unread ? 'background:rgba(255,140,0,0.06);' : ''}">
-              <div class="inbox-item-header" style="display:flex;align-items:center;gap:8px;">
-                <span class="badge" style="background:var(--orange);color:#fff;">Teacher notice</span>
-                <span style="font-size:0.75rem;color:var(--text-muted);flex:1;">${new Date(m.created_at).toLocaleString()}</span>
-                <button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})" style="font-size:0.72rem;padding:4px 10px;">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>
-              </div>
-              <div style="margin-top:6px;font-weight:600;">${m.subject || 'Notice'}</div>
-              <p style="margin-top:4px;color:var(--text-dark);font-size:0.85rem;">${m.message}</p>
-              <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);">From: ${m.sender_name || 'Teacher'}${m.student_name ? ' · Student: ' + m.student_name : ''}</div>
-            </li>`;
-        }).join('')
-      : '';
-
-    const listHtml = shownAnn.length
-      ? shownAnn.map(a => {
-          const unread = isUnread(a);
-          const textStyle = unread ? 'font-weight:600;' : '';
-          const fromTeacher = !isAdminAnnouncement(a);
-          return `
-            <li class="inbox-item inbox-item--announcement ${priorityCardClass(a)}">
-              <div class="inbox-item-header" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <span class="badge" style="background:${fromTeacher ? 'var(--orange)' : 'var(--maroon)'};color:#fff;">${fromTeacher ? 'Class notice' : 'Announcement'}</span>
-                ${priorityBadgeHtml(a)}
-                <span style="font-size:0.75rem;color:var(--text-muted);flex:1;">${new Date(a.created_at).toLocaleString()}</span>
-                <button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" data-id="${a.id}" data-unread="${unread}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})" style="font-size:0.72rem;padding:4px 10px;">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>
-              </div>
-              <div style="margin-top:6px;font-weight:600;${textStyle}">${a.title}</div>
-              <p style="margin-top:4px;color:var(--text-dark);font-size:0.85rem;${textStyle}">${a.body}</p>
-              <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);">
-                From: ${a.sender_name || (fromTeacher ? 'Teacher' : 'Admin')} | ${announcementMeta(a)}
-              </div>
-            </li>
-          `;
-        }).join('')
-      : '';
-
-    const empty = !shownAnn.length && !shownNotices.length
-      ? `<li class="empty-state"><p>${filter === 'admin' ? 'No admin announcements yet' : filter === 'teacher' ? 'No teacher notices yet' : 'No announcements or teacher notices yet'}</p></li>`
-      : '';
-
+    const filter = parentInboxFilter || 'unresolved';
     contentEl.innerHTML = `
       <div class="parent-main">
         <div class="chart-card">
-          <h3 style="font-size:1.1rem;color:var(--maroon-deep);margin-bottom:12px;">Inbox</h3>
+          <div class="teacher-header-row" style="margin-bottom:8px;">
+            <div>
+              <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Inbox</h3>
+              <p class="page-subheading" style="margin:4px 0 0;">Concerns, teacher notices, and school announcements.</p>
+            </div>
+            <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-parent-concern-modal">+ Send concern</button>
+          </div>
           <div class="inbox-filters">
-            <button type="button" class="${filter === 'all' ? 'active' : ''}" data-parent-inbox-filter="all">All</button>
+            <button type="button" class="${filter === 'unresolved' ? 'active' : ''}" data-parent-inbox-filter="unresolved">Unresolved</button>
+            <button type="button" class="${filter === 'resolved' ? 'active' : ''}" data-parent-inbox-filter="resolved">Resolved</button>
             <button type="button" class="${filter === 'admin' ? 'active' : ''}" data-parent-inbox-filter="admin">Admin</button>
             <button type="button" class="${filter === 'teacher' ? 'active' : ''}" data-parent-inbox-filter="teacher">Teacher</button>
           </div>
-          ${markAllBtn}
-          <ul class="inbox-list" style="list-style:none;padding:0;margin:0;">${noticeHtml}${listHtml}${empty}</ul>
+          <div class="inbox-search-bar">
+            <input type="search" id="parent-inbox-search" class="inbox-search-input" placeholder="Search messages…" value="${escapeHtml(parentInboxSearchQuery)}" autocomplete="off" />
+            <button type="button" class="inbox-search-clear" id="parent-inbox-search-clear" title="Clear search" ${String(parentInboxSearchQuery || '').trim() ? '' : 'hidden'}>×</button>
+          </div>
+          <div id="parent-inbox-markall"></div>
+          <ul id="parent-inbox-list" class="inbox-list" style="list-style:none;padding:0;margin:0;"></ul>
         </div>
       </div>
     `;
 
-    contentEl.querySelectorAll('[data-parent-inbox-filter]').forEach(btn => {
+    contentEl.querySelectorAll('[data-parent-inbox-filter]').forEach((btn) => {
       btn.addEventListener('click', () => {
         parentInboxFilter = btn.dataset.parentInboxFilter;
-        renderParentInbox();
+        parentExpandedInboxKey = null;
+        parentExpandedConcernId = null;
+        paintParentInboxList();
       });
     });
 
-    const badgeEl = document.getElementById('parent-inbox-badge');
-    if (badgeEl) {
-      badgeEl.textContent = unreadCount;
-      badgeEl.hidden = unreadCount === 0;
-    }
+    document.getElementById('open-parent-concern-modal')?.addEventListener('click', () => openParentConcernModal());
 
+    const searchInput = document.getElementById('parent-inbox-search');
+    if (searchInput) searchInput.dataset.searchWired = '';
+    wireInboxSearch({
+      inputId: 'parent-inbox-search',
+      clearId: 'parent-inbox-search-clear',
+      getValue: () => parentInboxSearchQuery,
+      setValue: (v) => { parentInboxSearchQuery = v; },
+      onChange: () => paintParentInboxList()
+    });
+
+    paintParentInboxList();
   } catch (err) {
     console.error('Load parent inbox error:', err);
     contentEl.innerHTML = `<div class="parent-main"><div class="chart-card"><p style="color:#b71c1c;">Failed to load inbox</p></div></div>`;
   }
 }
+
+window.toggleParentInboxItem = async function(key) {
+  if (!key) return;
+  if (parentExpandedInboxKey === key) {
+    parentExpandedInboxKey = null;
+  } else {
+    parentExpandedInboxKey = key;
+    parentExpandedConcernId = null;
+    if (String(key).startsWith('msg-')) {
+      const id = Number(String(key).slice(4));
+      if (id) {
+        try {
+          await fetch(`${API_URL}/parent/messages/${id}/read`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+          });
+          const msg = parentInboxCache.messages.find((m) => Number(m.id) === id);
+          if (msg) msg.is_read = 1;
+        } catch (_) { /* ignore */ }
+      }
+    } else if (String(key).startsWith('ann-')) {
+      const id = Number(String(key).slice(4));
+      if (id) {
+        try {
+          await fetch(`${API_URL}/admin/announcements/${id}/read`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+          });
+          const ann = parentInboxCache.announcements.find((a) => Number(a.id) === id);
+          if (ann) ann.is_read = 1;
+        } catch (_) { /* ignore */ }
+      }
+    }
+  }
+  paintParentInboxList();
+};
 
 // ========== TEACHER PANEL SWITCHING ==========
 const teacherTabHistory = [];
@@ -3259,7 +4466,7 @@ const TEACHER_PANEL_TITLES = {
   classroom: 'Teacher Portal',
   'attendance-sheet': 'Attendance Sheet',
   progress: 'Progress',
-  'lesson-plans': 'Lesson Plans',
+  'lesson-plans': 'Materials',
   'quiz-bank': 'Classwork',
   inbox: 'Inbox'
 };
@@ -3279,27 +4486,15 @@ function applyTeacherPanel(panelId) {
     panel.hidden = panel.id !== `teacher-panel-${panelId}`;
   });
 
-  const classScoped = panelId === 'classroom' || panelId === 'progress' || panelId === 'attendance-sheet';
   const classroomSidebar = document.getElementById('teacher-sidebar-classroom');
-  classroomSidebar?.classList.toggle('is-hidden', !classScoped);
-
-  // Topbar search only where the roster/sheet needs it (Progress has its own search)
-  const classroomTopbar = document.getElementById('teacher-classroom-topbar-actions');
-  const showTopbarSearch = panelId === 'classroom' || panelId === 'attendance-sheet';
-  if (classroomTopbar) classroomTopbar.hidden = !showTopbarSearch;
-
-  const searchInput = document.getElementById('teacher-search-input');
-  if (searchInput) {
-    searchInput.placeholder =
-      panelId === 'attendance-sheet' ? 'Search student' : 'Search Student';
-    searchInput.value = '';
-  }
+  // Keep school year + My Classes visible on all teacher panels
+  classroomSidebar?.classList.remove('is-hidden');
 
   const titleEl = document.getElementById('teacher-topbar-title');
   if (titleEl) titleEl.textContent = TEACHER_PANEL_TITLES[panelId] || 'Teacher Portal';
 
   if (panelId === 'inbox') {
-    loadTeacherInbox();
+    loadTeacherInbox('unresolved');
     fillTeacherNoticeClasses();
   }
   if (panelId === 'lesson-plans') {
@@ -3430,8 +4625,24 @@ window.addEventListener('resize', () => {
 // Teacher inbox filter buttons
 document.querySelectorAll('[data-inbox-filter]').forEach(btn => {
   btn.addEventListener('click', () => {
+    teacherExpandedConcernId = null;
+    teacherExpandedAnnouncementId = null;
     loadTeacherInbox(btn.dataset.inboxFilter);
   });
+});
+
+document.querySelectorAll('[data-admin-inbox-filter]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    adminExpandedConcernId = null;
+    loadAdminInbox(btn.dataset.adminInboxFilter);
+  });
+});
+
+document.getElementById('teacher-inbox-list')?.addEventListener('click', (e) => {
+  const toggleBtn = e.target.closest('[data-action="toggle-concern"]');
+  if (!toggleBtn) return;
+  e.preventDefault();
+  toggleTeacherConcern(toggleBtn.dataset.concernId);
 });
 
 // ========== TEACHER CLASSROOM ==========
@@ -3634,15 +4845,14 @@ if (myClassesTrigger && myClassesFlyout) {
     e.preventDefault();
     e.stopPropagation();
 
+    // My Classes is a context picker — stay on the current tab
     if (subjectBtn) {
-      const grade = subjectBtn.dataset.grade;
-      const goClassroom = isSubjectAttendanceGrade(grade);
       await selectTeacherClassContext({
-        grade,
+        grade: subjectBtn.dataset.grade,
         section: subjectBtn.dataset.section,
         subjectName: subjectBtn.dataset.subjectName || null,
         subjectId: subjectBtn.dataset.subjectId || null,
-        goToPanel: goClassroom ? 'classroom' : 'progress',
+        goToPanel: null,
         expandGroup: true
       });
       return;
@@ -3654,7 +4864,7 @@ if (myClassesTrigger && myClassesFlyout) {
         section: classBtn.dataset.section,
         subjectName: null,
         subjectId: null,
-        goToPanel: 'classroom',
+        goToPanel: null,
         expandGroup: true
       });
     }
@@ -3723,8 +4933,10 @@ async function selectTeacherClassContext({
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   if (modeBadge) modeBadge.textContent = subjectName || (classInfo?.is_class_adviser ? 'Class Adviser' : 'Class');
 
-  const searchInput = document.getElementById('teacher-search-input');
-  if (searchInput) searchInput.value = '';
+  const classroomSearch = document.getElementById('classroom-search-input');
+  if (classroomSearch) classroomSearch.value = '';
+  const sheetSearch = document.getElementById('attendance-sheet-search-input');
+  if (sheetSearch) sheetSearch.value = '';
 
   const progressMeta = document.getElementById('progress-class-meta');
   if (progressMeta) {
@@ -3748,12 +4960,25 @@ async function selectTeacherClassContext({
     document.getElementById('my-classes-trigger')?.setAttribute('aria-expanded', 'false');
     goToTeacherPanel('attendance-sheet');
   } else {
+    // Stay on current tab; refresh panels that depend on class/subject context
+    document.getElementById('my-classes-flyout')?.classList.remove('is-open');
+    document.getElementById('my-classes-trigger')?.setAttribute('aria-expanded', 'false');
     const activePanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
+    syncClassroomAttendanceChrome();
     if (activePanel === 'classroom' || !activePanel) {
       await Promise.all([loadClassStats(grade, section), loadRoster(grade, section)]);
     }
     if (activePanel === 'progress') loadProgressList();
     if (activePanel === 'attendance-sheet') loadAttendanceSheet();
+    if (activePanel === 'quiz-bank') {
+      fillQuizBankGradeFilter();
+      fillQuizBankSubjectFilter();
+      loadQuestionBank();
+    }
+    if (activePanel === 'lesson-plans') {
+      fillLessonPlanGradeOptions();
+      loadLessonPlans();
+    }
   }
 }
 
@@ -3763,7 +4988,7 @@ window.selectTeacherClass = async function(el) {
     grade: el.dataset.grade,
     section: el.dataset.section,
     subjectName: null,
-    goToPanel: 'classroom',
+    goToPanel: null,
     expandGroup: true
   });
 };
@@ -3867,7 +5092,7 @@ function renderRoster(students) {
 }
 
 function filterRoster() {
-  const query = (document.getElementById('teacher-search-input')?.value || '').trim().toLowerCase();
+  const query = (document.getElementById('classroom-search-input')?.value || '').trim().toLowerCase();
   if (!query) {
     renderRoster(rosterData);
     return;
@@ -4157,11 +5382,8 @@ document.getElementById('teacher-announcement-form')?.addEventListener('submit',
   }
 });
 
-document.getElementById('teacher-search-input')?.addEventListener('input', () => {
-  const activePanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
-  if (activePanel === 'attendance-sheet') filterAttendanceSheet();
-  else filterRoster();
-});
+document.getElementById('classroom-search-input')?.addEventListener('input', () => filterRoster());
+document.getElementById('attendance-sheet-search-input')?.addEventListener('input', () => filterAttendanceSheet());
 
 document.getElementById('progress-search-input')?.addEventListener('input', () => {
   filterProgressList();
@@ -4190,11 +5412,14 @@ document.getElementById('attendance-save-all')?.addEventListener('click', async 
   showToast('Marked remaining students as Present.');
 });
 
+/** Calendar date in Asia/Manila (matches server attendance / quiz gates). */
 function localISODate(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(d);
 }
 
 function statusToLetter(status) {
@@ -4320,7 +5545,7 @@ function renderAttendanceSheet(students, sheetMeta) {
 }
 
 function filterAttendanceSheet() {
-  const query = (document.getElementById('teacher-search-input')?.value || '').trim().toLowerCase();
+  const query = (document.getElementById('attendance-sheet-search-input')?.value || '').trim().toLowerCase();
   const meta = attendanceSheetData?._meta;
   const students = attendanceSheetData?.students || [];
   if (!query) {
@@ -4369,8 +5594,8 @@ async function loadAttendanceSheet() {
 
   if (meta) {
     meta.textContent = subjectMode
-      ? `Grade ${grade} – ${section} · ${teacherCurrentClass.subjectName || 'Subject'} · weekly register`
-      : `Grade ${grade} – ${section} · weekly AM / PM register`;
+      ? `Grade ${grade} – ${section} · ${teacherCurrentClass.subjectName || 'Subject'}`
+      : `Grade ${grade} – ${section}`;
   }
   if (tbody) tbody.innerHTML = '<tr><td class="empty-cell">Loading…</td></tr>';
 
@@ -4451,13 +5676,7 @@ async function exportAttendanceSheet(format) {
 
     if (format === 'pdf') {
       const html = await res.text();
-      const win = window.open('', '_blank');
-      if (!win) {
-        showToast('Allow pop-ups to download PDF.', 'error');
-        return;
-      }
-      win.document.write(html);
-      win.document.close();
+      openPrintFullDocument(html);
       return;
     }
 
@@ -4497,25 +5716,19 @@ document.getElementById('attendance-export-pdf')?.addEventListener('click', () =
 });
 
 function closeAttendanceDownloadMenu() {
-  const panel = document.getElementById('attendance-download-panel');
-  const btn = document.getElementById('attendance-download-btn');
-  if (panel) panel.hidden = true;
-  if (btn) btn.setAttribute('aria-expanded', 'false');
+  closeDownloadMenu(
+    document.getElementById('attendance-download-panel'),
+    document.getElementById('attendance-download-btn')
+  );
 }
 
 document.getElementById('attendance-download-btn')?.addEventListener('click', (e) => {
+  e.preventDefault();
   e.stopPropagation();
-  const panel = document.getElementById('attendance-download-panel');
-  const btn = document.getElementById('attendance-download-btn');
-  if (!panel || !btn) return;
-  const open = panel.hidden;
-  panel.hidden = !open;
-  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-});
-
-document.addEventListener('click', (e) => {
-  const menu = document.getElementById('attendance-download-menu');
-  if (menu && !menu.contains(e.target)) closeAttendanceDownloadMenu();
+  toggleDownloadMenu(
+    document.getElementById('attendance-download-btn'),
+    document.getElementById('attendance-download-panel')
+  );
 });
 
 document.querySelectorAll('.session-chip').forEach((chip) => {
@@ -4638,22 +5851,35 @@ function renderProgressCards(records) {
     const hasQuestions = Number(r.question_count) > 0;
     return `
     <article class="lesson-plan-card">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
-        <h4 style="margin:0;">${escapeHtml(r.title)}</h4>
-        ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
-        ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live quiz</span>' : ''}
+      <div class="progress-card-top">
+        <div class="progress-card-top-left">
+          <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
+          <h4 style="margin:0;">${escapeHtml(r.title)}</h4>
+          ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
+          ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live quiz</span>' : ''}
+        </div>
+        ${shareActive
+          ? `<button type="button" class="chip-ghost progress-card-copy-link" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy link</button>`
+          : ''}
       </div>
-      <p>${escapeHtml(r.subject_name || 'No subject')} · Max ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}</p>
+      <p>${escapeHtml(r.subject_name || 'No subject')} · Max ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}${
+        shareActive && r.quiz_attendance_date
+          ? ` · Gate ${String(r.quiz_attendance_date).slice(0, 10)}${r.quiz_attendance_session && Number(r.grade_level) < 4 ? ' ' + r.quiz_attendance_session : ''}`
+          : ''
+      }</p>
       <div class="lesson-plan-card-actions">
         <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'view')">View scores</button>
         ${shareActive
-          ? `<button type="button" class="chip-ghost" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy link</button>
-             <button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn off link</button>`
+          ? `<button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn off link</button>`
           : hasQuestions
             ? `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable link</button>`
-            : `<button type="button" class="chip-ghost" disabled title="Create from Classwork with questions first">Enable link</button>`}
-        ${r.quiz_link ? `<a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open external link</a>` : ''}
+            : ''}
+        ${r.quiz_link
+          ? `<button type="button" class="chip-ghost" onclick="copyExternalQuizLink(${r.id})">Copy online link</button>
+             <a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open online quiz</a>`
+          : !hasQuestions
+            ? `<button type="button" class="chip-ghost" onclick="openProgressEditor(${r.id}, 'edit')">Add online link</button>`
+            : ''}
         <button type="button" class="chip-ghost chip-danger" onclick="deleteProgressRecord(${r.id})">Delete</button>
       </div>
     </article>`;
@@ -4699,9 +5925,16 @@ async function loadProgressList() {
 
   showProgressCreateForm(false);
   const editor = document.getElementById('progress-editor');
-  if (editor) editor.hidden = true;
+  if (editor) {
+    editor.hidden = true;
+    editor.setAttribute('hidden', '');
+  }
+  setProgressListChromeVisible(true);
   const listWrap = document.getElementById('progress-list-wrap');
-  if (listWrap) listWrap.hidden = false;
+  if (listWrap) {
+    listWrap.hidden = false;
+    listWrap.removeAttribute('hidden');
+  }
 
   if (!teacherCurrentClass) {
     listEl.innerHTML = '<p class="empty-state">Select a class from the sidebar first.</p>';
@@ -4725,18 +5958,30 @@ async function loadProgressList() {
   }
 }
 
+function setProgressListChromeVisible(show) {
+  const chrome = document.getElementById('progress-list-chrome');
+  if (!chrome) return;
+  chrome.hidden = !show;
+  if (show) chrome.removeAttribute('hidden');
+  else chrome.setAttribute('hidden', '');
+}
+
 window.openProgressEditor = async function(id, mode = 'view') {
   const editor = document.getElementById('progress-editor');
-  const listWrap = document.getElementById('progress-list-wrap');
   showProgressCreateForm(false);
-  if (listWrap) listWrap.hidden = true;
-  if (editor) editor.hidden = false;
+  setProgressListChromeVisible(false);
+  if (editor) {
+    editor.hidden = false;
+    editor.removeAttribute('hidden');
+  }
 
   const editMode = mode === 'edit';
   if (editor) editor.dataset.mode = editMode ? 'edit' : 'view';
 
   try {
-    const res = await fetch(`${API_URL}/teacher/assessments/${id}`, { headers: getAuthHeaders() });
+    const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
+    const sessionQ = subjectMode ? '' : `?session=${encodeURIComponent(attendanceCurrentSession || 'AM')}`;
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}${sessionQ}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
@@ -5007,19 +6252,34 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
     }
   }
   if (noteEl) {
+    const gateLabel = (meta) => {
+      if (!meta?.date) return '';
+      const sess = meta.session && Number(assessment?.grade_level) < 4
+        ? ` · ${meta.session}`
+        : '';
+      return `${meta.date}${sess}`;
+    };
     if (!hasQuestions && !active) {
       noteEl.textContent = 'No questions attached. Create a Progress quiz from Classwork (select items → Next), then Enable link here. + New Record is for manual scores only.';
       noteEl.style.color = '#b71c1c';
     } else if (active) {
-      noteEl.textContent = 'Live quiz: Present and Late students can submit (name + LRN required). Grant make-up below for Absent or Excused students.';
+      const gate = gateLabel(attendanceMeta);
+      noteEl.textContent = gate
+        ? `Live quiz gated to attendance ${gate}. Students enter LRN first. Present/Late can submit; Absent/Excused need make-up. Correcting attendance on that same session updates access immediately.`
+        : 'Live quiz: students enter LRN first (name appears after confirm). Present and Late can submit. Grant make-up below for Absent or Excused.';
       noteEl.style.color = 'var(--text-muted)';
     } else if (attendanceMeta) {
+      const gate = gateLabel(attendanceMeta);
       if (attendanceMeta.complete) {
-        noteEl.textContent = 'Attendance is complete for today. You can enable the shared quiz link.';
+        noteEl.textContent = gate
+          ? `Attendance complete for ${gate}. Enable link will lock the quiz to this session.`
+          : 'Attendance is complete for today. You can enable the shared quiz link.';
         noteEl.style.color = '#1b5e20';
       } else {
         const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
-        noteEl.textContent = `Mark attendance for every student in Classroom before enabling the quiz (${n} unmarked).`;
+        noteEl.textContent = gate
+          ? `Mark every student for ${gate} in Classroom before enabling (${n} unmarked). Switch AM/PM to match the class session.`
+          : `Mark attendance for every student in Classroom before enabling the quiz (${n} unmarked).`;
         noteEl.style.color = '#b71c1c';
       }
     } else {
@@ -5117,15 +6377,37 @@ window.copySharedQuizLink = async function(token) {
   }
 };
 
+window.copyExternalQuizLink = async function(id) {
+  const record = (progressAssessments || []).find((r) => Number(r.id) === Number(id));
+  const url = record?.quiz_link;
+  if (!url) {
+    showToast('No online quiz link on this record.', 'error');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Online quiz link copied.');
+  } catch {
+    prompt('Copy this online quiz link:', url);
+  }
+};
+
 window.assignSharedQuizLink = async function(id) {
   try {
+    const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
+    const body = subjectMode
+      ? {}
+      : { session: attendanceCurrentSession || 'AM' };
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/assign-link`, {
       method: 'POST',
-      headers: getAuthHeaders()
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast(data.message || 'Shared link ready.');
+    const sess = data.attendance_session ? ` · ${data.attendance_session}` : '';
+    const day = data.attendance_date ? ` (${data.attendance_date}${sess})` : '';
+    showToast((data.message || 'Shared link ready.') + day);
     if (data.share_token) {
       await copySharedQuizLink(data.share_token);
     }
@@ -5296,7 +6578,7 @@ async function loadLessonPlans() {
     if (!res.ok) throw new Error(plans.error);
 
     if (!plans.length) {
-      listEl.innerHTML = '<p class="empty-state">No lesson plans uploaded yet.</p>';
+      listEl.innerHTML = '<p class="empty-state">No materials uploaded yet. Click + Upload Material to add one.</p>';
       return;
     }
 
@@ -5313,8 +6595,8 @@ async function loadLessonPlans() {
       </article>
     `).join('');
   } catch (err) {
-    console.error('Load lesson plans error:', err);
-    listEl.innerHTML = '<p class="empty-state">Failed to load lesson plans.</p>';
+    console.error('Load materials error:', err);
+    listEl.innerHTML = '<p class="empty-state">Failed to load materials.</p>';
   }
 }
 
@@ -5616,6 +6898,10 @@ let questionBankCurrentSetId = null;
 let questionBankCurrentSet = null;
 let questionBankCurrentCategory = null; // 'quizzes' | 'activity' | null
 const questionBankSelected = new Set();
+let qbFilterGrade = '';
+let qbFilterSubjectId = '';
+let qbGradeMenuApi = null;
+let qbSubjectMenuApi = null;
 
 async function ensureTeacherAssignedClasses(force = false) {
   if (!force && teacherAssignedClasses.length) return teacherAssignedClasses;
@@ -5646,13 +6932,14 @@ function getTeacherAssignedGrades() {
 }
 
 function fillQuizBankGradeFilter() {
-  const sel = document.getElementById('qb-filter-grade');
-  if (!sel) return;
-  const current = sel.value;
   const grades = getTeacherAssignedGrades();
-  sel.innerHTML = '<option value="">All my grades</option>' +
-    grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('');
-  if (current && grades.some((g) => String(g) === String(current))) sel.value = current;
+  if (qbFilterGrade && !grades.some((g) => String(g) === String(qbFilterGrade))) {
+    qbFilterGrade = '';
+  }
+  qbGradeMenuApi?.setOptions([
+    { value: '', label: 'All my grades' },
+    ...grades.map((g) => ({ value: String(g), label: `Grade ${g}` }))
+  ]);
 }
 
 function fillLessonPlanGradeOptions() {
@@ -5675,13 +6962,14 @@ document.getElementById('lp-grade')?.addEventListener('change', () => {
 });
 
 function fillQuizBankSubjectFilter() {
-  const sel = document.getElementById('qb-filter-subject');
-  if (!sel) return;
-  const current = sel.value;
-  const grade = document.getElementById('qb-filter-grade')?.value;
-  const subjects = getAssignedSubjectsForGrade(grade);
-  sel.innerHTML = subjectSelectOptionsHtml(subjects, { emptyLabel: 'All subjects' });
-  if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+  const subjects = getAssignedSubjectsForGrade(qbFilterGrade);
+  if (qbFilterSubjectId && !subjects.some((s) => String(s.id) === String(qbFilterSubjectId))) {
+    qbFilterSubjectId = '';
+  }
+  qbSubjectMenuApi?.setOptions([
+    { value: '', label: 'All subjects' },
+    ...subjects.map((s) => ({ value: String(s.id), label: s.name }))
+  ]);
 }
 
 function fillAddQuizSubjectOptions() {
@@ -5715,6 +7003,22 @@ function bankItemTypeLabel(type) {
   if (t === 'short_answer') return 'Short answer';
   if (t === 'activity_prompt') return 'Activity';
   return type ? String(type) : 'Multiple choice';
+}
+
+function syncQuizBankLandingChrome() {
+  const onLanding = !questionBankCurrentSetId;
+  const addQuizBtn = document.getElementById('qb-add-quiz-btn');
+  const filterToolbar = document.getElementById('qb-filter-toolbar');
+  if (addQuizBtn) {
+    addQuizBtn.hidden = !onLanding;
+    if (onLanding) addQuizBtn.removeAttribute('hidden');
+    else addQuizBtn.setAttribute('hidden', '');
+  }
+  if (filterToolbar) {
+    filterToolbar.hidden = !onLanding;
+    if (onLanding) filterToolbar.removeAttribute('hidden');
+    else filterToolbar.setAttribute('hidden', '');
+  }
 }
 
 function updateQuizBankSelectionMeta() {
@@ -5763,6 +7067,7 @@ function updateQuizBankSelectionMeta() {
       ? `${n} item(s) selected — create a Progress record next`
       : 'Select items to continue';
   }
+  syncQuizBankLandingChrome();
 }
 
 function showQuizBankListView() {
@@ -5776,6 +7081,7 @@ function showQuizBankListView() {
     detailEl.hidden = true;
     detailEl.setAttribute('hidden', '');
   }
+  syncQuizBankLandingChrome();
 }
 
 function showQuizBankDetailView() {
@@ -5790,6 +7096,7 @@ function showQuizBankDetailView() {
     detailEl.hidden = false;
     detailEl.removeAttribute('hidden');
   }
+  syncQuizBankLandingChrome();
 }
 
 function renderQuizBankSets() {
@@ -5862,6 +7169,7 @@ function clearQuizBankSelection() {
 function setQuizBankBulkBarVisible(visible) {
   const bar = document.getElementById('qb-bulk-bar');
   const del = document.getElementById('qb-set-delete');
+  const addBtn = document.getElementById('qb-add-question-btn');
   if (bar) {
     bar.hidden = !visible;
     if (visible) bar.removeAttribute('hidden');
@@ -5873,7 +7181,94 @@ function setQuizBankBulkBarVisible(visible) {
     if (visible) del.setAttribute('hidden', '');
     else del.removeAttribute('hidden');
   }
+  if (addBtn) {
+    // Add question only inside Quizzes/Activity questions view
+    addBtn.hidden = !visible;
+    if (visible) addBtn.removeAttribute('hidden');
+    else addBtn.setAttribute('hidden', '');
+  }
 }
+
+function syncQuizBankChoicesVisibility() {
+  const type = document.getElementById('qb-edit-type')?.value || 'mcq';
+  const wrap = document.getElementById('qb-edit-choices-wrap');
+  if (wrap) {
+    const show = type === 'mcq';
+    wrap.hidden = !show;
+    if (show) wrap.removeAttribute('hidden');
+    else wrap.setAttribute('hidden', '');
+  }
+}
+
+window.openQuizBankAdd = function(preferredType) {
+  if (!questionBankCurrentSetId || !questionBankCurrentSet) {
+    showToast('Open a Classwork set first.', 'error');
+    return;
+  }
+  const modal = document.getElementById('qb-edit-modal');
+  if (!modal) return;
+  const titleEl = document.getElementById('qb-edit-modal-title');
+  if (titleEl) titleEl.textContent = 'Add question';
+  const subEl = document.getElementById('qb-edit-modal-subtitle');
+  if (subEl) subEl.textContent = 'Add a question to this classwork set.';
+  document.getElementById('qb-edit-id').value = '';
+  document.getElementById('qb-edit-question').value = '';
+  document.getElementById('qb-edit-choices').value = '';
+  document.getElementById('qb-edit-answer').value = '';
+  document.getElementById('qb-edit-points').value = '1';
+  const typeSel = document.getElementById('qb-edit-type');
+  let type = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+  if (typeSel) {
+    if (type === 'quizzes') type = 'mcq';
+    if (![...typeSel.options].some((o) => o.value === type)) type = 'mcq';
+    typeSel.value = type;
+  }
+  const gradeSel = document.getElementById('qb-edit-grade');
+  const grades = getTeacherAssignedGrades();
+  const setGrade = Number(questionBankCurrentSet.grade_level);
+  if (gradeSel) {
+    gradeSel.innerHTML = grades.length
+      ? grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('')
+      : '<option value="">No assigned grades</option>';
+    if (grades.includes(setGrade)) gradeSel.value = String(setGrade);
+    else if (grades[0]) gradeSel.value = String(grades[0]);
+    gradeSel.disabled = true;
+  }
+  syncQuizBankChoicesVisibility();
+  modal.hidden = false;
+  modal.removeAttribute('hidden');
+};
+
+window.openQuizBankEdit = function(id) {
+  const item = questionBankItems.find((i) => i.id === id);
+  const modal = document.getElementById('qb-edit-modal');
+  if (!item || !modal) return;
+  const titleEl = document.getElementById('qb-edit-modal-title');
+  if (titleEl) titleEl.textContent = 'Edit question';
+  const subEl = document.getElementById('qb-edit-modal-subtitle');
+  if (subEl) subEl.textContent = 'Update this classwork question.';
+  document.getElementById('qb-edit-id').value = String(item.id);
+  document.getElementById('qb-edit-question').value = item.question || '';
+  document.getElementById('qb-edit-choices').value = Array.isArray(item.choices) ? item.choices.join('\n') : '';
+  document.getElementById('qb-edit-answer').value = item.answer || '';
+  document.getElementById('qb-edit-points').value = String(Number(item.points) || 1);
+  const typeSel = document.getElementById('qb-edit-type');
+  if (typeSel) typeSel.value = item.item_type || 'mcq';
+  const gradeSel = document.getElementById('qb-edit-grade');
+  const grades = getTeacherAssignedGrades();
+  if (gradeSel) {
+    gradeSel.disabled = false;
+    gradeSel.innerHTML = grades.length
+      ? grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('')
+      : '<option value="">No assigned grades</option>';
+    if (grades.includes(Number(item.grade_level))) gradeSel.value = String(item.grade_level);
+    else if (grades[0]) gradeSel.value = String(grades[0]);
+  }
+  syncQuizBankChoicesVisibility();
+  modal.hidden = false;
+  modal.removeAttribute('hidden');
+};
+
 
 function renderQuizBankCategoryFolders() {
   showQuizBankDetailView();
@@ -5890,25 +7285,8 @@ function renderQuizBankCategoryFolders() {
   if (metaEl) {
     metaEl.textContent = `Grade ${set.grade_level}${set.subject_name ? ' · ' + set.subject_name : ''} · ${questionBankItems.length} item(s)`;
   }
-  if (backBtn) backBtn.textContent = '← Back to sets';
+  if (backBtn) backBtn.textContent = '← Classwork';
   if (!groupsEl) return;
-
-  if (!questionBankCategories.length) {
-    groupsEl.innerHTML = `
-      <p class="empty-state" style="margin-bottom:12px;">
-        This set has no questions yet.
-      </p>
-      <p class="page-subheading" style="margin:0 0 12px;">
-        Generate an AI draft in <strong>Lesson Plans</strong>, then use <strong>Save to Classwork</strong>.
-        Or create Progress records from other Classwork sets that already have items.
-      </p>
-      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-empty-goto-lessons">Go to Lesson Plans</button>`;
-    document.getElementById('qb-empty-goto-lessons')?.addEventListener('click', () => {
-      applyTeacherPanel('lesson-plans');
-    });
-    updateQuizBankSelectionMeta();
-    return;
-  }
 
   groupsEl.innerHTML = questionBankCategories.map((cat) => `
     <article class="lesson-plan-card qb-category-card" data-category="${escapeHtml(cat.category)}" role="button" tabindex="0">
@@ -5921,6 +7299,13 @@ function renderQuizBankCategoryFolders() {
       </div>
     </article>
   `).join('');
+
+  if (!questionBankItems.length) {
+    groupsEl.insertAdjacentHTML('beforeend', `
+      <p class="page-subheading" style="margin:12px 0 0;">
+        No questions yet. Open <strong>Quizzes</strong> or <strong>Activity</strong> to add items, or generate an AI draft in <strong>Materials</strong> and use <strong>Save to Classwork</strong>.
+      </p>`);
+  }
 
   groupsEl.querySelectorAll('.qb-category-card').forEach((card) => {
     const open = () => openQuizBankCategory(card.dataset.category);
@@ -5975,12 +7360,16 @@ function renderQuizBankCategoryDetail(categoryKey) {
   if (metaEl) {
     metaEl.textContent = `${set.title || 'Set'} · ${Number(cat?.item_count) || 0} item(s)`;
   }
-  if (backBtn) backBtn.textContent = '← Back to folders';
+  if (backBtn) {
+    const setTitle = (set.title || '').trim();
+    backBtn.textContent = setTitle ? `← ${setTitle}` : '← Back to set';
+  }
   if (!groupsEl) return;
 
   const groups = cat?.groups || [];
   if (!groups.length) {
-    groupsEl.innerHTML = '<p class="empty-state">No items in this folder.</p>';
+    groupsEl.innerHTML = `
+      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>+ Add question</strong> above to create one.</p>`;
     updateQuizBankSelectionMeta();
     return;
   }
@@ -6043,14 +7432,28 @@ function buildCategoriesClientSide(items) {
       items: groupItems
     }));
   };
-  const cats = [];
-  if (quizItems.length) {
-    cats.push({ category: 'quizzes', label: 'Quizzes', item_count: quizItems.length, groups: byType(quizItems) });
-  }
-  if (activityItems.length) {
-    cats.push({ category: 'activity', label: 'Activity', item_count: activityItems.length, groups: byType(activityItems) });
-  }
-  return cats;
+  // Always show both folders so teachers can open + add without a set-home CTA
+  return [
+    { category: 'quizzes', label: 'Quizzes', item_count: quizItems.length, groups: byType(quizItems) },
+    { category: 'activity', label: 'Activity', item_count: activityItems.length, groups: byType(activityItems) }
+  ];
+}
+
+function ensureQuizBankFolders(categories, items) {
+  const built = buildCategoriesClientSide(items || []);
+  if (!Array.isArray(categories) || !categories.length) return built;
+  const byKey = new Map(categories.map((c) => [c.category, c]));
+  return built.map((fallback) => {
+    const existing = byKey.get(fallback.category);
+    if (!existing) return fallback;
+    return {
+      ...fallback,
+      ...existing,
+      label: existing.label || fallback.label,
+      item_count: Number(existing.item_count) || fallback.item_count,
+      groups: Array.isArray(existing.groups) ? existing.groups : fallback.groups
+    };
+  });
 }
 
 async function loadQuestionBank() {
@@ -6065,8 +7468,8 @@ async function loadQuestionBank() {
   }
 
   const params = new URLSearchParams();
-  const grade = document.getElementById('qb-filter-grade')?.value;
-  const subjectId = document.getElementById('qb-filter-subject')?.value;
+  const grade = qbFilterGrade;
+  const subjectId = qbFilterSubjectId;
   if (grade) params.set('grade', grade);
   if (subjectId) params.set('subject_id', subjectId);
 
@@ -6096,9 +7499,10 @@ async function openQuizBankSet(setId, opts = {}) {
     questionBankCurrentSetId = setId;
     questionBankCurrentSet = data.set || null;
     questionBankItems = Array.isArray(data.items) ? data.items : [];
-    questionBankCategories = Array.isArray(data.categories) && data.categories.length
-      ? data.categories
-      : buildCategoriesClientSide(questionBankItems);
+    questionBankCategories = ensureQuizBankFolders(
+      Array.isArray(data.categories) ? data.categories : [],
+      questionBankItems
+    );
     const valid = new Set(questionBankItems.map((i) => i.id));
     [...questionBankSelected].forEach((id) => {
       if (!valid.has(id)) questionBankSelected.delete(id);
@@ -6119,26 +7523,8 @@ async function openQuizBankSet(setId, opts = {}) {
 }
 
 
-window.openQuizBankEdit = function(id) {
-  const item = questionBankItems.find((i) => i.id === id);
-  const modal = document.getElementById('qb-edit-modal');
-  if (!item || !modal) return;
-  document.getElementById('qb-edit-id').value = String(item.id);
-  document.getElementById('qb-edit-question').value = item.question || '';
-  document.getElementById('qb-edit-choices').value = Array.isArray(item.choices) ? item.choices.join('\n') : '';
-  document.getElementById('qb-edit-answer').value = item.answer || '';
-  document.getElementById('qb-edit-points').value = String(Number(item.points) || 1);
-  const gradeSel = document.getElementById('qb-edit-grade');
-  const grades = getTeacherAssignedGrades();
-  if (gradeSel) {
-    gradeSel.innerHTML = grades.length
-      ? grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('')
-      : '<option value="">No assigned grades</option>';
-    if (grades.includes(Number(item.grade_level))) gradeSel.value = String(item.grade_level);
-    else if (grades[0]) gradeSel.value = String(grades[0]);
-  }
-  modal.hidden = false;
-};
+
+
 
 window.copyQuizBankItem = async function(id) {
   const item = questionBankItems.find((i) => i.id === id);
@@ -6175,41 +7561,35 @@ window.deleteQuizBankItem = async function(id) {
   }
 };
 
-document.getElementById('qb-filter-refresh')?.addEventListener('click', async () => {
-  const btn = document.getElementById('qb-filter-refresh');
-  if (btn) {
-    btn.disabled = true;
-    btn.classList.add('is-pressed');
-  }
-  try {
-    const stayOnSet = questionBankCurrentSetId;
-    const stayCategory = questionBankCurrentCategory;
+qbGradeMenuApi = wireDownloadSelectMenu({
+  menuId: 'qb-filter-grade-menu',
+  btnId: 'qb-filter-grade-btn',
+  panelId: 'qb-filter-grade-panel',
+  options: [{ value: '', label: 'All my grades' }],
+  getValue: () => qbFilterGrade,
+  setValue: (v) => { qbFilterGrade = v || ''; },
+  onPick: () => {
     questionBankCurrentSetId = null;
-    questionBankCurrentSet = null;
     questionBankCurrentCategory = null;
-    await loadQuestionBank();
-    if (stayOnSet && questionBankSets.some((s) => Number(s.id) === Number(stayOnSet))) {
-      await openQuizBankSet(stayOnSet, { keepCategory: stayCategory });
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.classList.remove('is-pressed');
-    }
+    questionBankSelected.clear();
+    fillQuizBankSubjectFilter();
+    loadQuestionBank();
   }
 });
-document.getElementById('qb-filter-grade')?.addEventListener('change', () => {
-  questionBankCurrentSetId = null;
-  questionBankCurrentCategory = null;
-  questionBankSelected.clear();
-  fillQuizBankSubjectFilter();
-  loadQuestionBank();
-});
-document.getElementById('qb-filter-subject')?.addEventListener('change', () => {
-  questionBankCurrentSetId = null;
-  questionBankCurrentCategory = null;
-  questionBankSelected.clear();
-  loadQuestionBank();
+
+qbSubjectMenuApi = wireDownloadSelectMenu({
+  menuId: 'qb-filter-subject-menu',
+  btnId: 'qb-filter-subject-btn',
+  panelId: 'qb-filter-subject-panel',
+  options: [{ value: '', label: 'All subjects' }],
+  getValue: () => qbFilterSubjectId,
+  setValue: (v) => { qbFilterSubjectId = v || ''; },
+  onPick: () => {
+    questionBankCurrentSetId = null;
+    questionBankCurrentCategory = null;
+    questionBankSelected.clear();
+    loadQuestionBank();
+  }
 });
 
 document.getElementById('qb-set-back')?.addEventListener('click', () => {
@@ -6254,38 +7634,67 @@ document.getElementById('qb-edit-cancel')?.addEventListener('click', () => {
   if (modal) modal.hidden = true;
 });
 
+document.getElementById('qb-edit-type')?.addEventListener('change', () => syncQuizBankChoicesVisibility());
+
+document.getElementById('qb-add-question-btn')?.addEventListener('click', () => {
+  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+});
+document.getElementById('qb-add-question-btn-bulk')?.addEventListener('click', () => {
+  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+});
+
 document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
   const id = document.getElementById('qb-edit-id')?.value;
-  if (!id) return;
   const question = document.getElementById('qb-edit-question')?.value?.trim();
   const choicesRaw = document.getElementById('qb-edit-choices')?.value || '';
   const choices = choicesRaw.split('\n').map((s) => s.trim()).filter(Boolean);
   const answer = document.getElementById('qb-edit-answer')?.value?.trim() || null;
   const points = document.getElementById('qb-edit-points')?.value;
   const grade_level = document.getElementById('qb-edit-grade')?.value;
+  const item_type = document.getElementById('qb-edit-type')?.value || 'mcq';
+  if (!question) {
+    showToast('Enter a question.', 'error');
+    return;
+  }
   if (!grade_level) {
     showToast('Select an assigned grade.', 'error');
     return;
   }
+  if (item_type === 'mcq' && choices.length < 2) {
+    showToast('Multiple choice needs at least 2 choices (one per line).', 'error');
+    return;
+  }
+
+  const payload = {
+    question,
+    choices: item_type === 'mcq' ? choices : null,
+    answer,
+    points,
+    grade_level: Number(grade_level),
+    item_type,
+    subject_id: questionBankCurrentSet?.subject_id || null,
+    quiz_set_id: questionBankCurrentSetId || null,
+    lesson_title: questionBankCurrentSet?.title || null
+  };
+
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/${id}`, {
-      method: 'PUT',
-      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question,
-        choices: choices.length ? choices : null,
-        answer,
-        points,
-        grade_level: Number(grade_level),
-        item_type: choices.length >= 2 ? 'mcq' : undefined
-      })
-    });
+    const isNew = !id;
+    const res = await fetch(
+      isNew ? `${API_URL}/teacher/question-bank` : `${API_URL}/teacher/question-bank/${id}`,
+      {
+        method: isNew ? 'POST' : 'PUT',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }
+    );
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     document.getElementById('qb-edit-modal').hidden = true;
-    showToast('Bank item updated.');
+    showToast(isNew ? 'Question added.' : 'Question updated.');
     if (questionBankCurrentSetId) {
-      await openQuizBankSet(questionBankCurrentSetId, { keepCategory: questionBankCurrentCategory });
+      const keepCat = questionBankCurrentCategory
+        || (item_type === 'activity_prompt' ? 'activity' : 'quizzes');
+      await openQuizBankSet(questionBankCurrentSetId, { keepCategory: keepCat });
     } else loadQuestionBank();
   } catch (err) {
     showToast(err.message, 'error');
@@ -6486,7 +7895,7 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
 });
 
 window.deleteLessonPlan = async function(id) {
-  if (!confirm('Delete this lesson plan?')) return;
+  if (!confirm('Delete this material?')) return;
   try {
     const res = await fetch(`${API_URL}/teacher/lesson-plans/${id}`, {
       method: 'DELETE',
@@ -6494,7 +7903,7 @@ window.deleteLessonPlan = async function(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast('Lesson plan deleted.');
+    showToast('Material deleted.');
     loadLessonPlans();
     loadAiRecommendations();
   } catch (err) {
@@ -6502,7 +7911,8 @@ window.deleteLessonPlan = async function(id) {
   }
 };
 
-document.getElementById('upload-lesson-btn')?.addEventListener('click', async () => {
+document.getElementById('upload-material-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
   const msg = document.getElementById('lp-message');
   const title = document.getElementById('lp-title')?.value.trim();
   const subjectId = document.getElementById('lp-subject')?.value;
@@ -6511,7 +7921,7 @@ document.getElementById('upload-lesson-btn')?.addEventListener('click', async ()
   const fileInput = document.getElementById('lp-file');
 
   if (!title) {
-    if (msg) msg.textContent = 'Please enter a lesson title.';
+    if (msg) msg.textContent = 'Please enter a title.';
     return;
   }
 
@@ -6532,14 +7942,19 @@ document.getElementById('upload-lesson-btn')?.addEventListener('click', async ()
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
 
-    if (msg) msg.textContent = 'Lesson plan uploaded.';
-    document.getElementById('lp-title').value = '';
-    document.getElementById('lp-objectives').value = '';
-    if (fileInput) fileInput.value = '';
-    showToast('Lesson plan uploaded.');
+    if (msg) msg.textContent = '';
+    e.target.reset();
+    fillLessonPlanGradeOptions();
+    fillTeacherSubjectSelects();
+    const modal = document.getElementById('upload-material-modal');
+    if (modal) {
+      modal.hidden = true;
+      modal.setAttribute('hidden', '');
+    }
+    showToast(data.message || 'Material uploaded.');
     loadLessonPlans();
   } catch (err) {
-    if (msg) msg.textContent = err.message;
+    if (msg) { msg.textContent = err.message; msg.style.color = '#b71c1c'; }
     showToast(err.message, 'error');
   }
 });
@@ -6622,53 +8037,51 @@ function updateParentChildName(text) {
     return;
   }
 
-  // Multiple children — name text + inline dropdown arrow ▼
   childNameEl.innerHTML = '';
   childNameEl.style.display = 'flex';
   childNameEl.style.alignItems = 'center';
   childNameEl.style.gap = '6px';
-  childNameEl.style.flexWrap = 'wrap';
+  childNameEl.style.flexWrap = 'nowrap';
+  childNameEl.style.minWidth = '0';
+  childNameEl.style.maxWidth = '100%';
 
   const nameSpan = document.createElement('span');
+  nameSpan.className = 'parent-child-name-text';
   nameSpan.textContent = text || 'No linked children';
   childNameEl.appendChild(nameSpan);
 
-  // Dropdown wrapper: hidden select + visible ▼ arrow
-  const ddWrapper = document.createElement('span');
-  ddWrapper.style.cssText = 'position:relative;display:inline-flex;align-items:center;cursor:pointer;';
+  const menu = document.createElement('div');
+  menu.className = 'download-menu';
+  menu.id = 'parent-child-switch-menu';
+  menu.innerHTML = `
+    <button type="button" class="chip-ghost parent-child-switch-btn" id="parent-child-switch-btn" aria-haspopup="true" aria-expanded="false" aria-label="Switch child" title="Switch child">▾</button>
+    <div class="download-menu-panel download-menu-panel--scroll" id="parent-child-switch-panel" hidden></div>
+  `;
+  childNameEl.appendChild(menu);
 
-  const select = document.createElement('select');
-  select.id = 'parent-child-select-inline';
-  select.style.cssText = 'position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;z-index:2;';
-
-  parentAllChildren.forEach(child => {
-    const opt = document.createElement('option');
-    opt.value = child.id;
-    opt.textContent = `${child.last_name}, ${child.first_name} (Grade ${child.grade_level}-${child.section})`;
-    opt.selected = child.id === parentCurrentChild?.id;
-    select.appendChild(opt);
-  });
-
-  const arrow = document.createElement('span');
-  arrow.textContent = '▼';
-  arrow.style.cssText = 'font-size:0.65rem;color:rgba(255,255,255,0.7);';
-
-  ddWrapper.appendChild(select);
-  ddWrapper.appendChild(arrow);
-  childNameEl.appendChild(ddWrapper);
-
-  select.addEventListener('change', (e) => {
-    const selectedId = parseInt(e.target.value);
-    const selected = parentAllChildren.find(c => c.id === selectedId);
-    if (selected) {
-      parentCurrentChild = selected;
-      updateParentChildName(`Student: ${selected.first_name} ${selected.last_name}`);
+  wireDownloadSelectMenu({
+    menuId: 'parent-child-switch-menu',
+    btnId: 'parent-child-switch-btn',
+    panelId: 'parent-child-switch-panel',
+    options: parentAllChildren.map((child) => ({
+      value: String(child.id),
+      label: `${child.last_name}, ${child.first_name} (Grade ${child.grade_level}-${child.section})`
+    })),
+    getValue: () => String(parentCurrentChild?.id || ''),
+    setValue: (v) => {
+      const selected = parentAllChildren.find((c) => String(c.id) === String(v));
+      if (selected) parentCurrentChild = selected;
+    },
+    formatButtonLabel: () => '▾',
+    onPick: () => {
+      const selected = parentCurrentChild;
+      if (!selected) return;
+      updateParentChildName(`${selected.first_name} ${selected.last_name}`);
       const activeTab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab;
       if (activeTab === 'overview') renderParentOverview(selected);
       else if (activeTab === 'attendance') renderParentAttendance(selected);
       else if (activeTab === 'progress') renderParentProgress(selected);
-      else if (activeTab === 'inbox') renderParentInbox();
-      else if (activeTab === 'contact') renderParentContact();
+      else if (activeTab === 'inbox' || activeTab === 'contact') renderParentInbox();
     }
   });
 }
@@ -6699,7 +8112,7 @@ async function loadParentDashboard() {
 
     parentAllChildren = children;
     parentCurrentChild = children[0];
-    updateParentChildName(`Student: ${parentCurrentChild.first_name} ${parentCurrentChild.last_name}`);
+    updateParentChildName(`${parentCurrentChild.first_name} ${parentCurrentChild.last_name}`);
 
     renderParentOverview(parentCurrentChild);
 
@@ -6709,16 +8122,157 @@ async function loadParentDashboard() {
   }
 }
 
-function printParentReport() {
+function parentReportStudentHeading(student) {
+  const name = `${student.first_name || ''} ${student.last_name || ''}`.trim() || 'Student';
+  const grade = student.grade_level != null
+    ? `Grade ${student.grade_level}-${student.section || ''}`
+    : '';
+  const lrn = student.lrn ? `LRN ${student.lrn}` : '';
+  const bits = [grade, lrn].filter(Boolean).join(' · ');
+  return { name, bits };
+}
+
+async function buildParentReportHtml(student, tab) {
+  // No top identity header — section titles + tables are enough (same as Overview).
+  if (tab === 'attendance') {
+    let records = parentAttendanceCache;
+    if (!Array.isArray(records) || !records.length) {
+      records = await fetchParentAttendance(student.id);
+      parentAttendanceCache = records;
+    }
+    if (!parentAttendanceMonth) {
+      const now = new Date();
+      parentAttendanceMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
+    if (!parentAttendanceStatus) parentAttendanceStatus = 'all';
+    const filtered = filterParentAttendanceRecords(records, {
+      month: parentAttendanceMonth,
+      status: parentAttendanceStatus
+    });
+    const statusBit = parentAttendanceStatus === 'all' ? 'All statuses' : parentAttendanceStatus;
+    const monthBit = parentAttendanceMonthLabel(parentAttendanceMonth) || 'Selected month';
+    const rows = filtered.map((r) => {
+      const when = parentAttendanceWhenLabel(r);
+      const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+      return `<tr>
+        <td>${escapeHtml(dateStr)}</td>
+        <td>${escapeHtml(when)}</td>
+        <td>${escapeHtml(r.status || '-')}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <h2>Attendance Records</h2>
+      <p>${escapeHtml(monthBit)} · ${escapeHtml(statusBit)} · ${filtered.length} record(s)</p>
+      ${filtered.length ? `<table>
+        <thead><tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` : '<p>No attendance records for this filter.</p>'}`;
+  }
+
+  if (tab === 'progress') {
+    const res = await fetch(`${API_URL}/parent/child/${student.id}/progress`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load progress');
+    const records = data.records || [];
+    const rows = records.map((r) => {
+      const typeLabel = r.type === 'quiz' ? 'Quiz' : r.type === 'activity' ? 'Activity' : 'Exam';
+      const dateStr = r.created_at ? new Date(r.created_at).toLocaleDateString() : '-';
+      return `<tr>
+        <td>${escapeHtml(dateStr)}</td>
+        <td>${escapeHtml(typeLabel)}</td>
+        <td>${escapeHtml(r.title || '')}</td>
+        <td>${escapeHtml(r.subject_name || '—')}</td>
+        <td>${escapeHtml(`${r.score} / ${r.max_score}`)}</td>
+        <td>${escapeHtml(`${r.percent}%`)}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <h2>Progress Tracking</h2>
+      <p>${records.length
+        ? `Average across recorded items: ${escapeHtml(String(data.average))}% · ${records.length} item(s)`
+        : 'No quiz, activity, or exam scores yet.'}</p>
+      ${records.length ? `<table>
+        <thead><tr><th>Date</th><th>Type</th><th>Title</th><th>Subject</th><th>Score</th><th>%</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` : ''}`;
+  }
+
+  // Default: overview report
+  let stats = { attendanceRate: 0, present: 0, absent: 0, late: 0, todayStatus: 'Not recorded' };
+  try {
+    const res = await fetch(`${API_URL}/parent/child/${student.id}/stats`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (res.ok) stats = data;
+  } catch { /* keep defaults */ }
+
+  let recent = [];
+  try {
+    const records = await fetchParentAttendance(student.id);
+    parentAttendanceCache = records;
+    recent = filterParentAttendanceRecords(records, { limit: 5 });
+  } catch { /* ignore */ }
+
+  const gender = student.gender === 'M' ? 'Male' : student.gender === 'F' ? 'Female' : 'N/A';
+  const attRows = recent.map((r) => {
+    const when = parentAttendanceWhenLabel(r);
+    const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+    return `<tr>
+      <td>${escapeHtml(dateStr)}</td>
+      <td>${escapeHtml(when)}</td>
+      <td>${escapeHtml(r.status || '-')}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <h2>Student Information</h2>
+    <table>
+      <tbody>
+        <tr><th>Name</th><td>${escapeHtml(`${student.last_name || ''}, ${student.first_name || ''}`)}</td></tr>
+        <tr><th>LRN</th><td>${escapeHtml(student.lrn || 'N/A')}</td></tr>
+        <tr><th>Grade &amp; Section</th><td>${escapeHtml(`Grade ${student.grade_level}-${student.section || ''}`)}</td></tr>
+        <tr><th>Gender</th><td>${escapeHtml(gender)}</td></tr>
+      </tbody>
+    </table>
+    <h2>Attendance Summary</h2>
+    <table>
+      <tbody class="kpi-row">
+        <tr><th>Attendance Rate (30 days)</th><td>${escapeHtml(String(stats.attendanceRate))}%</td></tr>
+        <tr><th>Days Present (this month)</th><td>${escapeHtml(String(stats.present))}</td></tr>
+        <tr><th>Days Absent (this month)</th><td>${escapeHtml(String(stats.absent))}</td></tr>
+        <tr><th>Today's Status</th><td>${escapeHtml(stats.todayStatus || 'Not recorded')}</td></tr>
+      </tbody>
+    </table>
+    <h2>Recent Attendance</h2>
+    ${recent.length ? `<table>
+      <thead><tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr></thead>
+      <tbody>${attRows}</tbody>
+    </table>` : '<p>No attendance records yet.</p>'}`;
+}
+
+async function printParentReport() {
   if (!parentCurrentChild) {
     showToast('No child selected to print.', 'error');
     return;
   }
-  showToast('In the print dialog, choose a printer or “Save as PDF”.');
-  window.print();
+
+  const tab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab || 'overview';
+  if (tab === 'inbox' || tab === 'contact') {
+    showToast('Open Overview, Attendance, or Progress to print a report.', 'error');
+    return;
+  }
+
+  try {
+    const bodyHtml = await buildParentReportHtml(parentCurrentChild, tab);
+    // Blank title → no student name in browser print header
+    openPrintHtmlDocument('', bodyHtml);
+  } catch (err) {
+    showToast(err.message || 'Failed to prepare report.', 'error');
+  }
 }
 
-document.getElementById('parent-print-btn')?.addEventListener('click', printParentReport);
+document.getElementById('parent-print-btn')?.addEventListener('click', () => {
+  printParentReport();
+});
 
 const avatarUploadInput = document.getElementById('parent-avatar-upload');
 if (avatarUploadInput) {
@@ -6797,7 +8351,10 @@ async function renderParentOverview(student) {
       </div>
 
       <div class="chart-card">
-        <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:12px;">Recent Attendance</h3>
+        <div class="teacher-header-row" style="margin-bottom:8px;align-items:center;">
+          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Recent Attendance</h3>
+          <button type="button" class="chip-ghost" id="parent-attendance-see-more" style="font-size:0.78rem;">See more →</button>
+        </div>
         <div id="parent-attendance-table-wrap">
           <p style="color:var(--text-muted);font-size:0.84rem;">Loading...</p>
         </div>
@@ -6813,6 +8370,108 @@ async function renderParentOverview(student) {
   `;
 
   loadParentAttendanceTable(student.id);
+  document.getElementById('parent-attendance-see-more')?.addEventListener('click', () => {
+    document.querySelector('[data-parent-tab="attendance"]')?.click();
+  });
+}
+
+let parentAttendanceCache = [];
+let parentAttendanceMonth = ''; // YYYY-MM
+let parentAttendanceStatus = 'all'; // all | Late | Absent | Present
+let parentAttStatusMenuApi = null;
+let parentAttMonthMenuApi = null;
+
+function parentAttendanceWhenLabel(r) {
+  return r.subject_name
+    ? r.subject_name
+    : (r.session === 'PM' ? 'Afternoon' : 'Morning');
+}
+
+function parentAttendanceMonthKey(r) {
+  if (!r?.date) return '';
+  const d = new Date(r.date);
+  if (Number.isNaN(d.getTime())) {
+    const s = String(r.date).slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(s) ? s : '';
+  }
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+function parentAttendanceMonthOptions(records) {
+  const keys = new Set();
+  (records || []).forEach((r) => {
+    const k = parentAttendanceMonthKey(r);
+    if (k) keys.add(k);
+  });
+  const now = new Date();
+  const current = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  keys.add(current);
+  return [...keys].sort((a, b) => b.localeCompare(a));
+}
+
+function parentAttendanceMonthLabel(ym) {
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return ym || '';
+  const [y, m] = ym.split('-').map(Number);
+  const dt = new Date(y, m - 1, 1);
+  return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function filterParentAttendanceRecords(records, { month = '', status = 'all', limit = null } = {}) {
+  let list = Array.isArray(records) ? [...records] : [];
+  list.sort((a, b) => {
+    const da = new Date(a.date || 0).getTime();
+    const db = new Date(b.date || 0).getTime();
+    return db - da;
+  });
+  if (month) list = list.filter((r) => parentAttendanceMonthKey(r) === month);
+  if (status && status !== 'all') {
+    list = list.filter((r) => String(r.status || '').toLowerCase() === String(status).toLowerCase());
+  }
+  if (limit != null) list = list.slice(0, limit);
+  return list;
+}
+
+function parentAttendanceRowsHtml(records) {
+  return records.map((r) => {
+    const when = escapeHtml(parentAttendanceWhenLabel(r));
+    const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+    const status = r.status || '-';
+    const rowTint = status === 'Absent'
+      ? 'background:rgba(183,28,28,0.08);'
+      : status === 'Late'
+        ? 'background:rgba(230,126,34,0.08);'
+        : status === 'Excused'
+          ? 'background:rgba(100,116,139,0.1);'
+          : '';
+    return `
+      <tr style="${rowTint}">
+        <td>${dateStr}</td>
+        <td>${when}</td>
+        <td><span class="badge ${(status || '').toLowerCase()}">${escapeHtml(status)}</span></td>
+      </tr>`;
+  }).join('');
+}
+
+function parentAttendanceTableHtml(records, { emptyText = 'No attendance records yet.' } = {}) {
+  if (!records.length) {
+    return `<p style="color:var(--text-muted);font-size:0.84rem;margin:0;">${escapeHtml(emptyText)}</p>`;
+  }
+  return `
+    <table style="width:100%;font-size:0.82rem;">
+      <thead style="background:var(--maroon-header);color:#fff;">
+        <tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr>
+      </thead>
+      <tbody>${parentAttendanceRowsHtml(records)}</tbody>
+    </table>`;
+}
+
+async function fetchParentAttendance(studentId) {
+  const res = await fetch(`${API_URL}/parent/child/${studentId}/attendance`, { headers: getAuthHeaders() });
+  const records = await res.json();
+  if (!res.ok) throw new Error(records.error);
+  return Array.isArray(records) ? records : [];
 }
 
 async function loadParentAttendanceTable(studentId) {
@@ -6820,36 +8479,14 @@ async function loadParentAttendanceTable(studentId) {
   if (!wrap) return;
 
   try {
-    const res = await fetch(`${API_URL}/parent/child/${studentId}/attendance`, { headers: getAuthHeaders() });
-    const records = await res.json();
-    if (!res.ok) throw new Error(records.error);
-
-    if (!records.length) {
-      wrap.innerHTML = '<p style="color:var(--text-muted);font-size:0.84rem;">No attendance records yet.</p>';
-      return;
-    }
-
-    wrap.innerHTML = `
-      <table style="width:100%;font-size:0.82rem;">
-        <thead style="background:var(--maroon-header);color:#fff;">
-          <tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr>
-        </thead>
-        <tbody>
-          ${records.map(r => {
-            const when = r.subject_name
-              ? r.subject_name
-              : (r.session === 'PM' ? 'Afternoon' : 'Morning');
-            const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
-            return `
-            <tr style="${r.status === 'Absent' ? 'background:rgba(183,28,28,0.08);' : r.status === 'Late' ? 'background:rgba(230,126,34,0.08);' : ''}">
-              <td>${dateStr}</td>
-              <td>${when}</td>
-              <td><span class="badge ${(r.status || '').toLowerCase()}">${r.status || '-'}</span></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    `;
+    const records = await fetchParentAttendance(studentId);
+    parentAttendanceCache = records;
+    const recent = filterParentAttendanceRecords(records, { limit: 5 });
+    wrap.innerHTML = parentAttendanceTableHtml(recent, {
+      emptyText: 'No attendance records yet.'
+    });
+    const seeMore = document.getElementById('parent-attendance-see-more');
+    if (seeMore) seeMore.hidden = records.length === 0;
   } catch (err) {
     wrap.innerHTML = '<p style="color:#b71c1c;font-size:0.84rem;">Failed to load attendance</p>';
   }
@@ -6876,8 +8513,7 @@ document.querySelectorAll('[data-parent-tab]').forEach(btn => {
     if (tabId === 'overview') renderParentOverview(parentCurrentChild);
     else if (tabId === 'attendance') renderParentAttendance(parentCurrentChild);
     else if (tabId === 'progress') renderParentProgress(parentCurrentChild);
-    else if (tabId === 'inbox') renderParentInbox();
-    else if (tabId === 'contact') renderParentContact();
+    else if (tabId === 'inbox' || tabId === 'contact') renderParentInbox();
     else {
       contentEl.innerHTML = `
         <div class="empty-state">
@@ -6892,35 +8528,107 @@ document.querySelectorAll('[data-parent-tab]').forEach(btn => {
 function renderParentAttendance(student) {
   const contentEl = document.getElementById('parent-content');
   if (!contentEl) return;
-  contentEl.innerHTML = `<div class="parent-main"><div class="chart-card"><h3 style="font-size:1.1rem;color:var(--maroon-deep);">Attendance Records</h3><div id="parent-attendance-full"></div></div></div>`;
+
+  const now = new Date();
+  if (!parentAttendanceMonth) {
+    parentAttendanceMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+  if (!parentAttendanceStatus) parentAttendanceStatus = 'all';
+
+  const statusOpts = [
+    { value: 'all', label: 'All statuses' },
+    { value: 'Late', label: 'Late' },
+    { value: 'Absent', label: 'Absent' },
+    { value: 'Excused', label: 'Excused' },
+    { value: 'Present', label: 'Present' }
+  ];
+
+  contentEl.innerHTML = `
+    <div class="parent-main">
+      <div class="chart-card">
+        <div class="teacher-header-row" style="margin-bottom:4px;">
+          <div>
+            <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Attendance Records</h3>
+            <p class="page-subheading" style="margin:4px 0 0;">Newest first. Filter by status or month.</p>
+          </div>
+        </div>
+        <div class="parent-att-toolbar">
+          <div class="download-menu" id="parent-att-status-menu">
+            <button type="button" class="chip-ghost" id="parent-att-status-btn" aria-haspopup="true" aria-expanded="false">All statuses ▾</button>
+            <div class="download-menu-panel" id="parent-att-status-panel" hidden></div>
+          </div>
+          <div class="download-menu parent-att-menu--right" id="parent-att-month-menu">
+            <button type="button" class="chip-ghost" id="parent-att-month-btn" aria-haspopup="true" aria-expanded="false">Month ▾</button>
+            <div class="download-menu-panel download-menu-panel--scroll" id="parent-att-month-panel" hidden></div>
+          </div>
+        </div>
+        <div id="parent-attendance-full" style="margin-top:8px;">
+          <p style="color:var(--text-muted);">Loading…</p>
+        </div>
+      </div>
+    </div>`;
+
+  parentAttStatusMenuApi = wireDownloadSelectMenu({
+    menuId: 'parent-att-status-menu',
+    btnId: 'parent-att-status-btn',
+    panelId: 'parent-att-status-panel',
+    options: statusOpts,
+    getValue: () => parentAttendanceStatus,
+    setValue: (v) => { parentAttendanceStatus = v || 'all'; },
+    onPick: () => paintParentAttendanceFull()
+  });
+
+  parentAttMonthMenuApi = wireDownloadSelectMenu({
+    menuId: 'parent-att-month-menu',
+    btnId: 'parent-att-month-btn',
+    panelId: 'parent-att-month-panel',
+    options: [],
+    getValue: () => parentAttendanceMonth,
+    setValue: (v) => { parentAttendanceMonth = v || ''; },
+    emptyLabel: 'No months',
+    onPick: () => paintParentAttendanceFull()
+  });
+
   loadParentAttendanceFull(student.id);
+}
+
+function paintParentAttendanceFull() {
+  const wrap = document.getElementById('parent-attendance-full');
+  if (!wrap) return;
+
+  const months = parentAttendanceMonthOptions(parentAttendanceCache);
+  const selected = months.includes(parentAttendanceMonth)
+    ? parentAttendanceMonth
+    : (months[0] || parentAttendanceMonth);
+  parentAttendanceMonth = selected;
+
+  if (parentAttMonthMenuApi) {
+    parentAttMonthMenuApi.setOptions(months.map((ym) => ({
+      value: ym,
+      label: parentAttendanceMonthLabel(ym)
+    })));
+  }
+
+  const filtered = filterParentAttendanceRecords(parentAttendanceCache, {
+    month: parentAttendanceMonth,
+    status: parentAttendanceStatus
+  });
+
+  const statusBit = parentAttendanceStatus === 'all' ? '' : ` (${parentAttendanceStatus})`;
+  wrap.innerHTML = parentAttendanceTableHtml(filtered, {
+    emptyText: `No${statusBit} records for ${parentAttendanceMonthLabel(parentAttendanceMonth) || 'this month'}.`
+  });
 }
 
 async function loadParentAttendanceFull(studentId) {
   const wrap = document.getElementById('parent-attendance-full');
   if (!wrap) return;
   try {
-    const res = await fetch(`${API_URL}/parent/child/${studentId}/attendance`, { headers: getAuthHeaders() });
-    const records = await res.json();
-    if (!res.ok) throw new Error(records.error);
-    if (!records.length) { wrap.innerHTML = '<p style="color:var(--text-muted);">No records yet.</p>'; return; }
-    wrap.innerHTML = `
-      <table style="width:100%;font-size:0.85rem;margin-top:12px;">
-        <thead style="background:var(--maroon-header);color:#fff;">
-          <tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr>
-        </thead>
-        <tbody>${records.map(r => {
-          const when = r.subject_name
-            ? r.subject_name
-            : (r.session === 'PM' ? 'Afternoon' : 'Morning');
-          return `<tr>
-            <td>${r.date ? new Date(r.date).toLocaleDateString() : '-'}</td>
-            <td>${when}</td>
-            <td><span class="badge ${(r.status || '').toLowerCase()}">${r.status || '-'}</span></td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table>`;
-  } catch (err) { wrap.innerHTML = '<p style="color:#b71c1c;">Failed to load</p>'; }
+    parentAttendanceCache = await fetchParentAttendance(studentId);
+    paintParentAttendanceFull();
+  } catch (err) {
+    wrap.innerHTML = '<p style="color:#b71c1c;">Failed to load</p>';
+  }
 }
 
 function renderParentProgress(student) {
@@ -6982,66 +8690,54 @@ async function loadParentProgress(studentId) {
 }
 
 function renderParentContact() {
-  const contentEl = document.getElementById('parent-content');
-  if (!contentEl) return;
+  // Contact Teachers merged into Inbox
+  renderParentInbox();
+}
+
+async function openParentConcernModal() {
+  const modal = document.getElementById('parent-concern-modal');
+  const form = document.getElementById('parent-concern-form');
+  const msg = document.getElementById('parent-concern-msg');
+  const studentSelect = document.getElementById('concern-student');
+  if (!modal || !studentSelect) return;
 
   const children = parentAllChildren || [];
-  const selectedId = parentCurrentChild?.id || '';
+  const selectedId = parentCurrentChild?.id || children[0]?.id || '';
+  studentSelect.innerHTML = children.length
+    ? children.map((c) =>
+      `<option value="${c.id}" ${String(c.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(c.last_name)}, ${escapeHtml(c.first_name)} (Grade ${c.grade_level}-${escapeHtml(c.section)})</option>`
+    ).join('')
+    : '<option value="">No linked students</option>';
 
-  contentEl.innerHTML = `
-    <div class="parent-main">
-      <div class="chart-card">
-        <h3 style="font-size:1.1rem;color:var(--maroon-deep);">Contact Teachers</h3>
-        <p class="page-subheading">Send a concern to your child's teacher.</p>
-        <form id="parent-contact-form" class="admin-form" style="margin-top:16px;">
-          <div class="form-row">
-            <div class="field-small">
-              <label for="contact-student">Student</label>
-              <select id="contact-student" required>
-                ${children.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.last_name}, ${c.first_name} (Grade ${c.grade_level}-${c.section})</option>`).join('')}
-              </select>
-            </div>
-            <div class="field-small">
-              <label for="contact-teacher">Teacher</label>
-              <select id="contact-teacher" required>
-                <option value="">Loading teachers…</option>
-              </select>
-            </div>
-          </div>
-          <div class="field-small">
-            <label for="contact-subject">Subject</label>
-            <input type="text" id="contact-subject" placeholder="e.g., Attendance, Mathematics, Behavior" required />
-          </div>
-          <div class="field-small">
-            <label for="contact-message">Message</label>
-            <textarea id="contact-message" rows="4" placeholder="Describe your concern..." required></textarea>
-          </div>
-          <button type="submit" class="btn-solid">Send Concern</button>
-          <p id="contact-form-msg" class="inline-message"></p>
-        </form>
-      </div>
-      <div class="chart-card" style="margin-top:16px;">
-        <h3 style="font-size:1.05rem;color:var(--maroon-deep);">Sent concerns</h3>
-        <div id="parent-concerns-list" style="margin-top:12px;"><p style="color:var(--text-muted);">Loading…</p></div>
-      </div>
-    </div>`;
+  if (form) form.reset();
+  // restore student after reset
+  if (selectedId) studentSelect.value = String(selectedId);
+  if (msg) {
+    msg.hidden = true;
+    msg.textContent = '';
+  }
+  document.getElementById('concern-subject').value = '';
+  document.getElementById('concern-message').value = '';
 
-  const studentSelect = document.getElementById('contact-student');
-  studentSelect?.addEventListener('change', () => {
-    const selected = children.find(c => String(c.id) === studentSelect.value);
-    if (selected) parentCurrentChild = selected;
-    loadContactTeachers(studentSelect.value);
-    loadParentConcerns(studentSelect.value);
-  });
+  await loadContactTeachers(studentSelect.value);
+  modal.hidden = false;
+  modal.removeAttribute('hidden');
+}
 
-  document.getElementById('parent-contact-form')?.addEventListener('submit', submitParentConcern);
-  if (studentSelect?.value) loadContactTeachers(studentSelect.value);
-  loadParentConcerns(studentSelect?.value || selectedId);
+function closeParentConcernModal() {
+  const modal = document.getElementById('parent-concern-modal');
+  if (!modal) return;
+  modal.hidden = true;
+  modal.setAttribute('hidden', '');
 }
 
 async function loadContactTeachers(studentId) {
-  const select = document.getElementById('contact-teacher');
-  if (!select || !studentId) return;
+  const select = document.getElementById('concern-teacher');
+  if (!select) return;
+  if (!studentId) {
+    select.innerHTML = '<option value="">Select student first</option>';
+    return;
+  }
   select.innerHTML = '<option value="">Loading…</option>';
   try {
     const res = await fetch(`${API_URL}/parent/child/${studentId}/teachers`, { headers: getAuthHeaders() });
@@ -7051,8 +8747,8 @@ async function loadContactTeachers(studentId) {
       select.innerHTML = '<option value="">No teachers assigned yet</option>';
       return;
     }
-    select.innerHTML = teachers.map(t =>
-      `<option value="${t.id}">${t.last_name}, ${t.first_name} (${t.role_label})</option>`
+    select.innerHTML = teachers.map((t) =>
+      `<option value="${t.id}">${escapeHtml(t.last_name)}, ${escapeHtml(t.first_name)} (${escapeHtml(t.role_label || 'Teacher')})</option>`
     ).join('');
   } catch (err) {
     select.innerHTML = '<option value="">Failed to load teachers</option>';
@@ -7061,15 +8757,18 @@ async function loadContactTeachers(studentId) {
 
 async function submitParentConcern(e) {
   e.preventDefault();
-  const msg = document.getElementById('contact-form-msg');
+  const msg = document.getElementById('parent-concern-msg');
   const payload = {
-    student_id: document.getElementById('contact-student')?.value,
-    teacher_id: document.getElementById('contact-teacher')?.value,
-    subject: document.getElementById('contact-subject')?.value.trim(),
-    message: document.getElementById('contact-message')?.value.trim()
+    student_id: document.getElementById('concern-student')?.value,
+    teacher_id: document.getElementById('concern-teacher')?.value,
+    subject: document.getElementById('concern-subject')?.value.trim(),
+    message: document.getElementById('concern-message')?.value.trim()
   };
   if (!payload.student_id || !payload.teacher_id || !payload.message) {
-    if (msg) msg.textContent = 'Please choose a student and teacher, then write a message.';
+    if (msg) {
+      msg.hidden = false;
+      msg.textContent = 'Please choose a student and teacher, then write a message.';
+    }
     return;
   }
   try {
@@ -7080,57 +8779,53 @@ async function submitParentConcern(e) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    document.getElementById('contact-message').value = '';
-    document.getElementById('contact-subject').value = '';
-    if (msg) msg.textContent = 'Concern sent. The teacher will see it in their inbox.';
+    closeParentConcernModal();
     showToast('Concern sent to the teacher.');
-    const studentId = document.getElementById('contact-student')?.value;
-    loadParentConcerns(studentId);
+    parentInboxFilter = 'unresolved';
+    parentExpandedConcernId = data.id || null;
+    renderParentInbox();
   } catch (err) {
-    if (msg) msg.textContent = err.message;
+    if (msg) {
+      msg.hidden = false;
+      msg.textContent = err.message;
+    }
     showToast(err.message, 'error');
   }
 }
 
-async function loadParentConcerns(studentId) {
-  const wrap = document.getElementById('parent-concerns-list');
-  if (!wrap) return;
+let parentConcernFilter = 'unresolved';
+let parentConcernSearchQuery = '';
+let parentConcernsCache = [];
 
-  const selectedId = studentId || document.getElementById('contact-student')?.value || parentCurrentChild?.id || '';
-  const child = (parentAllChildren || []).find((c) => String(c.id) === String(selectedId));
-  const childLabel = child
-    ? `${child.first_name || ''} ${child.last_name || ''}`.trim()
-    : '';
-
-  try {
-    const qs = selectedId ? `?student_id=${encodeURIComponent(selectedId)}` : '';
-    const res = await fetch(`${API_URL}/parent/concerns${qs}`, { headers: getAuthHeaders() });
-    const rows = await res.json();
-    if (!res.ok) throw new Error(rows.error);
-    if (!rows.length) {
-      wrap.innerHTML = childLabel
-        ? `<p style="color:var(--text-muted);">No concerns sent for ${escapeHtml(childLabel)} yet.</p>`
-        : '<p style="color:var(--text-muted);">You have not sent any concerns yet.</p>';
-      return;
-    }
-    wrap.innerHTML = `<ul class="inbox-list">${rows.map(c => {
-      const status = concernStatus(c);
-      return `
-        <li class="inbox-item inbox-item--concern">
-          <div class="inbox-item-header">
-            <span class="badge" style="background:${status === 'resolved' || status === 'closed' ? '#1b5e20' : '#b71c1c'};color:#fff;">${status}</span>
-            <span style="font-size:0.75rem;color:var(--text-muted);">${new Date(c.created_at).toLocaleString()}</span>
-          </div>
-          <div style="margin-top:6px;"><strong>To:</strong> ${c.teacher_name || 'Teacher'} · <strong>Student:</strong> ${c.student_name || 'N/A'}</div>
-          <div><strong>Subject:</strong> ${concernSubject(c)}</div>
-          <p style="margin-top:6px;font-size:0.85rem;"><strong>You:</strong> ${c.message}</p>
-          ${concernThreadHtml(c, true)}
-        </li>`;
-    }).join('')}</ul>`;
-  } catch (err) {
-    wrap.innerHTML = '<p style="color:#b71c1c;">Failed to load sent concerns</p>';
+async function loadParentConcerns() {
+  // Concerns now load with the unified Inbox
+  if (document.querySelector('[data-parent-tab].active')?.dataset.parentTab === 'inbox') {
+    renderParentInbox();
   }
 }
+
+function paintParentConcernsList() {
+  paintParentInboxList();
+}
+
+window.toggleParentConcern = async function(id) {
+  const concernId = Number(id);
+  if (!concernId) return;
+  if (Number(parentExpandedConcernId) === concernId) {
+    parentExpandedConcernId = null;
+    paintParentInboxList();
+    return;
+  }
+  parentExpandedConcernId = concernId;
+  parentExpandedInboxKey = null;
+  await markConcernReadForRole(concernId);
+  const cached = (parentInboxCache.concerns || parentConcernsCache || []).find((c) => Number(c.id) === concernId);
+  if (cached) {
+    cached.is_read = 1;
+    cached.read_at = new Date().toISOString();
+  }
+  paintParentInboxList();
+};
 
 const parentObserver = new MutationObserver((mutations) => {
   mutations.forEach((m) => {
@@ -7162,6 +8857,7 @@ const adminObserver = new MutationObserver((mutations) => {
         else if (activeTab === 'accounts') loadAccountsTable();
         else if (activeTab === 'students') { loadDropdowns(); loadStudentsTable(); }
         else if (activeTab === 'subjects') loadSubjectsTable();
+        else if (activeTab === 'inbox') loadAdminInbox();
         else if (activeTab === 'announcements') loadAdminAnnouncements();
       }
     }
@@ -7357,28 +9053,151 @@ async function loadSubjectsTable() {
     if (!Array.isArray(subjects)) throw new Error('Invalid data format');
 
     if (!subjects.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No subjects yet</td></tr>';
+      selectedSubjectIds.clear();
+      updateSubjectsBulkBar();
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No subjects yet</td></tr>';
       return;
     }
 
-    tbody.innerHTML = subjects.map(s => `
+    tbody.innerHTML = subjects.map(s => {
+      const id = Number(s.id);
+      const checked = selectedSubjectIds.has(id) ? 'checked' : '';
+      return `
       <tr data-subject-id="${s.id || ''}">
-        <td class="sub-code">${s.code || s.subject_code || s.Code || '—'}</td>
-        <td class="sub-name">${s.name || s.subject_name || s.Name || '—'}</td>
-        <td class="sub-desc">${s.description || ''}</td>
-        <td class="sub-grades">${s.applicable_grades || ''}</td>
-        <td style="white-space:nowrap;">
-          <button class="chip-ghost" onclick="startEditSubject(${s.id})">Edit</button>
-          <button class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="deleteSubject(${s.id})">Delete</button>
+        <td class="col-check">
+          <input type="checkbox" class="admin-subject-check" data-subject-id="${s.id}" ${checked} aria-label="Select subject" />
         </td>
-      </tr>
-    `).join('');
+        <td class="sub-code">${escapeHtml(s.code || s.subject_code || s.Code || '—')}</td>
+        <td class="sub-name">${escapeHtml(s.name || s.subject_name || s.Name || '—')}</td>
+        <td class="sub-desc">${escapeHtml(s.description || '')}</td>
+        <td class="sub-grades">${escapeHtml(s.applicable_grades || '')}</td>
+        <td class="row-actions">
+          <div class="row-menu-wrap">
+            <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
+            <div class="row-menu" hidden>
+              <button type="button" class="row-menu-item" data-action="edit-subject" data-subject-id="${s.id}">Edit</button>
+              <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-subject" data-subject-id="${s.id}">Delete</button>
+            </div>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+    updateSubjectsBulkBar();
 
   } catch (err) {
     console.error('Load subjects error:', err);
-    tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">Failed to load subjects: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Failed to load subjects: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
+
+function updateSubjectsBulkBar() {
+  const bar = document.getElementById('admin-subjects-bulk-bar');
+  const countEl = document.getElementById('admin-subjects-bulk-count');
+  const selectAll = document.getElementById('admin-subjects-select-all');
+  const n = selectedSubjectIds.size;
+  if (countEl) countEl.textContent = `${n} selected`;
+  if (bar) {
+    bar.hidden = n === 0;
+    if (n === 0) bar.setAttribute('hidden', '');
+    else bar.removeAttribute('hidden');
+  }
+  const checks = [...document.querySelectorAll('#admin-subjects-table .admin-subject-check')];
+  if (selectAll) {
+    const anyChecked = checks.some((c) => c.checked);
+    const allChecked = checks.length > 0 && checks.every((c) => c.checked);
+    selectAll.indeterminate = false;
+    selectAll.checked = allChecked;
+    selectAll.indeterminate = anyChecked && !allChecked;
+  }
+}
+
+(function setupSubjectsTableDelegation() {
+  const tbody = document.getElementById('admin-subjects-tbody');
+  if (!tbody) return;
+
+  tbody.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.row-menu-toggle');
+    if (toggle) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleRowMenu(toggle, '#admin-subjects-table');
+      return;
+    }
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeAllRowMenus();
+    const id = Number(btn.dataset.subjectId);
+    if (!id) return;
+    if (btn.dataset.action === 'edit-subject') startEditSubject(id);
+    else if (btn.dataset.action === 'delete-subject') deleteSubject(id);
+  });
+
+  tbody.addEventListener('change', (e) => {
+    const check = e.target.closest('.admin-subject-check');
+    if (!check) return;
+    const id = Number(check.dataset.subjectId);
+    if (!id) return;
+    if (check.checked) selectedSubjectIds.add(id);
+    else selectedSubjectIds.delete(id);
+    updateSubjectsBulkBar();
+  });
+})();
+
+(function wireSubjectsSelectAll() {
+  const selectAll = document.getElementById('admin-subjects-select-all');
+  if (!selectAll) return;
+  let wasIndeterminate = false;
+
+  const captureState = () => {
+    wasIndeterminate = !!selectAll.indeterminate;
+  };
+  selectAll.addEventListener('pointerdown', captureState);
+  selectAll.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') captureState();
+  });
+
+  selectAll.addEventListener('click', () => {
+    const checks = [...document.querySelectorAll('#admin-subjects-table .admin-subject-check')];
+    const shouldSelectAll = !wasIndeterminate && selectAll.checked;
+
+    checks.forEach((cb) => {
+      cb.checked = shouldSelectAll;
+      const id = Number(cb.dataset.subjectId);
+      if (!id) return;
+      if (shouldSelectAll) selectedSubjectIds.add(id);
+      else selectedSubjectIds.delete(id);
+    });
+    if (!shouldSelectAll) selectedSubjectIds.clear();
+
+    selectAll.indeterminate = false;
+    selectAll.checked = shouldSelectAll;
+    wasIndeterminate = false;
+    updateSubjectsBulkBar();
+  });
+})();
+
+document.getElementById('admin-subjects-bulk-delete')?.addEventListener('click', async () => {
+  const ids = [...selectedSubjectIds];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected subject(s)?`)) return;
+  try {
+    for (const id of ids) {
+      const res = await fetch(`${API_URL}/subjects/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to delete subject #${id}`);
+    }
+    selectedSubjectIds.clear();
+    showToast('Selected subjects deleted.');
+    await refreshSchoolData({ subjects: true, teachers: true, overview: true });
+  } catch (err) {
+    alert(err.message);
+  }
+});
 
 window.startEditSubject = function(id) {
   const row = document.querySelector(`tr[data-subject-id="${id}"]`);
@@ -7390,6 +9209,7 @@ window.startEditSubject = function(id) {
   const grades = row.querySelector('.sub-grades').textContent.trim();
 
   row.innerHTML = `
+    <td class="col-check"></td>
     <td><input type="text" class="sub-input" value="${code.replace(/"/g, '&quot;')}" disabled style="background:#f0f0f0;color:#666;"></td>
     <td><input type="text" class="sub-input sub-input-name" value="${name.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;"></td>
     <td><input type="text" class="sub-input sub-input-desc" value="${desc.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;font-size:0.82rem;border:1px solid var(--border-maroon);border-radius:6px;"></td>
@@ -7558,6 +9378,25 @@ if (changePasswordForm) {
   });
 }
 
+document.getElementById('admin-account-password-regen')?.addEventListener('click', () => {
+  fillTempPasswordInput('admin-account-password');
+});
+document.getElementById('admin-account-password-copy')?.addEventListener('click', async () => {
+  const el = document.getElementById('admin-account-password');
+  const pw = el?.value?.trim() || '';
+  if (!pw) return;
+  try {
+    await navigator.clipboard.writeText(pw);
+    showToast('Temporary password copied.');
+  } catch {
+    el?.select?.();
+    showToast('Select and copy the password manually.');
+  }
+});
+document.getElementById('reset-password-regen')?.addEventListener('click', () => {
+  fillTempPasswordInput('reset-password-temp');
+});
+
 document.getElementById('reset-password-cancel')?.addEventListener('click', () => {
   document.getElementById('reset-password-modal')?.setAttribute('hidden', '');
 });
@@ -7630,16 +9469,29 @@ document.getElementById('admin-student-search')?.addEventListener('input', (e) =
   filterStudentsTable();
 });
 
-document.getElementById('admin-student-filter-grade')?.addEventListener('change', async (e) => {
-  currentStudentGradeFilter = e.target.value;
-  currentStudentSectionFilter = '';
-  await loadStudentFilterSections(currentStudentGradeFilter);
-  filterStudentsTable();
+studentGradeMenuApi = wireDownloadSelectMenu({
+  menuId: 'admin-student-grade-menu',
+  btnId: 'admin-student-grade-btn',
+  panelId: 'admin-student-grade-panel',
+  options: STUDENT_GRADE_FILTER_OPTS,
+  getValue: () => currentStudentGradeFilter,
+  setValue: (v) => { currentStudentGradeFilter = v || ''; },
+  onPick: async () => {
+    currentStudentSectionFilter = '';
+    await loadStudentFilterSections(currentStudentGradeFilter);
+    filterStudentsTable();
+  }
 });
 
-document.getElementById('admin-student-filter-section')?.addEventListener('change', (e) => {
-  currentStudentSectionFilter = e.target.value;
-  filterStudentsTable();
+studentSectionMenuApi = wireDownloadSelectMenu({
+  menuId: 'admin-student-section-menu',
+  btnId: 'admin-student-section-btn',
+  panelId: 'admin-student-section-panel',
+  options: [{ value: '', label: 'All sections' }],
+  getValue: () => currentStudentSectionFilter,
+  setValue: (v) => { currentStudentSectionFilter = v || ''; },
+  disabled: true,
+  onPick: () => filterStudentsTable()
 });
 
 document.getElementById('admin-student-filter-clear')?.addEventListener('click', clearStudentFilters);
@@ -7842,10 +9694,14 @@ let currentDetailAccountRole = null;
 let currentDetailAccountStatus = 'active';
 
 function closeDetailActionsMenus() {
-  document.getElementById('teacher-detail-actions-menu')?.setAttribute('hidden', '');
-  document.getElementById('parent-detail-actions-menu')?.setAttribute('hidden', '');
-  document.getElementById('teacher-detail-actions-btn')?.setAttribute('aria-expanded', 'false');
-  document.getElementById('parent-detail-actions-btn')?.setAttribute('aria-expanded', 'false');
+  closeDownloadMenu(
+    document.getElementById('teacher-detail-actions-menu'),
+    document.getElementById('teacher-detail-actions-btn')
+  );
+  closeDownloadMenu(
+    document.getElementById('parent-detail-actions-menu'),
+    document.getElementById('parent-detail-actions-btn')
+  );
 }
 
 function updateDetailStatusActionLabel(status) {
@@ -7859,19 +9715,15 @@ function updateDetailStatusActionLabel(status) {
 function toggleDetailActionsMenu(role) {
   const menuId = role === 'teacher' ? 'teacher-detail-actions-menu' : 'parent-detail-actions-menu';
   const btnId = role === 'teacher' ? 'teacher-detail-actions-btn' : 'parent-detail-actions-btn';
-  const menu = document.getElementById(menuId);
-  const btn = document.getElementById(btnId);
-  if (!menu || !btn) return;
   const otherRole = role === 'teacher' ? 'parent' : 'teacher';
-  document.getElementById(`${otherRole}-detail-actions-menu`)?.setAttribute('hidden', '');
-  const isHidden = menu.hasAttribute('hidden');
-  if (isHidden) {
-    menu.removeAttribute('hidden');
-    btn.setAttribute('aria-expanded', 'true');
-  } else {
-    menu.setAttribute('hidden', '');
-    btn.setAttribute('aria-expanded', 'false');
-  }
+  closeDownloadMenu(
+    document.getElementById(`${otherRole}-detail-actions-menu`),
+    document.getElementById(`${otherRole}-detail-actions-btn`)
+  );
+  toggleDownloadMenu(
+    document.getElementById(btnId),
+    document.getElementById(menuId)
+  );
 }
 
 window.openTeacherDetailModal = async function(teacherId) {
@@ -8088,11 +9940,8 @@ async function openEditAccountInfoModal(accountId, role) {
     const title = document.getElementById('edit-account-info-title');
     const sub = document.getElementById('edit-account-info-subtitle');
     if (title) title.textContent = isParent ? 'Edit Parent Info' : 'Edit Teacher Info';
-    if (sub) {
-      sub.textContent = isParent
-        ? 'Update name, email, phone, address, and emergency contact.'
-        : 'Update name, email, and phone number.';
-    }
+    if (sub) sub.textContent = `Editing ${data.last_name || ''}, ${data.first_name || ''}`;
+
 
     modal.removeAttribute('hidden');
   } catch (err) {
