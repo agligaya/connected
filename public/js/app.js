@@ -6,10 +6,33 @@ let lastAccountsData = [];
 let lastStudentsData = [];
 let currentAccountRoleFilter = 'all';
 let currentAccountStatusFilter = 'active';
+let currentAccountSearch = '';
+let currentAccountSort = 'az'; // az | recent
+let accountSortMenuApi = null;
 
 function normalizeQuarterClient(value) {
   const q = String(value || 'Q1').toUpperCase();
   return ['Q1', 'Q2', 'Q3', 'Q4'].includes(q) ? q : 'Q1';
+}
+
+/** Fill a <select> with unlocked quarters only (future quarters stay inaccessible). */
+function fillUnlockedQuarterSelect(selectEl, preferred) {
+  if (!selectEl) return null;
+  const unlocked = (UNLOCKED_QUARTERS || ['Q1']).map(normalizeQuarterClient);
+  const list = unlocked.length ? unlocked : [normalizeQuarterClient(CURRENT_QUARTER || 'Q1')];
+  const want = normalizeQuarterClient(preferred || teacherCurrentQuarter || CURRENT_QUARTER || list[list.length - 1]);
+  const selected = list.includes(want) ? want : list[list.length - 1];
+  selectEl.innerHTML = list.map((q) =>
+    `<option value="${q}">${q}${q === normalizeQuarterClient(CURRENT_QUARTER) ? ' (current)' : ''}</option>`
+  ).join('');
+  selectEl.value = selected;
+  return selected;
+}
+
+function refreshUnlockedQuarterSelects() {
+  fillUnlockedQuarterSelect(document.getElementById('qb-exam-quarter'));
+  fillUnlockedQuarterSelect(document.getElementById('qb-create-quarter'));
+  fillUnlockedQuarterSelect(document.getElementById('ai-approve-quarter'));
 }
 
 function applyQuarterUnlockUI() {
@@ -31,7 +54,8 @@ function applyQuarterUnlockUI() {
 
   const note = document.getElementById('progress-quarter-note');
   if (note) {
-    note.textContent = `Unlocked through ${CURRENT_QUARTER}. Earlier quarters stay available.`;
+    note.textContent = '';
+    note.hidden = true;
   }
 
   const help = document.getElementById('admin-quarter-help');
@@ -43,6 +67,8 @@ function applyQuarterUnlockUI() {
 
   const select = document.getElementById('admin-current-quarter');
   if (select) select.value = CURRENT_QUARTER;
+
+  refreshUnlockedQuarterSelects();
 }
 
 async function loadAppConfig() {
@@ -973,6 +999,33 @@ function applyAccountFilters() {
     filtered = filtered.filter(u => u.status === currentAccountStatusFilter);
   }
 
+  // Apply search (name or email)
+  const q = String(currentAccountSearch || '').trim().toLowerCase();
+  if (q) {
+    filtered = filtered.filter((u) => {
+      const name = `${u.first_name || ''} ${u.last_name || ''}`.toLowerCase();
+      const email = String(u.email || '').toLowerCase();
+      return name.includes(q) || email.includes(q);
+    });
+  }
+
+  // Sort
+  filtered = [...filtered];
+  if (currentAccountSort === 'recent') {
+    filtered.sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime();
+      const tb = new Date(b.created_at || 0).getTime();
+      if (tb !== ta) return tb - ta;
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
+  } else {
+    filtered.sort((a, b) => {
+      const ln = String(a.last_name || '').localeCompare(String(b.last_name || ''), undefined, { sensitivity: 'base' });
+      if (ln !== 0) return ln;
+      return String(a.first_name || '').localeCompare(String(b.first_name || ''), undefined, { sensitivity: 'base' });
+    });
+  }
+
   if (!filtered.length) {
     const statusLabel = currentAccountStatusFilter === 'active' ? 'active ' : currentAccountStatusFilter === 'inactive' ? 'inactive ' : '';
     const roleLabel = currentAccountRoleFilter === 'all' ? 'accounts' : currentAccountRoleFilter + 's';
@@ -988,7 +1041,7 @@ function applyAccountFilters() {
         ? `<span class="clickable-name" onclick="openParentDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${u.first_name} ${u.last_name}</span>`
         : `${u.first_name} ${u.last_name}`}</td>
       <td>${u.email}</td>
-      <td><span class="badge ${u.role}">${u.role}</span></td>
+      <td>${formatActivityRole(u.role)}</td>
       <td>
         ${u.role === 'teacher' 
           ? (u.teaching_mode === 'class_adviser' || (u.teaching_mode === 'homeroom')
@@ -1522,15 +1575,26 @@ async function loadSectionsForGrade(grade) {
   }
 }
 
+function setSelectDisplayState(displayBox, displayText, { text, state = 'placeholder' } = {}) {
+  if (displayText && text != null) displayText.textContent = text;
+  if (displayText) displayText.style.color = '';
+  if (!displayBox) return;
+  displayBox.classList.remove('is-placeholder', 'is-filled', 'is-error');
+  displayBox.classList.add(
+    state === 'filled' ? 'is-filled' : state === 'error' ? 'is-error' : 'is-placeholder'
+  );
+  displayBox.style.borderColor = '';
+}
+
 gradeSelect?.addEventListener('change', (e) => {
   loadSectionsForGrade(e.target.value);
   // Reset class adviser when grade changes
-  const displayText = document.getElementById('student-class-adviser-text');
+  setSelectDisplayState(
+    document.getElementById('student-class-adviser-display'),
+    document.getElementById('student-class-adviser-text'),
+    { text: '-- Auto Select --', state: 'placeholder' }
+  );
   const hiddenInput = document.getElementById('student-homeroom');
-  if (displayText) {
-    displayText.textContent = '-- Select Grade & Section --';
-    displayText.style.color = 'var(--text-muted)';
-  }
   if (hiddenInput) hiddenInput.value = '';
 });
 
@@ -1552,18 +1616,15 @@ async function loadClassAdviserForStudent() {
   const errorEl = document.getElementById('student-class-adviser-error');
 
   if (!grade || !section) {
-    if (displayText) {
-      displayText.textContent = '-- Select Grade & Section --';
-      displayText.style.color = 'var(--text-muted)';
-    }
+    setSelectDisplayState(displayBox, displayText, {
+      text: '-- Auto Select --',
+      state: 'placeholder'
+    });
     if (hiddenInput) hiddenInput.value = '';
     return;
   }
 
-  if (displayText) {
-    displayText.textContent = 'Loading...';
-    displayText.style.color = 'var(--text-muted)';
-  }
+  setSelectDisplayState(displayBox, displayText, { text: 'Loading...', state: 'placeholder' });
 
   const url = `${API_URL}/admin/class-adviser?grade_level=${encodeURIComponent(grade)}&section=${encodeURIComponent(section)}`;
 
@@ -1583,20 +1644,18 @@ async function loadClassAdviserForStudent() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
     if (data.teacher) {
-      if (displayText) {
-        displayText.textContent = `${data.teacher.last_name}, ${data.teacher.first_name}`;
-        displayText.style.color = 'var(--text-dark)';
-      }
+      setSelectDisplayState(displayBox, displayText, {
+        text: `${data.teacher.last_name}, ${data.teacher.first_name}`,
+        state: 'filled'
+      });
       if (hiddenInput) hiddenInput.value = data.teacher.id;
-      if (displayBox) displayBox.style.borderColor = 'var(--border-maroon)';
       if (errorEl) errorEl.style.display = 'none';
     } else {
-      if (displayText) {
-        displayText.textContent = data.message || 'No class adviser assigned';
-        displayText.style.color = '#b71c1c';
-      }
+      setSelectDisplayState(displayBox, displayText, {
+        text: data.message || 'No class adviser assigned',
+        state: 'error'
+      });
       if (hiddenInput) hiddenInput.value = '';
-      if (displayBox) displayBox.style.borderColor = '#b71c1c';
       if (errorEl) {
         errorEl.textContent = data.message || 'No class adviser assigned';
         errorEl.style.display = 'block';
@@ -1604,10 +1663,10 @@ async function loadClassAdviserForStudent() {
     }
   } catch (err) {
     console.error('Load class adviser error:', err);
-    if (displayText) {
-      displayText.textContent = err.message || 'Failed to load';
-      displayText.style.color = '#b71c1c';
-    }
+    setSelectDisplayState(displayBox, displayText, {
+      text: err.message || 'Failed to load',
+      state: 'error'
+    });
     if (hiddenInput) hiddenInput.value = '';
   }
 }
@@ -2525,11 +2584,11 @@ window.openReenrollModal = async function(id) {
   document.getElementById('reenroll-homeroom').value = '';
 
   // Reset class adviser display
-  const displayText = document.getElementById('reenroll-class-adviser-text');
-  if (displayText) {
-    displayText.textContent = '-- Select Grade & Section --';
-    displayText.style.color = 'var(--text-muted)';
-  }
+  setSelectDisplayState(
+    document.getElementById('reenroll-class-adviser-display'),
+    document.getElementById('reenroll-class-adviser-text'),
+    { text: '-- Auto Select --', state: 'placeholder' }
+  );
 
   // Load sections for current grade
   await loadReenrollSections(student.grade_level);
@@ -2615,18 +2674,15 @@ async function loadReenrollClassAdviser() {
   const errorEl = document.getElementById('reenroll-class-adviser-error');
 
   if (!grade || !section) {
-    if (displayText) {
-      displayText.textContent = '-- Select Grade & Section --';
-      displayText.style.color = 'var(--text-muted)';
-    }
+    setSelectDisplayState(displayBox, displayText, {
+      text: '-- Auto Select --',
+      state: 'placeholder'
+    });
     if (hiddenInput) hiddenInput.value = '';
     return;
   }
 
-  if (displayText) {
-    displayText.textContent = 'Loading...';
-    displayText.style.color = 'var(--text-muted)';
-  }
+  setSelectDisplayState(displayBox, displayText, { text: 'Loading...', state: 'placeholder' });
 
   try {
     const res = await fetch(`${API_URL}/admin/class-adviser?grade_level=${encodeURIComponent(grade)}&section=${encodeURIComponent(section)}`, {
@@ -2636,20 +2692,18 @@ async function loadReenrollClassAdviser() {
     if (!res.ok) throw new Error(data.error);
 
     if (data.teacher) {
-      if (displayText) {
-        displayText.textContent = `${data.teacher.last_name}, ${data.teacher.first_name}`;
-        displayText.style.color = 'var(--text-dark)';
-      }
+      setSelectDisplayState(displayBox, displayText, {
+        text: `${data.teacher.last_name}, ${data.teacher.first_name}`,
+        state: 'filled'
+      });
       if (hiddenInput) hiddenInput.value = data.teacher.id;
-      if (displayBox) displayBox.style.borderColor = 'var(--border-maroon)';
       if (errorEl) errorEl.style.display = 'none';
     } else {
-      if (displayText) {
-        displayText.textContent = data.message || 'No class adviser assigned';
-        displayText.style.color = '#b71c1c';
-      }
+      setSelectDisplayState(displayBox, displayText, {
+        text: data.message || 'No class adviser assigned',
+        state: 'error'
+      });
       if (hiddenInput) hiddenInput.value = '';
-      if (displayBox) displayBox.style.borderColor = '#b71c1c';
       if (errorEl) {
         errorEl.textContent = data.message || 'No class adviser assigned';
         errorEl.style.display = 'block';
@@ -2657,10 +2711,10 @@ async function loadReenrollClassAdviser() {
     }
   } catch (err) {
     console.error('Load reenroll class adviser error:', err);
-    if (displayText) {
-      displayText.textContent = 'Failed to load';
-      displayText.style.color = '#b71c1c';
-    }
+    setSelectDisplayState(displayBox, displayText, {
+      text: 'Failed to load',
+      state: 'error'
+    });
     if (hiddenInput) hiddenInput.value = '';
   }
 }
@@ -2668,12 +2722,12 @@ async function loadReenrollClassAdviser() {
 // Re-enroll modal event listeners
 document.getElementById('reenroll-grade')?.addEventListener('change', async (e) => {
   await loadReenrollSections(e.target.value);
-  const displayText = document.getElementById('reenroll-class-adviser-text');
+  setSelectDisplayState(
+    document.getElementById('reenroll-class-adviser-display'),
+    document.getElementById('reenroll-class-adviser-text'),
+    { text: '-- Auto Select --', state: 'placeholder' }
+  );
   const hiddenInput = document.getElementById('reenroll-homeroom');
-  if (displayText) {
-    displayText.textContent = '-- Select Grade & Section --';
-    displayText.style.color = 'var(--text-muted)';
-  }
   if (hiddenInput) hiddenInput.value = '';
 });
 
@@ -2826,10 +2880,11 @@ function resetAdminModalForm(modalId) {
     }
     const displayText = document.getElementById('student-class-adviser-text');
     const hiddenInput = document.getElementById('student-homeroom');
-    if (displayText) {
-      displayText.textContent = '-- Select Grade & Section --';
-      displayText.style.color = 'var(--text-muted)';
-    }
+    setSelectDisplayState(
+      document.getElementById('student-class-adviser-display'),
+      displayText,
+      { text: '-- Auto Select --', state: 'placeholder' }
+    );
     if (hiddenInput) hiddenInput.value = '';
   }
 
@@ -3061,7 +3116,7 @@ async function loadActivityLog() {
     const logs = await res.json();
     if (!res.ok) throw new Error(logs.error);
 
-    const recent = Array.isArray(logs) ? logs.slice(0, 8) : [];
+    const recent = Array.isArray(logs) ? logs.slice(0, 5) : [];
 
     if (!recent.length) {
       tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">No recent activity</td></tr>';
@@ -3317,7 +3372,17 @@ function paintAdminInboxList() {
     btn.classList.toggle('active', btn.dataset.adminInboxFilter === filter);
   });
 
-  let items = (adminInboxCache.concerns || []).filter((c) =>
+  const concerns = adminInboxCache.concerns || [];
+  setInboxFilterCounts(
+    document.querySelectorAll('[data-admin-inbox-filter]'),
+    {
+      unresolved: concerns.filter((c) => concernIsOpen(c)).length
+      // resolved: no count
+    },
+    'data-admin-inbox-filter'
+  );
+
+  let items = concerns.filter((c) =>
     filter === 'resolved' ? !concernIsOpen(c) : concernIsOpen(c)
   );
   items.sort((a, b) => concernActivityTime(b) - concernActivityTime(a));
@@ -3339,7 +3404,8 @@ function paintAdminInboxList() {
     return renderMailConcernRow(item, {
       expandedId: adminExpandedConcernId,
       toggleFn: 'toggleAdminConcern',
-      metaLine: `${escapeHtml(item.parent_name || 'Parent')} · ${studentBit}${teacherBit}`,
+      badgeLabel: item.parent_name || 'Parent',
+      metaLine: `Student: ${studentBit}${teacherBit}`,
       canReply: true
     });
   }).join('');
@@ -3470,9 +3536,9 @@ function concernThreadHtml(item, canReply) {
          ${canReply && getAuthUser()?.role !== 'parent' && open
            ? `<button type="button" class="chip-ghost" onclick="resolveConcern(${item.id})">Mark Resolved</button>`
            : ''}
-         ${!open ? '<span class="badge" style="background:#1b5e20;color:#fff;">Resolved — replies closed</span>' : ''}
+         ${!open ? '<span class="page-subheading" style="margin:0;">Replies closed</span>' : ''}
        </div>`
-    : (!open ? '<span class="badge" style="background:#1b5e20;color:#fff;margin-top:8px;display:inline-block;">Resolved</span>' : '');
+    : (!open ? '<p class="page-subheading" style="margin-top:8px;">Replies closed</p>' : '');
 
   return thread + replyForm + actions;
 }
@@ -3573,19 +3639,24 @@ function renderMailConcernRow(item, {
   expandedId = null,
   toggleFn = 'toggleTeacherConcern',
   metaLine = '',
-  canReply = true
+  canReply = true,
+  badgeLabel = null
 } = {}) {
   const unread = isConcernUnread(item);
   const expanded = Number(expandedId) === Number(item.id);
-  const open = concernIsOpen(item);
   const when = new Date(item.last_activity || item.created_at).toLocaleString();
+  const role = getAuthUser()?.role;
+  const label = badgeLabel != null && String(badgeLabel).trim() !== ''
+    ? String(badgeLabel).trim()
+    : (role === 'parent'
+      ? (item.teacher_name || 'Teacher')
+      : (item.parent_name || 'Parent'));
 
   return `
     <li class="inbox-item inbox-item--concern ${unread ? 'inbox-item--unread' : 'inbox-item--read'} ${expanded ? 'is-expanded' : ''}" data-concern-id="${item.id}">
       <button type="button" class="inbox-item-summary" onclick="${toggleFn}(${item.id})" aria-expanded="${expanded ? 'true' : 'false'}">
         <div class="inbox-item-summary-top">
-          <span class="badge" style="background:#b71c1c;color:#fff;">Parent Concern</span>
-          ${open ? '' : '<span class="badge" style="background:#1b5e20;color:#fff;">Resolved</span>'}
+          <span class="badge" style="background:var(--maroon);color:#fff;">${escapeHtml(label)}</span>
           ${unread ? '<span class="inbox-unread-dot" title="Unread"></span>' : ''}
           <span class="inbox-item-time">${when}</span>
           <span class="inbox-item-chev" aria-hidden="true">${expanded ? '▾' : '▸'}</span>
@@ -3598,12 +3669,6 @@ function renderMailConcernRow(item, {
     </li>`;
 }
 
-let teacherInboxFilter = 'unresolved';
-let teacherExpandedConcernId = null;
-let teacherExpandedAnnouncementId = null;
-let teacherInboxSearchQuery = '';
-let teacherInboxCache = { announcements: [], concerns: [] };
-
 function announcementPreviewText(item) {
   const text = String(item.body || item.message || '').replace(/\s+/g, ' ').trim();
   if (!text) return 'No message';
@@ -3615,23 +3680,27 @@ function renderMailAnnouncementRow(item, {
   expanded = null,
   toggleFn = 'toggleTeacherAnnouncement',
   onToggle = null,
-  badgeLabel = 'Admin Announcement',
+  badgeLabel = null,
   badgeColor = 'var(--maroon)',
   metaLine = '',
-  actionsHtml = ''
+  actionsHtml = '',
+  showTypeBadge = true
 } = {}) {
   const unread = isUnread(item);
   const isExpanded = expanded != null
     ? !!expanded
     : Number(expandedId) === Number(item.id);
-  const when = new Date(item.created_at).toLocaleString();
+  const when = new Date(item.created_at || item.last_activity || 0).toLocaleString();
   const toggleAttr = onToggle || `${toggleFn}(${item.id})`;
+  const typeBadge = showTypeBadge && badgeLabel
+    ? `<span class="badge" style="background:${badgeColor};color:#fff;">${escapeHtml(badgeLabel)}</span>`
+    : '';
 
   return `
     <li class="inbox-item inbox-item--announcement ${priorityCardClass(item)} ${unread ? 'inbox-item--unread' : 'inbox-item--read'} ${isExpanded ? 'is-expanded' : ''}" data-announcement-id="${item.id}">
       <button type="button" class="inbox-item-summary" onclick="${toggleAttr}" aria-expanded="${isExpanded ? 'true' : 'false'}">
         <div class="inbox-item-summary-top">
-          <span class="badge" style="background:${badgeColor};color:#fff;">${escapeHtml(badgeLabel)}</span>
+          ${typeBadge}
           ${priorityBadgeHtml(item)}
           ${unread ? '<span class="inbox-unread-dot" title="Unread"></span>' : ''}
           <span class="inbox-item-time">${when}</span>
@@ -3658,7 +3727,8 @@ function renderTeacherConcernRow(item) {
   return renderMailConcernRow(item, {
     expandedId: teacherExpandedConcernId,
     toggleFn: 'toggleTeacherConcern',
-    metaLine: `${escapeHtml(item.parent_name || 'Parent')} · ${studentBit}`,
+    badgeLabel: item.parent_name || 'Parent',
+    metaLine: `Student: ${studentBit}`,
     canReply: true
   });
 }
@@ -3668,12 +3738,17 @@ function renderTeacherAnnouncementRow(item) {
   return renderMailAnnouncementRow(item, {
     expandedId: teacherExpandedAnnouncementId,
     toggleFn: 'toggleTeacherAnnouncement',
-    badgeLabel: 'Admin Announcement',
-    badgeColor: 'var(--maroon)',
+    showTypeBadge: false,
     metaLine: `From: ${escapeHtml(item.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(item))}`,
     actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${item.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
   });
 }
+
+let teacherInboxFilter = 'unresolved';
+let teacherExpandedConcernId = null;
+let teacherExpandedAnnouncementId = null;
+let teacherInboxSearchQuery = '';
+let teacherInboxCache = { announcements: [], concerns: [] };
 
 async function markTeacherConcernRead(id) {
   await markConcernReadForRole(id);
@@ -3726,16 +3801,64 @@ window.toggleTeacherAnnouncement = async function(id) {
   updateTeacherInboxBadge();
 };
 
+function setInboxDotBadge(badgeEl, count, label = 'unread messages') {
+  if (!badgeEl) return;
+  const n = Number(count) || 0;
+  badgeEl.textContent = '';
+  badgeEl.classList.add('inbox-badge--dot');
+  badgeEl.hidden = n === 0;
+  if (n > 0) {
+    badgeEl.setAttribute('aria-label', `${n} ${label}`);
+    badgeEl.removeAttribute('aria-hidden');
+  } else {
+    badgeEl.removeAttribute('aria-label');
+    badgeEl.setAttribute('aria-hidden', 'true');
+  }
+}
+
+function setInboxFilterCounts(buttons, countsByKey, dataAttr) {
+  if (!buttons?.forEach) return;
+  buttons.forEach((btn) => {
+    const key = btn.getAttribute(dataAttr);
+    if (!key) return;
+    const hasCount = Object.prototype.hasOwnProperty.call(countsByKey, key);
+    const n = Number(countsByKey[key]) || 0;
+    let badge = btn.querySelector('.inbox-filter-count');
+    if (!hasCount || n <= 0) {
+      if (badge) badge.hidden = true;
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'inbox-filter-count';
+      badge.setAttribute('aria-hidden', 'true');
+      btn.appendChild(badge);
+    }
+    badge.textContent = String(n);
+    badge.hidden = false;
+  });
+}
+
 function updateTeacherInboxBadge() {
   const badgeEl = document.getElementById('teacher-inbox-badge');
-  if (!badgeEl) return;
   const unreadAnnouncements = (teacherInboxCache.announcements || []).filter((a) => isUnread(a)).length;
-  const unreadOpenConcerns = (teacherInboxCache.concerns || []).filter(
-    (c) => concernIsOpen(c) && isConcernUnread(c)
-  ).length;
-  const badgeCount = unreadAnnouncements + unreadOpenConcerns;
-  badgeEl.textContent = badgeCount;
-  badgeEl.hidden = badgeCount === 0;
+  const openConcerns = (teacherInboxCache.concerns || []).filter((c) => concernIsOpen(c)).length;
+  // Dot = still has unresolved work OR unread admin notices
+  setInboxDotBadge(badgeEl, openConcerns + unreadAnnouncements, 'inbox items needing attention');
+}
+
+function updateTeacherInboxFilterCounts() {
+  const concerns = teacherInboxCache.concerns || [];
+  const announcements = teacherInboxCache.announcements || [];
+  setInboxFilterCounts(
+    document.querySelectorAll('#teacher-panel-inbox [data-inbox-filter]'),
+    {
+      unresolved: concerns.filter((c) => concernIsOpen(c)).length,
+      // resolved: no count
+      admin: announcements.filter((a) => isUnread(a)).length
+    },
+    'data-inbox-filter'
+  );
 }
 
 function paintTeacherInboxList() {
@@ -3747,6 +3870,7 @@ function paintTeacherInboxList() {
   document.querySelectorAll('#teacher-panel-inbox [data-inbox-filter]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.inboxFilter === filter);
   });
+  updateTeacherInboxFilterCounts();
 
   let items = [];
   if (filter === 'admin') {
@@ -4018,6 +4142,11 @@ function resetAdminTabState(tabId) {
   if (tabId === 'accounts') {
     currentAccountRoleFilter = 'all';
     currentAccountStatusFilter = 'active';
+    currentAccountSearch = '';
+    currentAccountSort = 'az';
+    const searchInput = document.getElementById('admin-account-search');
+    if (searchInput) searchInput.value = '';
+    accountSortMenuApi?.sync?.();
     applyAccountFilters();
   }
 }
@@ -4139,6 +4268,25 @@ document.querySelectorAll('[data-account-status]').forEach(btn => {
   });
 });
 
+document.getElementById('admin-account-search')?.addEventListener('input', (e) => {
+  currentAccountSearch = e.target.value || '';
+  applyAccountFilters();
+});
+
+accountSortMenuApi = wireDownloadSelectMenu({
+  menuId: 'admin-account-sort-menu',
+  btnId: 'admin-account-sort-btn',
+  panelId: 'admin-account-sort-panel',
+  options: [
+    { value: 'az', label: 'A–Z' },
+    { value: 'recent', label: 'Recent' }
+  ],
+  getValue: () => currentAccountSort,
+  setValue: (v) => { currentAccountSort = v === 'recent' ? 'recent' : 'az'; },
+  onPick: () => applyAccountFilters(),
+  formatButtonLabel: (opt) => (opt?.label || 'A–Z')
+});
+
 // Overview / Quick Action links that jump to other tabs
 document.querySelectorAll('[data-admin-tab-click]').forEach(link => {
   link.addEventListener('click', (e) => {
@@ -4171,7 +4319,10 @@ wireSimpleModal('teacher-add-student-modal');
 wireSimpleModal('progress-create-modal');
 wireSimpleModal('teacher-notice-modal');
 wireSimpleModal('upload-material-modal');
+wireSimpleModal('ai-generate-count-modal');
+wireSimpleModal('qb-exam-modal');
 wireSimpleModal('parent-concern-modal');
+wireSimpleModal('progress-makeup-modal');
 
 document.getElementById('parent-concern-form')?.addEventListener('submit', submitParentConcern);
 document.getElementById('concern-student')?.addEventListener('change', (e) => {
@@ -4234,12 +4385,26 @@ function paintParentInboxList() {
 
   const unreadAnn = announcements.filter((a) => isUnread(a)).length;
   const unreadMsg = notices.filter((m) => m.is_read === 0 || m.is_read === false).length;
-  const unreadOpenConcerns = concerns.filter((c) => concernIsOpen(c) && isConcernUnread(c)).length;
-  const badgeCount = unreadAnn + unreadMsg + unreadOpenConcerns;
+  const openConcerns = concerns.filter((c) => concernIsOpen(c)).length;
+  // Dot = unresolved concerns OR unread admin/teacher items
+  const badgeCount = openConcerns + unreadAnn + unreadMsg;
 
   document.querySelectorAll('[data-parent-inbox-filter]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.parentInboxFilter === filter);
   });
+
+  setInboxFilterCounts(
+    document.querySelectorAll('[data-parent-inbox-filter]'),
+    {
+      unresolved: concerns.filter((c) => concernIsOpen(c)).length,
+      // resolved: no count
+      admin: announcements.filter((a) => isAdminAnnouncement(a) && isUnread(a)).length,
+      teacher:
+        notices.filter((m) => m.is_read === 0 || m.is_read === false).length +
+        announcements.filter((a) => !isAdminAnnouncement(a) && isUnread(a)).length
+    },
+    'data-parent-inbox-filter'
+  );
 
   let html = '';
   let emptyLabel = 'messages';
@@ -4256,7 +4421,8 @@ function paintParentInboxList() {
     html = items.map((c) => renderMailConcernRow(c, {
       expandedId: parentExpandedConcernId,
       toggleFn: 'toggleParentConcern',
-      metaLine: `To: ${escapeHtml(c.teacher_name || 'Teacher')} · Student: ${escapeHtml(c.student_name || 'N/A')}`,
+      badgeLabel: c.teacher_name || 'Teacher',
+      metaLine: `Student: ${escapeHtml(c.student_name || 'N/A')}`,
       canReply: true
     })).join('');
   } else if (filter === 'admin') {
@@ -4270,14 +4436,13 @@ function paintParentInboxList() {
       return renderMailAnnouncementRow(a, {
         expanded: parentExpandedInboxKey === key,
         onToggle: `toggleParentInboxItem('${key}')`,
-        badgeLabel: 'Announcement',
-        badgeColor: 'var(--maroon)',
+        showTypeBadge: false,
         metaLine: `From: ${escapeHtml(a.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(a))}`,
         actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
       });
     }).join('');
   } else {
-    // teacher notices + teacher-sent announcements
+    // teacher notices + teacher-sent announcements (newest first, interleaved)
     let shownAnn = announcements.filter((a) => !isAdminAnnouncement(a));
     let shownNotices = [...notices];
     shownAnn = shownAnn.filter((a) => matchesInboxSearch(a, q));
@@ -4286,25 +4451,37 @@ function paintParentInboxList() {
       title: m.subject,
       body: m.message
     }, q));
-    shownAnn.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    shownNotices.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     emptyLabel = String(q || '').trim() ? 'matches' : 'teacher notices';
 
-    const noticeHtml = shownNotices.map((m) => {
-      const key = `msg-${m.id}`;
-      const unread = m.is_read === 0 || m.is_read === false;
-      const item = { ...m, title: m.subject, body: m.message, is_read: unread ? 0 : 1 };
-      return renderMailAnnouncementRow(item, {
-        expanded: parentExpandedInboxKey === key,
-        onToggle: `toggleParentInboxItem('${key}')`,
-        badgeLabel: 'Teacher notice',
-        badgeColor: 'var(--orange)',
-        metaLine: `From: ${escapeHtml(m.sender_name || 'Teacher')}${m.student_name ? ` · Student: ${escapeHtml(m.student_name)}` : ''}`,
-        actionsHtml: `<button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
-      });
-    }).join('');
+    const merged = [
+      ...shownNotices.map((m) => ({
+        kind: 'msg',
+        t: new Date(m.created_at || 0).getTime() || 0,
+        m
+      })),
+      ...shownAnn.map((a) => ({
+        kind: 'ann',
+        t: new Date(a.created_at || 0).getTime() || 0,
+        a
+      }))
+    ].sort((x, y) => y.t - x.t);
 
-    const annHtml = shownAnn.map((a) => {
+    html = merged.map((row) => {
+      if (row.kind === 'msg') {
+        const m = row.m;
+        const key = `msg-${m.id}`;
+        const unread = m.is_read === 0 || m.is_read === false;
+        const item = { ...m, title: m.subject, body: m.message, is_read: unread ? 0 : 1 };
+        return renderMailAnnouncementRow(item, {
+          expanded: parentExpandedInboxKey === key,
+          onToggle: `toggleParentInboxItem('${key}')`,
+          badgeLabel: 'Teacher notice',
+          badgeColor: 'var(--orange)',
+          metaLine: `From: ${escapeHtml(m.sender_name || 'Teacher')}${m.student_name ? ` · Student: ${escapeHtml(m.student_name)}` : ''}`,
+          actionsHtml: `<button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+        });
+      }
+      const a = row.a;
       const key = `ann-${a.id}`;
       const unread = isUnread(a);
       return renderMailAnnouncementRow(a, {
@@ -4316,7 +4493,6 @@ function paintParentInboxList() {
         actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
       });
     }).join('');
-    html = `${noticeHtml}${annHtml}`;
   }
 
   const markAllBtn = filter === 'admin' && unreadAnn > 0 && !String(q || '').trim()
@@ -4331,10 +4507,7 @@ function paintParentInboxList() {
   }
 
   const badgeEl = document.getElementById('parent-inbox-badge');
-  if (badgeEl) {
-    badgeEl.textContent = badgeCount;
-    badgeEl.hidden = badgeCount === 0;
-  }
+  setInboxDotBadge(badgeEl, badgeCount, 'inbox items needing attention');
 }
 
 async function renderParentInbox() {
@@ -4371,12 +4544,12 @@ async function renderParentInbox() {
     contentEl.innerHTML = `
       <div class="parent-main">
         <div class="chart-card">
-          <div class="teacher-header-row" style="margin-bottom:8px;">
+          <div class="teacher-header-row">
             <div>
               <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Inbox</h3>
               <p class="page-subheading" style="margin:4px 0 0;">Concerns, teacher notices, and school announcements.</p>
             </div>
-            <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-parent-concern-modal">+ Send concern</button>
+            <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-parent-concern-modal">+ Send Concern</button>
           </div>
           <div class="inbox-filters">
             <button type="button" class="${filter === 'unresolved' ? 'active' : ''}" data-parent-inbox-filter="unresolved">Unresolved</button>
@@ -4465,7 +4638,7 @@ const teacherBackBtn = document.getElementById('teacher-back-btn');
 const TEACHER_PANEL_TITLES = {
   classroom: 'Teacher Portal',
   'attendance-sheet': 'Attendance Sheet',
-  progress: 'Progress',
+  progress: 'Records',
   'lesson-plans': 'Materials',
   'quiz-bank': 'Classwork',
   inbox: 'Inbox'
@@ -4738,6 +4911,94 @@ function typeLabel(type) {
   if (type === 'activity') return 'Activity';
   if (type === 'exam') return 'Exam';
   return type || 'Record';
+}
+
+function bankItemTypeLabelClient(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'mcq') return 'Multiple choice';
+  if (t === 'identification') return 'Identification';
+  if (t === 'enumeration') return 'Enumeration';
+  if (t === 'short_answer') return 'Short answer';
+  if (t === 'activity_prompt') return 'Activity';
+  return type ? String(type) : 'Multiple choice';
+}
+
+const BANK_TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity_prompt'];
+
+function groupBankItemsByType(items) {
+  const map = new Map();
+  for (const item of items || []) {
+    const key = String(item.item_type || 'mcq');
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(item);
+  }
+  const ordered = [];
+  for (const key of BANK_TYPE_ORDER) {
+    if (map.has(key)) {
+      ordered.push({ item_type: key, label: bankItemTypeLabelClient(key), items: map.get(key) });
+      map.delete(key);
+    }
+  }
+  for (const [key, list] of map.entries()) {
+    ordered.push({ item_type: key, label: bankItemTypeLabelClient(key), items: list });
+  }
+  return ordered;
+}
+
+function collectSectionTotalsFromWrap(wrapEl) {
+  const out = {};
+  if (!wrapEl) return out;
+  wrapEl.querySelectorAll('input[data-section-type]').forEach((input) => {
+    const key = input.dataset.sectionType;
+    const n = Number(input.value);
+    if (key && Number.isFinite(n) && n >= 0) out[key] = n;
+  });
+  return out;
+}
+
+function sumSectionTotals(sectionTotals) {
+  return Object.values(sectionTotals || {}).reduce((s, n) => s + (Number(n) || 0), 0);
+}
+
+function renderScoreSections(wrapId, items, { syncMaxInputId = null, resetValues = true } = {}) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return {};
+  const groups = groupBankItemsByType(items);
+  if (!groups.length) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    return {};
+  }
+  wrap.hidden = false;
+  const prev = resetValues ? {} : collectSectionTotalsFromWrap(wrap);
+  wrap.innerHTML = groups.map((g) => {
+    const defaultPts = g.items.reduce((s, it) => s + (Number(it.points) || 1), 0);
+    const val = prev[g.item_type] != null ? prev[g.item_type] : Math.round(defaultPts * 100) / 100;
+    return `
+      <div class="qb-score-section-row">
+        <span>${escapeHtml(g.label)} · ${g.items.length} item(s)</span>
+        <label>
+          <span>Part total</span>
+          <input type="number" min="0" max="9999" step="0.5" data-section-type="${escapeHtml(g.item_type)}" value="${val}" />
+        </label>
+      </div>`;
+  }).join('');
+
+  const syncMax = () => {
+    const totals = collectSectionTotalsFromWrap(wrap);
+    const sum = Math.round(sumSectionTotals(totals) * 100) / 100;
+    if (syncMaxInputId) {
+      const maxInput = document.getElementById(syncMaxInputId);
+      if (maxInput) maxInput.value = String(Math.max(1, sum || 1));
+    }
+  };
+
+  wrap.querySelectorAll('input[data-section-type]').forEach((input) => {
+    input.addEventListener('input', syncMax);
+    input.addEventListener('change', syncMax);
+  });
+  syncMax();
+  return collectSectionTotalsFromWrap(wrap);
 }
 
 function normalizeClassSubjects(raw) {
@@ -5124,7 +5385,7 @@ async function refreshClassroomAttendanceStatus() {
     if (data.complete) {
       el.style.display = 'block';
       el.style.color = '#1b5e20';
-      el.textContent = `Attendance complete for today (${data.total} students). You can enable a shared quiz in Progress.`;
+      el.textContent = `Attendance complete for today (${data.total} students). You can enable a shared link in Records.`;
     } else {
       const n = Array.isArray(data.unmarked) ? data.unmarked.length : 0;
       el.style.display = 'block';
@@ -5811,11 +6072,9 @@ function showProgressCreateForm(show) {
     const msg = document.getElementById('progress-create-msg');
     if (msg) msg.textContent = '';
     const titleEl = document.getElementById('progress-title');
-    const linkEl = document.getElementById('progress-quiz-link');
     const maxEl = document.getElementById('progress-max');
     const typeEl = document.getElementById('progress-type');
     if (titleEl) titleEl.value = '';
-    if (linkEl) linkEl.value = '';
     if (maxEl) maxEl.value = '100';
     if (typeEl) typeEl.value = 'quiz';
     modal.hidden = false;
@@ -5842,7 +6101,7 @@ function renderProgressCards(records) {
   if (!listEl) return;
 
   if (!records.length) {
-    listEl.innerHTML = '<p class="empty-state">No progress records yet. For a live ConnectED quiz, create from Classwork. Use + New Record for manual scores only.</p>';
+    listEl.innerHTML = '<p class="empty-state">No progress records yet. For a live ConnectED link, create from Classwork. Use + New Record for manual scores only.</p>';
     return;
   }
 
@@ -5856,30 +6115,28 @@ function renderProgressCards(records) {
           <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
           <h4 style="margin:0;">${escapeHtml(r.title)}</h4>
           ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
-          ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live quiz</span>' : ''}
+          ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live link</span>' : ''}
         </div>
         ${shareActive
-          ? `<button type="button" class="chip-ghost progress-card-copy-link" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy link</button>`
+          ? `<button type="button" class="chip-ghost progress-card-copy-link" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy Link</button>`
           : ''}
       </div>
-      <p>${escapeHtml(r.subject_name || 'No subject')} · Max ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}${
+      <p>${escapeHtml(r.subject_name || 'No subject')} · Total score ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}${
         shareActive && r.quiz_attendance_date
-          ? ` · Gate ${String(r.quiz_attendance_date).slice(0, 10)}${r.quiz_attendance_session && Number(r.grade_level) < 4 ? ' ' + r.quiz_attendance_session : ''}`
+          ? ` · ${String(r.quiz_attendance_date).slice(0, 10)}${r.quiz_attendance_session && Number(r.grade_level) < 4 ? ' ' + r.quiz_attendance_session : ''}`
           : ''
       }</p>
       <div class="lesson-plan-card-actions">
-        <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'view')">View scores</button>
+        <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'view')">View Scores</button>
         ${shareActive
-          ? `<button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn off link</button>`
+          ? `<button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn Off Link</button>`
           : hasQuestions
-            ? `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable link</button>`
+            ? `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable Link</button>`
             : ''}
         ${r.quiz_link
-          ? `<button type="button" class="chip-ghost" onclick="copyExternalQuizLink(${r.id})">Copy online link</button>
-             <a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open online quiz</a>`
-          : !hasQuestions
-            ? `<button type="button" class="chip-ghost" onclick="openProgressEditor(${r.id}, 'edit')">Add online link</button>`
-            : ''}
+          ? `<button type="button" class="chip-ghost" onclick="copyExternalQuizLink(${r.id})">Copy Online Link</button>
+             <a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open Online Link</a>`
+          : ''}
         <button type="button" class="chip-ghost chip-danger" onclick="deleteProgressRecord(${r.id})">Delete</button>
       </div>
     </article>`;
@@ -5975,8 +6232,8 @@ window.openProgressEditor = async function(id, mode = 'view') {
     editor.removeAttribute('hidden');
   }
 
-  const editMode = mode === 'edit';
-  if (editor) editor.dataset.mode = editMode ? 'edit' : 'view';
+  const normalizedMode = mode === 'edit' || mode === 'link' ? mode : 'view';
+  if (editor) editor.dataset.mode = normalizedMode;
 
   try {
     const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
@@ -5988,21 +6245,54 @@ window.openProgressEditor = async function(id, mode = 'view') {
     const a = data.assessment;
     progressEditorMax = Number(a.max_score) || 100;
     if (editor) editor.dataset.assessmentId = String(a.id);
+    window._progressEditorAssessment = a;
+    window._progressEditorStudents = data.students || [];
+    window._progressEditorMakeupCandidates = data.makeup_candidates || [];
+
+    const questions = Array.isArray(data.questions) ? data.questions : [];
+    window._progressEditorQuestions = questions;
+    const hasQuestions = questions.length > 0;
+    if (editor) editor.dataset.hasQuestions = hasQuestions ? '1' : '0';
+
+    // Manual New Record (no questions): scores only — no Shared link / online enable
+    let effectiveMode = normalizedMode;
+    if (!hasQuestions && effectiveMode === 'link') {
+      effectiveMode = 'edit';
+      if (editor) editor.dataset.mode = effectiveMode;
+    }
+
     const titleEl = document.getElementById('progress-editor-title');
     const metaEl = document.getElementById('progress-editor-meta');
     if (titleEl) titleEl.textContent = a.title;
     if (metaEl) {
-      metaEl.textContent = `${typeLabel(a.type)} · ${a.subject_name || 'No subject'} · Max ${progressEditorMax}` +
-        (editMode ? ' · Editing' : ' · Viewing');
+      const modeLabel = effectiveMode === 'edit'
+        ? ' · Editing scores'
+        : effectiveMode === 'link'
+          ? ' · Shared link'
+          : ' · Viewing';
+      metaEl.textContent = `${typeLabel(a.type)} · ${a.subject_name || 'No subject'} · Total score ${progressEditorMax}${modeLabel}`;
     }
 
-    setProgressEditorMode(editMode);
+    setProgressEditorMode(effectiveMode, hasQuestions);
+
+    const printPaperBtn = document.getElementById('progress-print-paper');
+    const printKeyBtn = document.getElementById('progress-print-key');
+    if (printPaperBtn) {
+      printPaperBtn.hidden = !hasQuestions;
+      if (hasQuestions) printPaperBtn.removeAttribute('hidden');
+      else printPaperBtn.setAttribute('hidden', '');
+    }
+    if (printKeyBtn) {
+      printKeyBtn.hidden = !hasQuestions;
+      if (hasQuestions) printKeyBtn.removeAttribute('hidden');
+      else printKeyBtn.setAttribute('hidden', '');
+    }
 
     const linkInput = document.getElementById('progress-editor-quiz-link');
     const linkOpen = document.getElementById('progress-quiz-link-open');
     if (linkInput) {
       linkInput.value = a.quiz_link || '';
-      linkInput.readOnly = !editMode;
+      linkInput.readOnly = effectiveMode !== 'link';
     }
     if (linkOpen) {
       if (a.quiz_link) {
@@ -6014,64 +6304,50 @@ window.openProgressEditor = async function(id, mode = 'view') {
       }
     }
 
-    updateProgressMakeupUi(a, data.makeup_candidates);
-
     const qWrap = document.getElementById('progress-attached-questions');
     const qList = document.getElementById('progress-questions-list');
-    const questions = Array.isArray(data.questions) ? data.questions : [];
-    window._progressEditorQuestions = questions;
+    const qCount = document.getElementById('progress-questions-count');
     updateProgressShareUi(a, data.attendance_meta, questions.length);
     if (qWrap && qList) {
-      if (editMode && questions.length) {
+      if (effectiveMode === 'link' && questions.length) {
         qWrap.hidden = false;
-        qList.innerHTML = questions.map((q) => {
+        qWrap.removeAttribute('hidden');
+        if (qCount) qCount.textContent = `(${questions.length})`;
+        qList.innerHTML = questions.map((q, idx) => {
+          const type = String(q.item_type || 'mcq').toLowerCase();
+          const pts = Number(q.points) || 1;
+          const typeLabelText = bankItemTypeLabel(type);
           const choices = Array.isArray(q.choices) && q.choices.length
             ? `<ul class="progress-choice-list">${q.choices.map((c, i) =>
                 `<li><strong>${String.fromCharCode(65 + i)}.</strong> ${escapeHtml(c)}</li>`
               ).join('')}</ul>`
             : '';
-          return `<li><div>${escapeHtml(q.question || '')}</div>${choices}</li>`;
+          const answer = q.answer
+            ? `<div class="progress-q-answer"><strong>Correct:</strong> ${escapeHtml(String(q.answer))}</div>`
+            : '';
+          return `<li class="progress-q-item">
+            <span class="progress-q-num">${idx + 1}.</span>
+            <div class="progress-q-body">
+              <div class="progress-q-meta">
+                <span class="progress-q-type">${escapeHtml(typeLabelText)}</span>
+                <span class="progress-q-pts">${pts} pt${pts === 1 ? '' : 's'}</span>
+              </div>
+              <div class="progress-q-text">${escapeHtml(q.question || '')}</div>
+              ${choices}
+              ${answer}
+            </div>
+          </li>`;
         }).join('');
       } else {
         qWrap.hidden = true;
+        qWrap.setAttribute('hidden', '');
         qList.innerHTML = '';
+        if (qCount) qCount.textContent = '';
       }
     }
 
-    const tbody = document.querySelector('#progress-scores-table tbody');
-    const sortedStudents = [...(data.students || [])].sort(compareStudentsByName);
-    tbody.innerHTML = sortedStudents.map(s => {
-      const score = s.score === null || s.score === undefined ? '' : s.score;
-      const pct = score === '' ? '—' : `${Math.round((Number(score) / progressEditorMax) * 100)}%`;
-      if (editMode) {
-        return `
-        <tr data-student-id="${s.id}">
-          <td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>
-          <td>
-            <input type="number" class="progress-score-input" min="0" max="${progressEditorMax}" step="0.01"
-                   value="${score}" data-student-id="${s.id}" style="width:90px;" />
-          </td>
-          <td class="progress-pct-cell">${pct}</td>
-        </tr>`;
-      }
-      return `
-        <tr data-student-id="${s.id}">
-          <td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>
-          <td>${score === '' ? '—' : escapeHtml(String(score))}</td>
-          <td>${pct}</td>
-        </tr>`;
-    }).join('');
-
-    if (editMode) {
-      tbody.querySelectorAll('.progress-score-input').forEach(input => {
-        input.addEventListener('input', () => {
-          const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
-          if (!cell) return;
-          if (input.value === '') { cell.textContent = '—'; return; }
-          const n = Number(input.value);
-          cell.textContent = Number.isNaN(n) ? '—' : `${Math.round((n / progressEditorMax) * 100)}%`;
-        });
-      });
+    if (effectiveMode !== 'link') {
+      renderProgressScoresTable(effectiveMode, a, data.students || []);
     }
   } catch (err) {
     showToast(err.message, 'error');
@@ -6079,40 +6355,257 @@ window.openProgressEditor = async function(id, mode = 'view') {
   }
 };
 
-function setProgressEditorMode(editMode) {
-  const saveBtn = document.getElementById('progress-scores-save');
-  const viewBtn = document.getElementById('progress-mode-view');
-  const editBtn = document.getElementById('progress-mode-edit');
-  const linkSave = document.getElementById('progress-quiz-link-save');
-  if (saveBtn) saveBtn.hidden = !editMode;
-  if (viewBtn) viewBtn.hidden = !editMode;
-  if (editBtn) editBtn.hidden = editMode;
-  if (linkSave) linkSave.hidden = !editMode;
+function renderProgressScoresTable(mode, assessment, students) {
+  const theadRow = document.getElementById('progress-scores-thead-row');
+  const tbody = document.querySelector('#progress-scores-table tbody');
+  const table = document.getElementById('progress-scores-table');
+  const makeupAllBtn = document.getElementById('progress-makeup-all');
+  if (!tbody) return;
 
-  // View scores = scores only; share / makeup / links / questions stay in Edit
-  document.querySelectorAll('#progress-editor .progress-manage-only').forEach((el) => {
-    if (el.id === 'progress-attached-questions' || el.id === 'progress-makeup-section') {
-      // These also have their own visibility rules; force-hide in view mode.
-      if (!editMode) {
-        el.hidden = true;
-        el.setAttribute('hidden', '');
+  const sortedStudents = [...(students || [])].sort(compareStudentsByAttendanceOrder);
+  const shareOn = assessment && Number(assessment.share_enabled) === 1;
+  const editMode = mode === 'edit';
+  if (table) table.classList.toggle('progress-scores-table--edit', editMode);
+
+  if (theadRow) {
+    theadRow.innerHTML = editMode
+      ? '<th>Student</th><th>Score</th><th>%</th><th>Attendance</th><th>Access</th>'
+      : '<th>Student</th><th>Score</th><th>%</th>';
+  }
+
+  let makeupEligible = 0;
+  tbody.innerHTML = sortedStudents.map((s) => {
+    const score = s.score === null || s.score === undefined ? '' : s.score;
+    const pct = score === '' ? '—' : `${Math.round((Number(score) / progressEditorMax) * 100)}%`;
+    const nameCell = `<td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>`;
+
+    if (editMode) {
+      const st = String(s.attendance_status || '');
+      const letter = statusToLetter(st);
+      const attHtml = letter
+        ? `<span class="${letterClass(letter)}" title="${escapeHtml(st)}">${letter}</span>`
+        : '<span class="att-mark att-mark-empty" title="Not recorded">—</span>';
+
+      let accessHtml = '<span class="progress-access-none">—</span>';
+      if (s.submitted) {
+        accessHtml = '<span class="progress-access-submitted">Submitted</span>';
+      } else if (shareOn && (st === 'Absent' || st === 'Excused')) {
+        if (s.makeup) {
+          accessHtml = `<button type="button" class="chip-ghost" onclick="revokeMakeupForStudent(${s.id})">Unallow</button>`;
+        } else {
+          makeupEligible += 1;
+          accessHtml = `<button type="button" class="chip-ghost primary" onclick="grantMakeupForStudent(${s.id})">Allow Access</button>`;
+        }
       }
-      return;
+
+      return `
+        <tr data-student-id="${s.id}">
+          ${nameCell}
+          <td>
+            <input type="number" class="progress-score-input" min="0" max="${progressEditorMax}" step="0.01"
+                   value="${score}" data-student-id="${s.id}" style="width:90px;" />
+          </td>
+          <td class="progress-pct-cell">${pct}</td>
+          <td class="progress-att-cell">${attHtml}</td>
+          <td class="progress-access-cell">${accessHtml}</td>
+        </tr>`;
     }
-    el.hidden = !editMode;
-    if (editMode) el.removeAttribute('hidden');
+
+    return `
+      <tr data-student-id="${s.id}">
+        ${nameCell}
+        <td>${score === '' ? '—' : escapeHtml(String(score))}</td>
+        <td>${pct}</td>
+      </tr>`;
+  }).join('');
+
+  if (makeupAllBtn) {
+    const showAll = editMode && shareOn && makeupEligible > 0;
+    makeupAllBtn.hidden = !showAll;
+    if (showAll) makeupAllBtn.removeAttribute('hidden');
+    else makeupAllBtn.setAttribute('hidden', '');
+  }
+
+  if (editMode) {
+    tbody.querySelectorAll('.progress-score-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
+        if (!cell) return;
+        if (input.value === '') { cell.textContent = '—'; return; }
+        const n = Number(input.value);
+        cell.textContent = Number.isNaN(n) ? '—' : `${Math.round((n / progressEditorMax) * 100)}%`;
+      });
+    });
+  }
+}
+
+function setProgressEditorMode(mode, hasQuestions = true) {
+  const normalized = mode === 'edit' || mode === 'link' ? mode : 'view';
+  const saveBtn = document.getElementById('progress-scores-save');
+  const editBtn = document.getElementById('progress-mode-edit');
+  const linkBtn = document.getElementById('progress-mode-link');
+  const linkSave = document.getElementById('progress-quiz-link-save');
+  const scoresSection = document.querySelector('#progress-editor .progress-scores-only');
+  const allowLink = !!hasQuestions;
+
+  if (saveBtn) saveBtn.hidden = normalized !== 'edit';
+  if (linkSave) linkSave.hidden = normalized !== 'link';
+
+  if (editBtn) {
+    editBtn.hidden = normalized === 'edit';
+    if (normalized === 'edit') editBtn.setAttribute('hidden', '');
+    else editBtn.removeAttribute('hidden');
+  }
+  // Shared link only for Classwork-created quizzes (questions attached)
+  if (linkBtn) {
+    const showLinkBtn = allowLink && normalized !== 'link';
+    linkBtn.hidden = !showLinkBtn;
+    if (showLinkBtn) linkBtn.removeAttribute('hidden');
+    else linkBtn.setAttribute('hidden', '');
+  }
+
+  document.querySelectorAll('#progress-editor .progress-link-only').forEach((el) => {
+    const show = allowLink && normalized === 'link';
+    el.hidden = !show;
+    if (show) el.removeAttribute('hidden');
     else el.setAttribute('hidden', '');
   });
+
+  if (scoresSection) {
+    const showScores = !allowLink || normalized !== 'link';
+    scoresSection.hidden = !showScores;
+    if (showScores) scoresSection.removeAttribute('hidden');
+    else scoresSection.setAttribute('hidden', '');
+  }
 }
+
+function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
+  const type = String(q.item_type || 'mcq').toLowerCase();
+  const pts = Number(q.points) || 1;
+  const typeLabelText = bankItemTypeLabel(type);
+  let body = `<div class="q-text">${escapeHtml(q.question || '')}</div>`;
+
+  if (type === 'mcq' && Array.isArray(q.choices) && q.choices.length) {
+    body += `<ol class="choices" type="A">${q.choices.map((c) =>
+      `<li>${escapeHtml(c)}</li>`
+    ).join('')}</ol>`;
+  } else if (type === 'activity_prompt') {
+    body += '<div class="write-lines"><em>Performance / activity space — use attached rubric or teacher instructions.</em></div>';
+  } else {
+    body += '<div class="write-lines">_______________________________________________</div>';
+    body += '<div class="write-lines">_______________________________________________</div>';
+  }
+
+  let answerBlock = '';
+  if (includeAnswers && q.answer) {
+    answerBlock = `<div class="answer-key"><strong>Answer:</strong> ${escapeHtml(String(q.answer))}</div>`;
+  }
+
+  return `
+    <div class="q-block">
+      <div class="q-head"><strong>${index + 1}.</strong> <span class="q-type">${escapeHtml(typeLabelText)}</span> <span class="q-pts">(${pts} pt${pts === 1 ? '' : 's'})</span></div>
+      ${body}
+      ${answerBlock}
+    </div>`;
+}
+
+function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
+  const a = window._progressEditorAssessment;
+  const questions = Array.isArray(window._progressEditorQuestions) ? window._progressEditorQuestions : [];
+  if (!a || !questions.length) {
+    showToast('No attached questions to print.', 'error');
+    return;
+  }
+
+  const maxScore = Number(a.max_score) || questions.reduce((s, q) => s + (Number(q.points) || 1), 0);
+  const heading = includeAnswers
+    ? `${escapeHtml(a.title || 'Assessment')} — ANSWER KEY (Teacher only)`
+    : escapeHtml(a.title || 'Assessment');
+  const meta = [
+    typeLabel(a.type),
+    a.subject_name || null,
+    a.grade_level != null ? `Grade ${a.grade_level}${a.section ? `-${a.section}` : ''}` : null,
+    a.quarter || null,
+    `${questions.length} item(s)`,
+    `Total score ${Math.round(maxScore * 100) / 100}`
+  ].filter(Boolean).join(' · ');
+
+  const nameBlock = includeAnswers
+    ? ''
+    : `<div class="name-row"><span>Name: _______________________________</span><span>Score: ______ / ${Math.round(maxScore * 100) / 100}</span></div>`;
+
+  const groups = groupBankItemsByType(questions);
+  const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+  let qIndex = 0;
+  const bodyParts = groups.map((g, gi) => {
+    const partPts = g.items.reduce((s, q) => s + (Number(q.points) || 1), 0);
+    const partLabel = roman[gi] || String(gi + 1);
+    const sectionHead = `<h2 class="section-head">${partLabel}. ${escapeHtml(g.label)} <span class="q-pts">(${Math.round(partPts * 100) / 100} pts)</span></h2>`;
+    const itemsHtml = g.items.map((q) => {
+      const html = assessmentPaperItemHtml(q, qIndex, { includeAnswers });
+      qIndex += 1;
+      return html;
+    }).join('');
+    return `${sectionHead}${itemsHtml}`;
+  });
+
+  const bodyHtml = `
+    <h1>${heading}</h1>
+    <p class="meta">${escapeHtml(meta)}</p>
+    ${nameBlock}
+    ${includeAnswers ? '<p class="meta"><strong>Do not distribute to students.</strong></p>' : ''}
+    ${bodyParts.join('')}
+  `;
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${includeAnswers ? 'Answer Key' : '\u00A0'}</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #222; padding: 20px; font-size: 12px; line-height: 1.45; }
+      h1 { font-size: 16px; margin: 0 0 6px; color: #3d0a0a; }
+      h2.section-head { font-size: 13px; margin: 18px 0 10px; color: #3d0a0a; page-break-after: avoid; }
+      .meta { margin: 0 0 14px; color: #555; font-size: 11px; }
+      .name-row { display: flex; justify-content: space-between; gap: 16px; margin: 0 0 18px; font-size: 12px; }
+      .q-block { margin: 0 0 16px; page-break-inside: avoid; }
+      .q-head { margin-bottom: 4px; }
+      .q-type { color: #7a3b12; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; }
+      .q-pts { color: #666; font-size: 11px; }
+      .q-text { margin: 0 0 6px; white-space: pre-wrap; }
+      ol.choices { margin: 4px 0 0 1.2em; padding: 0; }
+      ol.choices li { margin: 2px 0; }
+      .write-lines { margin: 6px 0 0; color: #888; }
+      .answer-key { margin-top: 6px; padding: 6px 8px; background: #fff6e8; border-left: 3px solid #c47a12; }
+      @media print {
+        body { padding: 0; }
+        @page { margin: 12mm; }
+      }
+    </style>
+  </head><body>${bodyHtml}</body></html>`;
+
+  printHtmlInHiddenFrame(html);
+  showToast(includeAnswers ? 'Opening answer key print dialog…' : 'Opening exam paper print dialog (Save as PDF).');
+}
+
+document.getElementById('progress-print-paper')?.addEventListener('click', () => {
+  exportAssessmentPaperPdf({ includeAnswers: false });
+});
+
+document.getElementById('progress-print-key')?.addEventListener('click', () => {
+  exportAssessmentPaperPdf({ includeAnswers: true });
+});
 
 document.getElementById('progress-mode-edit')?.addEventListener('click', () => {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
   if (id) openProgressEditor(id, 'edit');
 });
 
-document.getElementById('progress-mode-view')?.addEventListener('click', () => {
-  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
-  if (id) openProgressEditor(id, 'view');
+document.getElementById('progress-mode-link')?.addEventListener('click', () => {
+  const editor = document.getElementById('progress-editor');
+  const id = editor?.dataset.assessmentId;
+  if (!id) return;
+  if (editor?.dataset.hasQuestions !== '1') {
+    showToast('Live shared link is only for records created from Classwork.', 'error');
+    return;
+  }
+  openProgressEditor(id, 'link');
 });
 
 window.deleteProgressRecord = async function(id) {
@@ -6153,7 +6646,6 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
   const type = document.getElementById('progress-type')?.value;
   const subjectId = document.getElementById('progress-subject')?.value;
   const maxScore = document.getElementById('progress-max')?.value;
-  const quizLink = document.getElementById('progress-quiz-link')?.value.trim() || '';
   if (!title) {
     if (msg) msg.textContent = 'Please enter a title.';
     return;
@@ -6170,16 +6662,13 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
         grade_level: teacherCurrentClass.grade,
         section: teacherCurrentClass.section,
         max_score: maxScore,
-        quarter: teacherCurrentQuarter,
-        quiz_link: quizLink || null
+        quarter: teacherCurrentQuarter
       })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     document.getElementById('progress-title').value = '';
-    const linkEl = document.getElementById('progress-quiz-link');
-    if (linkEl) linkEl.value = '';
-    showToast('Progress record created.');
+    showToast('Record created. Enter scores below.');
     showProgressCreateForm(false);
     await loadProgressList();
     if (data.id) openProgressEditor(data.id, 'edit');
@@ -6211,7 +6700,7 @@ document.getElementById('progress-quiz-link-save')?.addEventListener('click', as
         linkOpen.hidden = true;
       }
     }
-    showToast(data.quiz_link ? 'Quiz link saved.' : 'Quiz link cleared.');
+    showToast(data.quiz_link ? 'Online link saved.' : 'Online link cleared.');
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -6221,15 +6710,93 @@ function sharedQuizAbsoluteUrl(token) {
   return `${window.location.origin}/quiz/${token}`;
 }
 
+/** Format a Date or SQL datetime as datetime-local value (Asia/Manila wall clock). */
+function toDatetimeLocalValue(value) {
+  if (value == null || value === '') return '';
+  let y; let m; let d; let hh; let mm;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const cleaned = value.replace('T', ' ').slice(0, 16);
+    const [datePart, timePart = '00:00'] = cleaned.split(' ');
+    [y, m, d] = datePart.split('-');
+    [hh, mm] = timePart.split(':');
+    return `${y}-${m}-${d}T${hh}:${mm}`;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value || '00';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+}
+
+function formatSharePreviewLocal(localValue) {
+  if (!localValue) return '';
+  const d = new Date(localValue);
+  if (Number.isNaN(d.getTime())) return localValue.replace('T', ' ');
+  return d.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  });
+}
+
+function estimateLiveClosesLocal() {
+  const mins = Number(document.getElementById('progress-share-live-duration')?.value);
+  if (!Number.isFinite(mins) || mins < 5) return '';
+  return toDatetimeLocalValue(new Date(Date.now() + mins * 60 * 1000));
+}
+
+function syncProgressShareWindowModeUi() {
+  const livePreview = document.getElementById('progress-share-live-preview');
+  const liveEst = estimateLiveClosesLocal();
+  if (livePreview) {
+    livePreview.textContent = liveEst
+      ? `Link closes at: ${formatSharePreviewLocal(liveEst)}`
+      : 'Enter minutes open to see when the link closes.';
+  }
+}
+
+function fillProgressShareWindowDefaults(_assessment) {
+  const liveDuration = document.getElementById('progress-share-live-duration');
+  if (liveDuration && !liveDuration.value) liveDuration.value = '60';
+  syncProgressShareWindowModeUi();
+}
+
+function collectProgressShareWindowBody() {
+  const mins = Number(document.getElementById('progress-share-live-duration')?.value);
+  if (!Number.isFinite(mins) || mins < 5) {
+    throw new Error('Link must stay open at least 5 minutes.');
+  }
+  return { live_duration_minutes: mins };
+}
+
+function isMakeupDeadlineStillOpen(assessment) {
+  const raw = assessment?.quiz_makeup_closes_at;
+  if (!raw) return false;
+  const local = toDatetimeLocalValue(raw);
+  if (!local) return false;
+  const end = new Date(local);
+  if (Number.isNaN(end.getTime())) return false;
+  return end.getTime() > Date.now();
+}
+
 function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   const urlInput = document.getElementById('progress-share-url');
   const assignBtn = document.getElementById('progress-share-assign');
+  const saveWindowsBtn = document.getElementById('progress-share-save-windows');
   const copyBtn = document.getElementById('progress-share-copy');
   const revokeBtn = document.getElementById('progress-share-revoke');
   const openBtn = document.getElementById('progress-share-open');
   const noteEl = document.getElementById('progress-share-attendance-note');
   const active = assessment && Number(assessment.share_enabled) === 1 && assessment.share_token;
   const hasQuestions = Number(questionCount) > 0;
+  fillProgressShareWindowDefaults(assessment);
   if (urlInput) {
     urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token) : '';
   }
@@ -6237,9 +6804,10 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
     assignBtn.hidden = !!active;
     assignBtn.disabled = !active && !hasQuestions;
     assignBtn.title = !hasQuestions && !active
-      ? 'Create this quiz from Classwork with selected questions first'
+      ? 'Create this record from Classwork with selected items first'
       : '';
   }
+  if (saveWindowsBtn) saveWindowsBtn.hidden = !active;
   if (copyBtn) copyBtn.hidden = !active;
   if (revokeBtn) revokeBtn.hidden = !active;
   if (openBtn) {
@@ -6259,111 +6827,183 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
         : '';
       return `${meta.date}${sess}`;
     };
+    const windowNote = (() => {
+      if (!assessment?.quiz_closes_at && !assessment?.quiz_makeup_closes_at) return '';
+      const live = assessment.quiz_closes_at
+        ? `Link until ${toDatetimeLocalValue(assessment.quiz_closes_at).replace('T', ' ')}`
+        : '';
+      const makeup = assessment.quiz_makeup_closes_at
+        ? `Make-up until ${toDatetimeLocalValue(assessment.quiz_makeup_closes_at).replace('T', ' ')}`
+        : '';
+      return [live, makeup].filter(Boolean).join(' · ');
+    })();
     if (!hasQuestions && !active) {
-      noteEl.textContent = 'No questions attached. Create a Progress quiz from Classwork (select items → Next), then Enable link here. + New Record is for manual scores only.';
+      noteEl.textContent = 'No questions attached. Create a Progress Record from Classwork (select items → Next), then Enable Link here. + New Record is for manual scores only.';
       noteEl.style.color = '#b71c1c';
     } else if (active) {
       const gate = gateLabel(attendanceMeta);
-      noteEl.textContent = gate
-        ? `Live quiz gated to attendance ${gate}. Students enter LRN first. Present/Late can submit; Absent/Excused need make-up. Correcting attendance on that same session updates access immediately.`
-        : 'Live quiz: students enter LRN first (name appears after confirm). Present and Late can submit. Grant make-up below for Absent or Excused.';
+      const base = gate
+        ? `Link uses attendance ${gate}. Students enter LRN first. Present/Late can submit; Absent/Excused need Allow Access in Edit Scores.`
+        : 'Students enter LRN first. Present and Late can submit. Grant make-up in Edit Scores for Absent or Excused.';
+      noteEl.textContent = windowNote ? `${base} ${windowNote}.` : base;
       noteEl.style.color = 'var(--text-muted)';
     } else if (attendanceMeta) {
       const gate = gateLabel(attendanceMeta);
       if (attendanceMeta.complete) {
         noteEl.textContent = gate
-          ? `Attendance complete for ${gate}. Enable link will lock the quiz to this session.`
-          : 'Attendance is complete for today. You can enable the shared quiz link.';
+          ? `Attendance complete for ${gate}. Set Minutes Open, then Enable Link.`
+          : 'Attendance is complete for today. Set Minutes Open, then Enable Link.';
         noteEl.style.color = '#1b5e20';
       } else {
         const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
         noteEl.textContent = gate
           ? `Mark every student for ${gate} in Classroom before enabling (${n} unmarked). Switch AM/PM to match the class session.`
-          : `Mark attendance for every student in Classroom before enabling the quiz (${n} unmarked).`;
+          : `Mark attendance for every student in Classroom before enabling the link (${n} unmarked).`;
         noteEl.style.color = '#b71c1c';
       }
     } else {
-      noteEl.textContent = 'Mark complete attendance in Classroom before enabling a shared quiz link.';
+      noteEl.textContent = 'Mark complete attendance in Classroom before enabling a shared link.';
       noteEl.style.color = 'var(--text-muted)';
     }
   }
 }
 
-function updateProgressMakeupUi(assessment, makeupCandidates) {
-  const section = document.getElementById('progress-makeup-section');
-  const list = document.getElementById('progress-makeup-list');
-  const hint = document.getElementById('progress-makeup-hint');
-  const allBtn = document.getElementById('progress-makeup-all');
-  const selectedBtn = document.getElementById('progress-makeup-selected');
-  const active = assessment && Number(assessment.share_enabled) === 1;
-  const editMode = document.getElementById('progress-editor')?.dataset.mode === 'edit';
-  if (!section) return;
-  if (!active || !editMode) {
-    section.hidden = true;
+function updateProgressMakeupUi(_assessment, _makeupCandidates) {
+  // Make-up controls live on the scores table in Edit scores mode.
+}
+
+async function grantMakeupForStudent(studentId) {
+  await grantMakeupQuiz('selected', [Number(studentId)]);
+}
+
+async function revokeMakeupForStudent(studentId) {
+  await grantMakeupQuiz('unallow', [Number(studentId)]);
+}
+
+let _pendingMakeupGrant = null;
+
+function syncMakeupModalPreview() {
+  const hours = Number(document.getElementById('progress-makeup-hours')?.value);
+  const preview = document.getElementById('progress-makeup-preview');
+  if (!preview) return;
+  if (!Number.isFinite(hours) || hours < 1) {
+    preview.textContent = 'Enter hours to see when make-up access closes.';
     return;
   }
-  section.hidden = false;
-  const makeupIds = new Set(
-    Array.isArray(assessment.quiz_makeup_student_ids) ? assessment.quiz_makeup_student_ids.map(Number) : []
-  );
-  const candidates = Array.isArray(makeupCandidates) ? makeupCandidates : [];
-  if (!candidates.length) {
-    if (hint) hint.textContent = 'No absent or excused students need make-up (or all have already submitted).';
-    if (list) list.innerHTML = '';
-    allBtn?.setAttribute('disabled', 'disabled');
-    selectedBtn?.setAttribute('disabled', 'disabled');
-    return;
+  const closes = toDatetimeLocalValue(new Date(Date.now() + hours * 60 * 60 * 1000));
+  preview.textContent = `Make-up closes at: ${formatSharePreviewLocal(closes)}`;
+}
+
+function openMakeupGrantModal(mode, studentIds = null) {
+  _pendingMakeupGrant = { mode, studentIds };
+  const modal = document.getElementById('progress-makeup-modal');
+  const note = document.getElementById('progress-makeup-modal-note');
+  const msg = document.getElementById('progress-makeup-modal-msg');
+  const hoursInput = document.getElementById('progress-makeup-hours');
+  const confirmBtn = document.getElementById('progress-makeup-confirm');
+  if (msg) { msg.hidden = true; msg.textContent = ''; }
+  if (hoursInput) hoursInput.value = '48';
+  if (note) {
+    note.textContent = mode === 'all'
+      ? 'Set how long make-up access stays open for all absent/excused students who have not submitted.'
+      : 'Set how long make-up access stays open for this student.';
   }
-  if (hint) {
-    hint.textContent = 'Check students below, then allow all or selected. Already granted make-up stays checked.';
-  }
-  allBtn?.removeAttribute('disabled');
-  selectedBtn?.removeAttribute('disabled');
-  if (list) {
-    list.innerHTML = candidates.map((c) => {
-      const granted = makeupIds.has(Number(c.id));
-      const status = c.attendance_status || '';
-      return `
-        <label class="progress-makeup-row">
-          <input type="checkbox" data-student-id="${c.id}" ${granted ? 'checked disabled' : ''} />
-          <span class="progress-makeup-name">${formatStudentNameStacked(c)}</span>
-          <span class="badge ${status.toLowerCase()}">${escapeHtml(status)}</span>
-          ${granted ? '<span class="progress-makeup-granted">Make-up allowed</span>' : ''}
-        </label>`;
-    }).join('');
+  if (confirmBtn) confirmBtn.textContent = mode === 'all' ? 'Allow All' : 'Allow Access';
+  syncMakeupModalPreview();
+  if (modal) {
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
   }
 }
 
-async function grantMakeupQuiz(mode) {
+function closeMakeupGrantModal() {
+  const modal = document.getElementById('progress-makeup-modal');
+  if (modal) {
+    modal.hidden = true;
+    modal.setAttribute('hidden', '');
+  }
+  _pendingMakeupGrant = null;
+}
+
+async function grantMakeupQuiz(mode, studentIds = null) {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  if (!id) return;
+
+  if (mode === 'unallow' || mode === 'revoke') {
+    const ids = Array.isArray(studentIds)
+      ? studentIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    if (!ids.length) {
+      showToast('Select at least one student to unallow.', 'error');
+      return;
+    }
+    try {
+      const res = await fetch(`${API_URL}/teacher/assessments/${id}/makeup-quiz`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ mode, student_ids: ids })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast(data.message || 'Access removed.');
+      openProgressEditor(id, 'edit');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+    return;
+  }
+
+  const assessment = window._progressEditorAssessment;
+  if (isMakeupDeadlineStillOpen(assessment)) {
+    const until = formatSharePreviewLocal(toDatetimeLocalValue(assessment.quiz_makeup_closes_at));
+    const ok = confirm(
+      mode === 'all'
+        ? `Make-up is open until ${until}. Allow all eligible absent/excused students?`
+        : `Make-up is open until ${until}. Allow this student?`
+    );
+    if (!ok) return;
+    await submitMakeupGrant({ mode, studentIds, reuseDeadline: true });
+    return;
+  }
+
+  openMakeupGrantModal(mode, studentIds);
+}
+
+async function submitMakeupGrant({ mode, studentIds = null, reuseDeadline = false, makeupHours = null } = {}) {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
   if (!id) return;
   const body = { mode };
   if (mode === 'selected') {
-    const ids = [...document.querySelectorAll('#progress-makeup-list input[type="checkbox"]:checked:not(:disabled)')]
-      .map((cb) => Number(cb.dataset.studentId))
-      .filter((n) => Number.isFinite(n) && n > 0);
+    const ids = Array.isArray(studentIds)
+      ? studentIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
     if (!ids.length) {
       showToast('Select at least one student for make-up.', 'error');
       return;
     }
     body.student_ids = ids;
-  } else if (mode === 'all') {
-    if (!confirm('Allow make-up quiz access for all absent and excused students who have not submitted?')) return;
   }
-  try {
-    const res = await fetch(`${API_URL}/teacher/assessments/${id}/makeup-quiz`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-    showToast(data.message || 'Make-up access granted.');
-    openProgressEditor(id, document.getElementById('progress-editor')?.dataset.mode === 'edit' ? 'edit' : 'view');
-  } catch (err) {
-    showToast(err.message, 'error');
+  if (!reuseDeadline) {
+    const hours = Number(makeupHours);
+    if (!Number.isFinite(hours) || hours < 1) {
+      throw new Error('Make-up must be at least 1 hour.');
+    }
+    body.makeup_duration_minutes = Math.round(hours * 60);
   }
+  const res = await fetch(`${API_URL}/teacher/assessments/${id}/makeup-quiz`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  showToast(data.message || 'Make-up access granted.');
+  closeMakeupGrantModal();
+  openProgressEditor(id, 'edit');
 }
+
+window.grantMakeupForStudent = grantMakeupForStudent;
+window.revokeMakeupForStudent = revokeMakeupForStudent;
 
 window.grantMakeupQuiz = grantMakeupQuiz;
 
@@ -6371,9 +7011,9 @@ window.copySharedQuizLink = async function(token) {
   const url = sharedQuizAbsoluteUrl(token);
   try {
     await navigator.clipboard.writeText(url);
-    showToast('Shared quiz link copied.');
+    showToast('Shared link copied.');
   } catch {
-    prompt('Copy this quiz link:', url);
+    prompt('Copy this link:', url);
   }
 };
 
@@ -6381,23 +7021,24 @@ window.copyExternalQuizLink = async function(id) {
   const record = (progressAssessments || []).find((r) => Number(r.id) === Number(id));
   const url = record?.quiz_link;
   if (!url) {
-    showToast('No online quiz link on this record.', 'error');
+    showToast('No online link on this record.', 'error');
     return;
   }
   try {
     await navigator.clipboard.writeText(url);
-    showToast('Online quiz link copied.');
+    showToast('Online link copied.');
   } catch {
-    prompt('Copy this online quiz link:', url);
+    prompt('Copy this online link:', url);
   }
 };
 
 window.assignSharedQuizLink = async function(id) {
   try {
     const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
+    const windowBody = collectProgressShareWindowBody();
     const body = subjectMode
-      ? {}
-      : { session: attendanceCurrentSession || 'AM' };
+      ? { ...windowBody }
+      : { session: attendanceCurrentSession || 'AM', ...windowBody };
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/assign-link`, {
       method: 'POST',
       headers: getAuthHeaders(),
@@ -6413,7 +7054,7 @@ window.assignSharedQuizLink = async function(id) {
     }
     const editor = document.getElementById('progress-editor');
     if (editor && !editor.hidden && editor.dataset.assessmentId === String(id)) {
-      openProgressEditor(id, 'view');
+      openProgressEditor(id, 'link');
     } else {
       loadProgressList();
     }
@@ -6422,8 +7063,25 @@ window.assignSharedQuizLink = async function(id) {
   }
 };
 
+window.saveSharedQuizWindows = async function(id) {
+  try {
+    const body = collectProgressShareWindowBody();
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}/quiz-windows`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save windows');
+    showToast(data.message || 'Deadlines updated.');
+    openProgressEditor(id, 'link');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
 window.revokeSharedQuizLink = async function(id) {
-  if (!confirm('Turn off the shared quiz link? Students will no longer be able to open it.')) return;
+  if (!confirm('Turn off the shared link? Students will no longer be able to open it.')) return;
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/revoke-link`, {
       method: 'POST',
@@ -6434,7 +7092,7 @@ window.revokeSharedQuizLink = async function(id) {
     showToast(data.message || 'Link turned off.');
     const editor = document.getElementById('progress-editor');
     if (editor && !editor.hidden && editor.dataset.assessmentId === String(id)) {
-      openProgressEditor(id, 'view');
+      openProgressEditor(id, 'link');
     } else {
       loadProgressList();
     }
@@ -6448,14 +7106,46 @@ document.getElementById('progress-share-assign')?.addEventListener('click', () =
   if (id) assignSharedQuizLink(id);
 });
 
+document.getElementById('progress-share-save-windows')?.addEventListener('click', () => {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  if (id) saveSharedQuizWindows(id);
+});
+
+['progress-share-live-duration']
+  .forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', syncProgressShareWindowModeUi);
+    document.getElementById(id)?.addEventListener('change', syncProgressShareWindowModeUi);
+  });
+
+document.getElementById('progress-makeup-hours')?.addEventListener('input', syncMakeupModalPreview);
+document.getElementById('progress-makeup-hours')?.addEventListener('change', syncMakeupModalPreview);
+
+document.getElementById('progress-makeup-confirm')?.addEventListener('click', async () => {
+  const pending = _pendingMakeupGrant;
+  const msg = document.getElementById('progress-makeup-modal-msg');
+  if (!pending) return;
+  try {
+    const hours = Number(document.getElementById('progress-makeup-hours')?.value);
+    await submitMakeupGrant({
+      mode: pending.mode,
+      studentIds: pending.studentIds,
+      reuseDeadline: false,
+      makeupHours: hours
+    });
+  } catch (err) {
+    if (msg) { msg.hidden = false; msg.textContent = err.message; }
+    else showToast(err.message, 'error');
+  }
+});
+
 document.getElementById('progress-share-copy')?.addEventListener('click', async () => {
   const url = document.getElementById('progress-share-url')?.value;
   if (!url) return;
   try {
     await navigator.clipboard.writeText(url);
-    showToast('Shared quiz link copied.');
+    showToast('Shared link copied.');
   } catch {
-    prompt('Copy this quiz link:', url);
+    prompt('Copy this link:', url);
   }
 });
 
@@ -6465,7 +7155,6 @@ document.getElementById('progress-share-revoke')?.addEventListener('click', () =
 });
 
 document.getElementById('progress-makeup-all')?.addEventListener('click', () => grantMakeupQuiz('all'));
-document.getElementById('progress-makeup-selected')?.addEventListener('click', () => grantMakeupQuiz('selected'));
 
 document.getElementById('progress-scores-save')?.addEventListener('click', async () => {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
@@ -6588,7 +7277,7 @@ async function loadLessonPlans() {
         <p>Grade ${p.grade_level}${p.subject_name ? ' · ' + escapeHtml(p.subject_name) : ''} · ${new Date(p.created_at).toLocaleDateString()}</p>
         ${p.objectives ? `<p style="margin-top:8px;color:var(--text-dark);">${escapeHtml(p.objectives)}</p>` : ''}
         <div class="lesson-plan-card-actions">
-          ${p.file_path ? `<a class="chip-ghost primary" href="${p.file_path}" target="_blank" rel="noopener">Open file</a>` : ''}
+          ${p.file_path ? `<a class="chip-ghost primary" href="${p.file_path}" target="_blank" rel="noopener">Open File</a>` : ''}
           <button type="button" class="chip-ghost primary" onclick="generateAiForLesson(${p.id})">Generate AI</button>
           <button type="button" class="chip-ghost" onclick="deleteLessonPlan(${p.id})">Delete</button>
         </div>
@@ -6615,6 +7304,14 @@ function compareStudentsByName(a, b) {
   return String(a?.first_name || '').localeCompare(String(b?.first_name || ''), undefined, { sensitivity: 'base' });
 }
 
+/** Same as Classroom: boys A–Z, then girls A–Z. */
+function compareStudentsByAttendanceOrder(a, b) {
+  const ga = a?.gender === 'M' ? 0 : a?.gender === 'F' ? 1 : 2;
+  const gb = b?.gender === 'M' ? 0 : b?.gender === 'F' ? 1 : 2;
+  if (ga !== gb) return ga - gb;
+  return compareStudentsByName(a, b);
+}
+
 /**
  * Last name on first line, first (+ middle) on second — wraps on mobile without cutting.
  */
@@ -6633,15 +7330,20 @@ async function loadAiStatusHint() {
     const res = await fetch(`${API_URL}/teacher/ai/status`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    if (data.mode === 'openai') {
-      hint.textContent = 'AI: OpenAI (live)';
+    if (data.mode === 'ollama') {
+      hint.textContent = `AI: Ollama (local)${data.model ? ` · ${data.model}` : ''}`;
+    } else if (data.mode === 'openai') {
+      hint.textContent = `AI: OpenAI (live)${data.model ? ` · ${data.model}` : ''}`;
     } else {
-      hint.textContent = 'AI: mock (set OPENAI_API_KEY for live)';
+      hint.textContent = 'AI: mock (set Ollama or OPENAI_API_KEY for live)';
     }
   } catch {
     hint.textContent = '';
   }
 }
+
+/** After Generate/Regenerate, keep that draft card open once. */
+let aiDraftExpandId = null;
 
 function formatAiItemsPreview(part, type) {
   if (!part) return '<p class="empty-state">No content.</p>';
@@ -6675,35 +7377,55 @@ async function loadAiRecommendations() {
       return;
     }
 
+    const expandId = aiDraftExpandId != null ? Number(aiDraftExpandId) : null;
+    aiDraftExpandId = null;
+
     listEl.innerHTML = rows.map((r) => {
       const c = r.content || {};
       const statusClass = r.status === 'pending' ? 'ai-status-pending'
         : r.status === 'approved' ? 'ai-status-approved' : 'ai-status-rejected';
+      const isOpen = expandId != null && Number(r.id) === expandId;
+      const meta = `Grade ${r.grade_level}${r.subject_name ? ' · ' + escapeHtml(r.subject_name) : ''} · ${new Date(r.created_at).toLocaleDateString()}`;
       return `
       <article class="lesson-plan-card ai-rec-card" data-rec-id="${r.id}" data-grade="${r.grade_level}">
-        <div class="ai-rec-header">
-          <h4>${escapeHtml(r.lesson_title || 'Lesson')}</h4>
-          <span class="ai-status-badge ${statusClass}">${escapeHtml(r.status)} · ${escapeHtml(r.provider)}</span>
-        </div>
-        <p>Grade ${r.grade_level}${r.subject_name ? ' · ' + escapeHtml(r.subject_name) : ''} · ${new Date(r.created_at).toLocaleDateString()}</p>
-        <details class="ai-draft-details" open>
-          <summary>Quiz — ${escapeHtml(c.quiz?.title || 'Quiz')}</summary>
-          ${formatAiItemsPreview(c.quiz, 'quiz')}
+        <details class="ai-rec-fold"${isOpen ? ' open' : ''}>
+          <summary>
+            <div class="ai-rec-fold-summary">
+              <div>
+                <h4><span class="ai-rec-fold-chevron" aria-hidden="true">▸</span>${escapeHtml(r.lesson_title || 'Lesson')}</h4>
+                <p class="ai-rec-fold-meta">${meta}</p>
+              </div>
+              <span class="ai-status-badge ${statusClass}">${escapeHtml(r.status)} · ${escapeHtml(r.provider)}</span>
+            </div>
+          </summary>
+          <div class="ai-rec-fold-body">
+            <details class="ai-draft-details" open>
+              <summary>Quiz — ${escapeHtml(c.quiz?.title || 'Quiz')}</summary>
+              ${formatAiItemsPreview(c.quiz, 'quiz')}
+            </details>
+            <details class="ai-draft-details">
+              <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
+              ${formatAiItemsPreview(c.activity, 'activity')}
+            </details>
+            <div class="lesson-plan-card-actions">
+              ${r.status === 'pending' ? `
+                <button type="button" class="chip-ghost primary" onclick="openAiApproveModal(${r.id})">Approve</button>
+                <button type="button" class="chip-ghost" onclick="saveAiDraftToBank(${r.id})">Save to Classwork</button>
+                <button type="button" class="chip-ghost" onclick="regenerateAiRecommendation(${r.id})">Regenerate</button>
+              ` : r.assessment_id ? `<span class="page-subheading">Linked #${r.assessment_id}</span>` : ''}
+              <button type="button" class="chip-ghost" onclick="deleteAiRecommendation(${r.id})">Delete</button>
+            </div>
+          </div>
         </details>
-        <details class="ai-draft-details">
-          <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
-          ${formatAiItemsPreview(c.activity, 'activity')}
-        </details>
-        <div class="lesson-plan-card-actions">
-          ${r.status === 'pending' ? `
-            <button type="button" class="chip-ghost primary" onclick="openAiApproveModal(${r.id})">Approve</button>
-            <button type="button" class="chip-ghost" onclick="saveAiDraftToBank(${r.id})">Save to Classwork</button>
-            <button type="button" class="chip-ghost" onclick="regenerateAiRecommendation(${r.id})">Regenerate</button>
-          ` : r.assessment_id ? `<span class="page-subheading">Linked #${r.assessment_id}</span>` : ''}
-          <button type="button" class="chip-ghost" onclick="deleteAiRecommendation(${r.id})">Delete</button>
-        </div>
       </article>`;
     }).join('');
+
+    if (expandId != null) {
+      const opened = listEl.querySelector(`.ai-rec-card[data-rec-id="${expandId}"]`);
+      if (opened) {
+        opened.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
   } catch (err) {
     console.error('Load AI recommendations error:', err);
     listEl.innerHTML = '<p class="empty-state">Failed to load AI drafts.</p>';
@@ -6711,36 +7433,168 @@ async function loadAiRecommendations() {
 }
 
 window.generateAiForLesson = async function(lessonPlanId) {
+  openAiGenerateOptionsModal({ mode: 'generate', lessonPlanId });
+};
+
+function resetAiGenerateTypeChecks() {
+  document.querySelectorAll('input[name="ai-quiz-type"]').forEach((el) => {
+    el.checked = true;
+  });
+}
+
+function openAiGenerateOptionsModal({ mode = 'generate', lessonPlanId = null, recommendationId = null } = {}) {
+  const modal = document.getElementById('ai-generate-count-modal');
+  const idInput = document.getElementById('ai-generate-lesson-id');
+  const modeInput = document.getElementById('ai-generate-mode');
+  const recInput = document.getElementById('ai-generate-rec-id');
+  const titleEl = document.getElementById('ai-generate-modal-title');
+  const goBtn = document.getElementById('ai-generate-count-go');
+  if (idInput) idInput.value = lessonPlanId != null ? String(lessonPlanId) : '';
+  if (modeInput) modeInput.value = mode === 'regenerate' ? 'regenerate' : 'generate';
+  if (recInput) recInput.value = recommendationId != null ? String(recommendationId) : '';
+  if (titleEl) titleEl.textContent = mode === 'regenerate' ? 'Regenerate AI Draft' : 'Generate AI Draft';
+  if (goBtn) goBtn.textContent = mode === 'regenerate' ? 'Regenerate' : 'Generate';
+  const custom = document.getElementById('ai-generate-count-custom');
+  if (custom) custom.value = '';
+  document.querySelectorAll('.ai-count-chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.dataset.count === '10');
+  });
+  resetAiGenerateTypeChecks();
+  if (modal) {
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
+  }
+}
+
+function showAiGeneratingModal(title = 'Generating AI Draft…') {
+  const modal = document.getElementById('ai-generating-modal');
+  const titleEl = document.getElementById('ai-generating-title');
+  if (titleEl) titleEl.textContent = title;
+  if (modal) {
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
+  }
+}
+
+function hideAiGeneratingModal() {
+  const modal = document.getElementById('ai-generating-modal');
+  if (modal) {
+    modal.hidden = true;
+    modal.setAttribute('hidden', '');
+  }
+}
+
+function getSelectedAiGenerateTypes() {
+  return [...document.querySelectorAll('input[name="ai-quiz-type"]:checked')]
+    .map((el) => el.value)
+    .filter((v) => ['mcq', 'identification', 'enumeration'].includes(v));
+}
+
+async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes) {
+  showAiGeneratingModal('Generating AI Draft…');
   try {
-    showToast('Generating…');
     const res = await fetch(`${API_URL}/teacher/lesson-plans/${lessonPlanId}/generate`, {
       method: 'POST',
-      headers: getAuthHeaders()
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        quiz_item_count: quizItemCount,
+        quiz_item_types: quizItemTypes
+      })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.details || 'Generation failed');
     showToast(data.message || 'AI draft created.');
-    loadAiRecommendations();
+    aiDraftExpandId = data.id;
+    await loadAiRecommendations();
+    const draftsHeading = document.querySelector('#teacher-panel-lesson-plans .admin-section-title');
+    if (draftsHeading) draftsHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     showToast(err.message, 'error');
+  } finally {
+    hideAiGeneratingModal();
   }
-};
+}
 
-window.regenerateAiRecommendation = async function(id) {
-  if (!confirm('Replace this draft with a new AI generation?')) return;
+async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizItemTypes) {
+  showAiGeneratingModal('Regenerating AI Draft…');
   try {
-    showToast('Regenerating…');
-    const res = await fetch(`${API_URL}/teacher/ai/recommendations/${id}/regenerate`, {
+    const res = await fetch(`${API_URL}/teacher/ai/recommendations/${recommendationId}/regenerate`, {
       method: 'POST',
-      headers: getAuthHeaders()
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        quiz_item_count: quizItemCount,
+        quiz_item_types: quizItemTypes
+      })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.details || 'Regenerate failed');
     showToast(data.message || 'Draft regenerated.');
-    loadAiRecommendations();
+    aiDraftExpandId = recommendationId;
+    await loadAiRecommendations();
   } catch (err) {
     showToast(err.message, 'error');
+  } finally {
+    hideAiGeneratingModal();
   }
+}
+
+function getSelectedAiGenerateCount() {
+  const custom = document.getElementById('ai-generate-count-custom');
+  const customVal = custom?.value ? Number(custom.value) : NaN;
+  if (Number.isFinite(customVal) && customVal >= 5 && customVal <= 50) return Math.round(customVal);
+  const active = document.querySelector('.ai-count-chip.active');
+  const n = Number(active?.dataset.count);
+  return Number.isFinite(n) ? n : 10;
+}
+
+document.querySelectorAll('.ai-count-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.ai-count-chip').forEach((c) => c.classList.remove('active'));
+    chip.classList.add('active');
+    const custom = document.getElementById('ai-generate-count-custom');
+    if (custom) custom.value = '';
+  });
+});
+
+document.getElementById('ai-generate-count-custom')?.addEventListener('input', () => {
+  document.querySelectorAll('.ai-count-chip').forEach((c) => c.classList.remove('active'));
+});
+
+document.getElementById('ai-generate-count-go')?.addEventListener('click', async () => {
+  const mode = document.getElementById('ai-generate-mode')?.value || 'generate';
+  const lessonId = Number(document.getElementById('ai-generate-lesson-id')?.value);
+  const recId = Number(document.getElementById('ai-generate-rec-id')?.value);
+  const count = getSelectedAiGenerateCount();
+  const types = getSelectedAiGenerateTypes();
+  const modal = document.getElementById('ai-generate-count-modal');
+  if (!types.length) {
+    showToast('Select at least one question type.', 'error');
+    return;
+  }
+  if (modal) {
+    modal.hidden = true;
+    modal.setAttribute('hidden', '');
+  }
+  if (mode === 'regenerate') {
+    if (!recId) return;
+    await runAiRegenerateWithOptions(recId, count, types);
+    return;
+  }
+  if (!lessonId) return;
+  await runAiGenerateWithCount(lessonId, count, types);
+});
+
+document.getElementById('ai-generate-count-cancel')?.addEventListener('click', () => {
+  const modal = document.getElementById('ai-generate-count-modal');
+  if (modal) {
+    modal.hidden = true;
+    modal.setAttribute('hidden', '');
+  }
+});
+
+window.regenerateAiRecommendation = async function(id) {
+  if (!confirm('Replace this draft with a new AI generation?')) return;
+  openAiGenerateOptionsModal({ mode: 'regenerate', recommendationId: id });
 };
 
 window.rejectAiRecommendation = async function(id) {
@@ -6829,6 +7683,8 @@ window.openAiApproveModal = async function(id) {
       ).join('')
     : '<option value="">No assigned class for this grade</option>';
 
+  fillUnlockedQuarterSelect(document.getElementById('ai-approve-quarter'), teacherCurrentQuarter);
+
   modal.hidden = false;
 };
 
@@ -6875,11 +7731,13 @@ document.getElementById('progress-copy-questions')?.addEventListener('click', as
     return;
   }
   const text = questions.map((q, i) => {
-    let block = `${i + 1}. ${q.question || ''}`;
+    const type = bankItemTypeLabel(q.item_type || 'mcq');
+    const pts = Number(q.points) || 1;
+    let block = `${i + 1}. [${type} · ${pts} pt${pts === 1 ? '' : 's'}] ${q.question || ''}`;
     if (Array.isArray(q.choices) && q.choices.length) {
       block += '\n' + q.choices.map((c, j) => `   ${String.fromCharCode(65 + j)}. ${c}`).join('\n');
     }
-    if (q.answer) block += `\n   Answer: ${q.answer}`;
+    if (q.answer) block += `\n   Correct: ${q.answer}`;
     return block;
   }).join('\n\n');
   try {
@@ -7008,11 +7866,17 @@ function bankItemTypeLabel(type) {
 function syncQuizBankLandingChrome() {
   const onLanding = !questionBankCurrentSetId;
   const addQuizBtn = document.getElementById('qb-add-quiz-btn');
+  const createExamBtn = document.getElementById('qb-create-exam-btn');
   const filterToolbar = document.getElementById('qb-filter-toolbar');
   if (addQuizBtn) {
     addQuizBtn.hidden = !onLanding;
     if (onLanding) addQuizBtn.removeAttribute('hidden');
     else addQuizBtn.setAttribute('hidden', '');
+  }
+  if (createExamBtn) {
+    createExamBtn.hidden = !onLanding;
+    if (onLanding) createExamBtn.removeAttribute('hidden');
+    else createExamBtn.setAttribute('hidden', '');
   }
   if (filterToolbar) {
     filterToolbar.hidden = !onLanding;
@@ -7042,11 +7906,11 @@ function updateQuizBankSelectionMeta() {
   }
   if (meta) {
     if (questionBankCurrentCategory) {
-      meta.textContent = n ? `${n} selected` : 'Select items to create a Progress quiz';
+      meta.textContent = n ? `${n} selected` : 'Select items to create a Progress record';
     } else if (questionBankCurrentSetId) {
       meta.textContent = 'Open Quizzes or Activity';
     } else {
-      meta.textContent = 'Open a set to pick items';
+      meta.textContent = 'Open a set to pick items, or Create Exam to compose a period exam';
     }
   }
 
@@ -7109,7 +7973,7 @@ function renderQuizBankSets() {
   showQuizBankListView();
 
   if (!questionBankSets.length) {
-    listEl.innerHTML = '<p class="empty-state">No classwork sets yet. Click + Add Quiz or save an AI draft.</p>';
+    listEl.innerHTML = '<p class="empty-state">No classwork sets yet. Click + Add Classwork or save an AI draft.</p>';
     updateQuizBankSelectionMeta();
     return;
   }
@@ -7200,6 +8064,36 @@ function syncQuizBankChoicesVisibility() {
   }
 }
 
+const QB_QUIZ_TYPE_OPTIONS = [
+  { value: 'mcq', label: 'Multiple choice' },
+  { value: 'identification', label: 'Identification' },
+  { value: 'enumeration', label: 'Enumeration' },
+  { value: 'short_answer', label: 'Short answer' }
+];
+
+const QB_ACTIVITY_TYPE_OPTIONS = [
+  { value: 'activity_prompt', label: 'Activity' }
+];
+
+/** Quizzes folder = quiz types only; Activity folder = activity only. */
+function fillQuizBankTypeOptions(preferredValue, categoryOverride = null) {
+  const typeSel = document.getElementById('qb-edit-type');
+  if (!typeSel) return null;
+  const cat = categoryOverride != null ? categoryOverride : questionBankCurrentCategory;
+  const inActivity = cat === 'activity';
+  const options = inActivity ? QB_ACTIVITY_TYPE_OPTIONS : QB_QUIZ_TYPE_OPTIONS;
+  typeSel.innerHTML = options
+    .map((o) => `<option value="${o.value}">${o.label}</option>`)
+    .join('');
+  let type = preferredValue;
+  if (type === 'quizzes') type = 'mcq';
+  if (!options.some((o) => o.value === type)) {
+    type = inActivity ? 'activity_prompt' : 'mcq';
+  }
+  typeSel.value = type;
+  return type;
+}
+
 window.openQuizBankAdd = function(preferredType) {
   if (!questionBankCurrentSetId || !questionBankCurrentSet) {
     showToast('Open a Classwork set first.', 'error');
@@ -7208,21 +8102,20 @@ window.openQuizBankAdd = function(preferredType) {
   const modal = document.getElementById('qb-edit-modal');
   if (!modal) return;
   const titleEl = document.getElementById('qb-edit-modal-title');
-  if (titleEl) titleEl.textContent = 'Add question';
+  if (titleEl) titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Add Activity' : 'Add Question';
   const subEl = document.getElementById('qb-edit-modal-subtitle');
-  if (subEl) subEl.textContent = 'Add a question to this classwork set.';
+  if (subEl) {
+    subEl.textContent = questionBankCurrentCategory === 'activity'
+      ? 'Add an activity prompt to this classwork set.'
+      : 'Add a quiz question to this classwork set.';
+  }
   document.getElementById('qb-edit-id').value = '';
   document.getElementById('qb-edit-question').value = '';
   document.getElementById('qb-edit-choices').value = '';
   document.getElementById('qb-edit-answer').value = '';
   document.getElementById('qb-edit-points').value = '1';
-  const typeSel = document.getElementById('qb-edit-type');
-  let type = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
-  if (typeSel) {
-    if (type === 'quizzes') type = 'mcq';
-    if (![...typeSel.options].some((o) => o.value === type)) type = 'mcq';
-    typeSel.value = type;
-  }
+  const preferred = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+  fillQuizBankTypeOptions(preferred);
   const gradeSel = document.getElementById('qb-edit-grade');
   const grades = getTeacherAssignedGrades();
   const setGrade = Number(questionBankCurrentSet.grade_level);
@@ -7243,17 +8136,21 @@ window.openQuizBankEdit = function(id) {
   const item = questionBankItems.find((i) => i.id === id);
   const modal = document.getElementById('qb-edit-modal');
   if (!item || !modal) return;
+  const isActivity = String(item.item_type || '') === 'activity_prompt'
+    || questionBankCurrentCategory === 'activity';
   const titleEl = document.getElementById('qb-edit-modal-title');
-  if (titleEl) titleEl.textContent = 'Edit question';
+  if (titleEl) titleEl.textContent = isActivity ? 'Edit Activity' : 'Edit Question';
   const subEl = document.getElementById('qb-edit-modal-subtitle');
-  if (subEl) subEl.textContent = 'Update this classwork question.';
+  if (subEl) subEl.textContent = isActivity ? 'Update this activity prompt.' : 'Update this quiz question.';
   document.getElementById('qb-edit-id').value = String(item.id);
   document.getElementById('qb-edit-question').value = item.question || '';
   document.getElementById('qb-edit-choices').value = Array.isArray(item.choices) ? item.choices.join('\n') : '';
   document.getElementById('qb-edit-answer').value = item.answer || '';
   document.getElementById('qb-edit-points').value = String(Number(item.points) || 1);
-  const typeSel = document.getElementById('qb-edit-type');
-  if (typeSel) typeSel.value = item.item_type || 'mcq';
+  // Prefer folder category; fall back to item type when editing
+  const editCat = questionBankCurrentCategory
+    || (isActivity ? 'activity' : 'quizzes');
+  fillQuizBankTypeOptions(item.item_type || (isActivity ? 'activity_prompt' : 'mcq'), editCat);
   const gradeSel = document.getElementById('qb-edit-grade');
   const grades = getTeacherAssignedGrades();
   if (gradeSel) {
@@ -7369,7 +8266,7 @@ function renderQuizBankCategoryDetail(categoryKey) {
   const groups = cat?.groups || [];
   if (!groups.length) {
     groupsEl.innerHTML = `
-      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>+ Add question</strong> above to create one.</p>`;
+      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>+ Add Question</strong> above to create one.</p>`;
     updateQuizBankSelectionMeta();
     return;
   }
@@ -7710,7 +8607,7 @@ async function openCreateProgressFromBank() {
   const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
   const gradesInSelection = [...new Set(selectedItems.map((i) => Number(i.grade_level)))];
   if (gradesInSelection.length > 1) {
-    showToast('Select items from one grade only, then create a Progress quiz.', 'error');
+    showToast('Select items from one grade only, then create a Progress record.', 'error');
     return;
   }
   const targetGrade = gradesInSelection[0];
@@ -7739,6 +8636,8 @@ async function openCreateProgressFromBank() {
     countEl.textContent = `${questionBankSelected.size} item(s) selected · Grade ${targetGrade || '?'}`;
   }
 
+  renderScoreSections('qb-create-sections', selectedItems, { syncMaxInputId: 'qb-create-max', resetValues: true });
+
   const titleEl = document.getElementById('qb-create-title');
   if (titleEl) {
     const set = questionBankCurrentSet || questionBankSets.find((s) => s.id === questionBankCurrentSetId);
@@ -7756,7 +8655,7 @@ async function openCreateProgressFromBank() {
   }
 
   const qtrSel = document.getElementById('qb-create-quarter');
-  if (qtrSel && teacherCurrentQuarter) qtrSel.value = teacherCurrentQuarter;
+  fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter);
 
   modal.hidden = false;
 }
@@ -7785,10 +8684,472 @@ async function openAddQuizModal() {
   fillAddQuizSubjectOptions();
   const titleInput = document.getElementById('qb-add-title');
   if (titleInput) titleInput.value = '';
+  titleInput?.setAttribute('placeholder', 'e.g., Fractions Week 2');
   modal.hidden = false;
 }
 
 document.getElementById('qb-add-quiz-btn')?.addEventListener('click', () => openAddQuizModal());
+
+/** Selected Classwork set ids / Material (lesson plan) ids in the Create Exam modal */
+let examComposerSelectedSets = new Set();
+let examComposerSelectedMaterials = new Set();
+let examComposerSetsCache = [];
+let examComposerMaterialsCache = [];
+let examComposerItemsCache = [];
+let examComposerSource = 'classwork';
+
+function parseExamClassValue(val) {
+  const [gradePart, ...sectionParts] = String(val || '').split('|');
+  return {
+    grade_level: Number(gradePart) || 0,
+    section: sectionParts.join('|').trim()
+  };
+}
+
+function setExamComposerSource(source) {
+  examComposerSource = source === 'materials' ? 'materials' : 'classwork';
+  document.querySelectorAll('#qb-exam-source-tabs [data-exam-source]').forEach((btn) => {
+    btn.classList.toggle('primary', btn.dataset.examSource === examComposerSource);
+  });
+  const cw = document.getElementById('qb-exam-source-classwork');
+  const mat = document.getElementById('qb-exam-source-materials');
+  if (cw) cw.hidden = examComposerSource !== 'classwork';
+  if (mat) mat.hidden = examComposerSource !== 'materials';
+}
+
+function fillExamSubjectOptions(grade) {
+  const subjectSel = document.getElementById('qb-exam-subject');
+  if (!subjectSel) return;
+  const prev = subjectSel.value;
+  const subjects = getAssignedSubjectsForGrade(grade);
+  subjectSel.innerHTML =
+    '<option value="">All subjects</option>' +
+    subjects.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+  if (prev && [...subjectSel.options].some((o) => o.value === prev)) {
+    subjectSel.value = prev;
+  } else if (
+    teacherCurrentClass?.subjectId &&
+    String(teacherCurrentClass.grade) === String(grade) &&
+    [...subjectSel.options].some((o) => o.value === String(teacherCurrentClass.subjectId))
+  ) {
+    subjectSel.value = String(teacherCurrentClass.subjectId);
+  }
+}
+
+async function loadExamComposerSets() {
+  const listEl = document.getElementById('qb-exam-sets-list');
+  const emptyEl = document.getElementById('qb-exam-sets-empty');
+  if (!listEl) return;
+
+  const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  const subjectId = document.getElementById('qb-exam-subject')?.value || '';
+
+  if (!grade_level) {
+    examComposerSetsCache = [];
+    examComposerSelectedSets.clear();
+    listEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = 'Select a class to load Classwork sets.';
+    }
+    await refreshExamComposerItems();
+    return;
+  }
+
+  const params = new URLSearchParams({ grade: String(grade_level) });
+  if (subjectId) params.set('subject_id', subjectId);
+
+  try {
+    const res = await fetch(`${API_URL}/teacher/question-bank/sets?${params}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load sets');
+    examComposerSetsCache = Array.isArray(data) ? data.filter((s) => Number(s.item_count) > 0) : [];
+    const valid = new Set(examComposerSetsCache.map((s) => s.id));
+    [...examComposerSelectedSets].forEach((id) => {
+      if (!valid.has(id)) examComposerSelectedSets.delete(id);
+    });
+
+    if (!examComposerSetsCache.length) {
+      listEl.innerHTML = '';
+      if (emptyEl) {
+        emptyEl.hidden = false;
+        emptyEl.textContent = 'No Classwork sets with items for this class/subject yet. Upload materials, generate AI drafts, or add Classwork first.';
+      }
+    } else {
+      if (emptyEl) emptyEl.hidden = true;
+      listEl.innerHTML = examComposerSetsCache.map((s) => {
+        const checked = examComposerSelectedSets.has(s.id) ? 'checked' : '';
+        const subj = s.subject_name ? escapeHtml(s.subject_name) : 'No subject';
+        const count = Number(s.item_count) || 0;
+        const name = escapeHtml(s.title || 'Untitled set');
+        return `
+          <label class="qb-exam-set-row">
+            <input type="checkbox" data-exam-set-id="${s.id}" ${checked} />
+            <span>${name} · ${subj} · ${count} item(s)</span>
+          </label>`;
+      }).join('');
+      listEl.querySelectorAll('input[data-exam-set-id]').forEach((input) => {
+        input.addEventListener('change', () => {
+          const id = Number(input.dataset.examSetId);
+          if (input.checked) examComposerSelectedSets.add(id);
+          else examComposerSelectedSets.delete(id);
+          refreshExamComposerItems();
+        });
+      });
+    }
+    await refreshExamComposerItems();
+  } catch (err) {
+    listEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = err.message || 'Failed to load Classwork sets.';
+    }
+    updateExamComposerPreview();
+  }
+}
+
+async function loadExamComposerMaterials() {
+  const listEl = document.getElementById('qb-exam-materials-list');
+  const emptyEl = document.getElementById('qb-exam-materials-empty');
+  if (!listEl) return;
+
+  const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  const subjectId = document.getElementById('qb-exam-subject')?.value || '';
+
+  if (!grade_level) {
+    examComposerMaterialsCache = [];
+    examComposerSelectedMaterials.clear();
+    listEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = 'Select a class to load Materials.';
+    }
+    await refreshExamComposerItems();
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({ grade: String(grade_level) });
+    if (subjectId) params.set('subject_id', subjectId);
+    const [plansRes, setsRes] = await Promise.all([
+      fetch(`${API_URL}/teacher/lesson-plans`, { headers: getAuthHeaders() }),
+      fetch(`${API_URL}/teacher/question-bank/sets?${params}`, { headers: getAuthHeaders() })
+    ]);
+    const plansData = await plansRes.json();
+    const setsData = await setsRes.json();
+    if (!plansRes.ok) throw new Error(plansData.error || 'Failed to load materials');
+    if (!setsRes.ok) throw new Error(setsData.error || 'Failed to load Classwork sets');
+
+    const sets = Array.isArray(setsData) ? setsData : [];
+    const countByLesson = new Map();
+    sets.forEach((s) => {
+      const lp = Number(s.lesson_plan_id);
+      if (!lp) return;
+      const prev = countByLesson.get(lp) || { item_count: 0, set_ids: [] };
+      prev.item_count += Number(s.item_count) || 0;
+      prev.set_ids.push(s.id);
+      countByLesson.set(lp, prev);
+    });
+
+    const plans = Array.isArray(plansData) ? plansData : [];
+    examComposerMaterialsCache = plans
+      .filter((p) => Number(p.grade_level) === Number(grade_level))
+      .filter((p) => !subjectId || String(p.subject_id) === String(subjectId))
+      .map((p) => {
+        const meta = countByLesson.get(Number(p.id)) || { item_count: 0, set_ids: [] };
+        return {
+          id: Number(p.id),
+          title: p.title || 'Untitled material',
+          subject_name: p.subject_name || '',
+          item_count: meta.item_count,
+          set_ids: meta.set_ids
+        };
+      })
+      .filter((p) => p.item_count > 0);
+
+    const valid = new Set(examComposerMaterialsCache.map((m) => m.id));
+    [...examComposerSelectedMaterials].forEach((id) => {
+      if (!valid.has(id)) examComposerSelectedMaterials.delete(id);
+    });
+
+    if (!examComposerMaterialsCache.length) {
+      listEl.innerHTML = '';
+      if (emptyEl) {
+        emptyEl.hidden = false;
+        emptyEl.textContent = 'No materials with Classwork items for this class/subject yet. Upload a material, generate drafts, and save to Classwork first.';
+      }
+    } else {
+      if (emptyEl) emptyEl.hidden = true;
+      listEl.innerHTML = examComposerMaterialsCache.map((m) => {
+        const checked = examComposerSelectedMaterials.has(m.id) ? 'checked' : '';
+        const subj = m.subject_name ? escapeHtml(m.subject_name) : 'No subject';
+        const name = escapeHtml(m.title);
+        return `
+          <label class="qb-exam-set-row">
+            <input type="checkbox" data-exam-material-id="${m.id}" ${checked} />
+            <span>${name} · ${subj} · ${m.item_count} item(s)</span>
+          </label>`;
+      }).join('');
+      listEl.querySelectorAll('input[data-exam-material-id]').forEach((input) => {
+        input.addEventListener('change', () => {
+          const id = Number(input.dataset.examMaterialId);
+          if (input.checked) examComposerSelectedMaterials.add(id);
+          else examComposerSelectedMaterials.delete(id);
+          refreshExamComposerItems();
+        });
+      });
+    }
+    await refreshExamComposerItems();
+  } catch (err) {
+    listEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = err.message || 'Failed to load materials.';
+    }
+    updateExamComposerPreview();
+  }
+}
+
+async function refreshExamComposerItems() {
+  examComposerItemsCache = [];
+  const setIds = new Set([...examComposerSelectedSets]);
+  examComposerMaterialsCache.forEach((m) => {
+    if (!examComposerSelectedMaterials.has(m.id)) return;
+    (m.set_ids || []).forEach((sid) => setIds.add(sid));
+  });
+  const ids = [...setIds];
+  if (!ids.length) {
+    updateExamComposerPreview();
+    return;
+  }
+
+  try {
+    const results = await Promise.all(
+      ids.map(async (setId) => {
+        const res = await fetch(`${API_URL}/teacher/question-bank/sets/${setId}`, { headers: getAuthHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load set items');
+        return Array.isArray(data.items) ? data.items : [];
+      })
+    );
+    const seen = new Set();
+    examComposerItemsCache = [];
+    results.flat().forEach((item) => {
+      if (!item?.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      examComposerItemsCache.push(item);
+    });
+  } catch (err) {
+    showToast(err.message || 'Could not load exam items.', 'error');
+    examComposerItemsCache = [];
+  }
+  updateExamComposerPreview();
+}
+
+function getExamComposerFilteredItems() {
+  // Activities live under Classwork; only include when a Classwork set is selected + checkbox on.
+  const includeActivity = !!document.getElementById('qb-exam-include-activity')?.checked
+    && examComposerSelectedSets.size > 0;
+  return examComposerItemsCache.filter((it) => {
+    if (String(it.item_type) === 'activity_prompt') return includeActivity;
+    return true;
+  });
+}
+
+function updateExamComposerPreview() {
+  const preview = document.getElementById('qb-exam-preview');
+  const confirmBtn = document.getElementById('qb-exam-confirm');
+  const maxWrap = document.getElementById('qb-exam-max-wrap');
+  const items = getExamComposerFilteredItems();
+  const quizCount = items.filter((i) => String(i.item_type) !== 'activity_prompt').length;
+  const activityCount = items.filter((i) => String(i.item_type) === 'activity_prompt').length;
+  const hasSource = examComposerSelectedSets.size > 0 || examComposerSelectedMaterials.size > 0;
+
+  if (items.length) {
+    renderScoreSections('qb-exam-sections', items, { syncMaxInputId: 'qb-exam-max', resetValues: true });
+    if (maxWrap) maxWrap.hidden = false;
+  } else {
+    const sec = document.getElementById('qb-exam-sections');
+    if (sec) {
+      sec.hidden = true;
+      sec.innerHTML = '';
+    }
+    if (maxWrap) maxWrap.hidden = true;
+  }
+
+  const maxVal = Number(document.getElementById('qb-exam-max')?.value) || 0;
+
+  if (preview) {
+    if (!hasSource) {
+      preview.textContent = 'Select a classwork set or material.';
+    } else if (!items.length) {
+      preview.textContent = examComposerSelectedSets.size
+        ? 'Selected sources have no matching items (try including Activities).'
+        : 'Selected sources have no matching quiz items.';
+    } else {
+      const parts = [`${items.length} item(s)`];
+      if (quizCount) parts.push(`${quizCount} quiz`);
+      if (activityCount) parts.push(`${activityCount} activities`);
+      if (maxVal) parts.push(`Total ${maxVal}`);
+      preview.textContent = `${parts.join(' · ')} — set part totals above; editable later in Records.`;
+    }
+  }
+  if (confirmBtn) confirmBtn.disabled = items.length === 0;
+}
+
+async function openCreateExamModal() {
+  const modal = document.getElementById('qb-exam-modal');
+  if (!modal) return;
+
+  await ensureTeacherAssignedClasses();
+  await loadTeacherSubjects(true);
+
+  examComposerSelectedSets.clear();
+  examComposerSelectedMaterials.clear();
+  examComposerSetsCache = [];
+  examComposerMaterialsCache = [];
+  examComposerItemsCache = [];
+  setExamComposerSource('classwork');
+
+  const pairs = getTeacherAssignedClassPairs();
+  const classSel = document.getElementById('qb-exam-class');
+  if (classSel) {
+    classSel.innerHTML = pairs.length
+      ? '<option value="">-- Select your class --</option>' +
+        pairs.map((p) =>
+          `<option value="${p.grade_level}|${escapeHtml(p.section)}">Grade ${p.grade_level} – ${escapeHtml(p.section)}</option>`
+        ).join('')
+      : '<option value="">No assigned classes</option>';
+    if (teacherCurrentClass && pairs.some((p) =>
+      Number(p.grade_level) === Number(teacherCurrentClass.grade) &&
+      String(p.section).toUpperCase() === String(teacherCurrentClass.section).toUpperCase()
+    )) {
+      classSel.value = `${teacherCurrentClass.grade}|${teacherCurrentClass.section}`;
+    }
+  }
+
+  const qtrSel = document.getElementById('qb-exam-quarter');
+  const selectedQ = fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter || CURRENT_QUARTER);
+
+  const { grade_level } = parseExamClassValue(classSel?.value);
+  fillExamSubjectOptions(grade_level);
+
+  const titleEl = document.getElementById('qb-exam-title');
+  if (titleEl) {
+    const q = selectedQ || teacherCurrentQuarter || 'Q1';
+    titleEl.value = `${q} Periodical Exam`;
+  }
+
+  const includeAct = document.getElementById('qb-exam-include-activity');
+  if (includeAct) includeAct.checked = false;
+
+  modal.hidden = false;
+  await Promise.all([loadExamComposerSets(), loadExamComposerMaterials()]);
+}
+
+document.getElementById('qb-create-exam-btn')?.addEventListener('click', () => openCreateExamModal());
+
+document.getElementById('qb-exam-cancel')?.addEventListener('click', () => {
+  const modal = document.getElementById('qb-exam-modal');
+  if (modal) modal.hidden = true;
+});
+
+document.getElementById('qb-exam-source-tabs')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-exam-source]');
+  if (!btn) return;
+  setExamComposerSource(btn.dataset.examSource);
+});
+
+document.getElementById('qb-exam-class')?.addEventListener('change', () => {
+  const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  fillExamSubjectOptions(grade_level);
+  examComposerSelectedSets.clear();
+  examComposerSelectedMaterials.clear();
+  loadExamComposerSets();
+  loadExamComposerMaterials();
+});
+
+document.getElementById('qb-exam-subject')?.addEventListener('change', () => {
+  examComposerSelectedSets.clear();
+  examComposerSelectedMaterials.clear();
+  loadExamComposerSets();
+  loadExamComposerMaterials();
+});
+
+document.getElementById('qb-exam-quarter')?.addEventListener('change', () => {
+  const titleEl = document.getElementById('qb-exam-title');
+  const q = document.getElementById('qb-exam-quarter')?.value;
+  if (titleEl && q && (!titleEl.value || /Periodical Exam$/i.test(titleEl.value))) {
+    titleEl.value = `${q} Periodical Exam`;
+  }
+});
+
+document.getElementById('qb-exam-include-activity')?.addEventListener('change', () => {
+  updateExamComposerPreview();
+});
+document.getElementById('qb-exam-confirm')?.addEventListener('click', async () => {
+  const title = document.getElementById('qb-exam-title')?.value?.trim();
+  const { grade_level, section } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  const quarter = normalizeQuarterClient(document.getElementById('qb-exam-quarter')?.value || CURRENT_QUARTER || 'Q1');
+  const subjectRaw = document.getElementById('qb-exam-subject')?.value;
+  const items = getExamComposerFilteredItems();
+  const question_ids = items.map((i) => i.id);
+
+  if (!(UNLOCKED_QUARTERS || []).map(normalizeQuarterClient).includes(quarter)) {
+    showToast(`${quarter} is locked. Admin has unlocked through ${CURRENT_QUARTER} only.`, 'error');
+    fillUnlockedQuarterSelect(document.getElementById('qb-exam-quarter'), CURRENT_QUARTER);
+    return;
+  }
+
+  if (!grade_level || !section) {
+    showToast('Select one of your assigned classes.', 'error');
+    return;
+  }
+  if (!question_ids.length) {
+    showToast('Select Classwork sets or Materials with at least one item.', 'error');
+    return;
+  }
+
+  const subject_id = subjectRaw
+    ? Number(subjectRaw)
+    : items.find((i) => i.subject_id)?.subject_id || null;
+
+  const section_totals = collectSectionTotalsFromWrap(document.getElementById('qb-exam-sections'));
+  const max_score = Number(document.getElementById('qb-exam-max')?.value) || sumSectionTotals(section_totals) || items.length;
+
+  const confirmBtn = document.getElementById('qb-exam-confirm');
+  if (confirmBtn) confirmBtn.disabled = true;
+
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/from-bank`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title || `${quarter} Periodical Exam`,
+        type: 'exam',
+        section,
+        grade_level,
+        quarter,
+        subject_id,
+        question_ids,
+        max_score,
+        section_totals
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not create exam');
+    document.getElementById('qb-exam-modal').hidden = true;
+    showToast(data.message || 'Exam created in Records.');
+    applyTeacherPanel('progress');
+    if (data.id) {
+      setTimeout(() => openProgressEditor(data.id, 'edit'), 200);
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    updateExamComposerPreview();
+  }
+});
 
 document.getElementById('qb-add-grade')?.addEventListener('change', () => {
   fillAddQuizSubjectOptions();
@@ -7847,8 +9208,14 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
   const title = document.getElementById('qb-create-title')?.value?.trim();
   const type = document.getElementById('qb-create-type')?.value || 'quiz';
   const classVal = document.getElementById('qb-create-class')?.value || '';
-  const quarter = document.getElementById('qb-create-quarter')?.value || 'Q1';
+  const quarter = normalizeQuarterClient(document.getElementById('qb-create-quarter')?.value || CURRENT_QUARTER || 'Q1');
   const question_ids = [...questionBankSelected];
+
+  if (!(UNLOCKED_QUARTERS || []).map(normalizeQuarterClient).includes(quarter)) {
+    showToast(`${quarter} is locked. Admin has unlocked through ${CURRENT_QUARTER} only.`, 'error');
+    fillUnlockedQuarterSelect(document.getElementById('qb-create-quarter'), CURRENT_QUARTER);
+    return;
+  }
 
   const [gradePart, ...sectionParts] = classVal.split('|');
   const grade_level = Number(gradePart);
@@ -7864,6 +9231,8 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
 
   const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
   const subject_id = selectedItems.find((i) => i.subject_id)?.subject_id || null;
+  const section_totals = collectSectionTotalsFromWrap(document.getElementById('qb-create-sections'));
+  const max_score = Number(document.getElementById('qb-create-max')?.value) || sumSectionTotals(section_totals) || selectedItems.length;
 
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/from-bank`, {
@@ -7876,7 +9245,9 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
         grade_level,
         quarter,
         subject_id,
-        question_ids
+        question_ids,
+        max_score,
+        section_totals
       })
     });
     const data = await res.json();
@@ -8351,9 +9722,9 @@ async function renderParentOverview(student) {
       </div>
 
       <div class="chart-card">
-        <div class="teacher-header-row" style="margin-bottom:8px;align-items:center;">
+        <div class="teacher-header-row" style="align-items:center;">
           <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Recent Attendance</h3>
-          <button type="button" class="chip-ghost" id="parent-attendance-see-more" style="font-size:0.78rem;">See more →</button>
+          <button type="button" class="chip-ghost" id="parent-attendance-see-more" style="font-size:0.78rem;">See More →</button>
         </div>
         <div id="parent-attendance-table-wrap">
           <p style="color:var(--text-muted);font-size:0.84rem;">Loading...</p>
@@ -8423,7 +9794,16 @@ function filterParentAttendanceRecords(records, { month = '', status = 'all', li
   list.sort((a, b) => {
     const da = new Date(a.date || 0).getTime();
     const db = new Date(b.date || 0).getTime();
-    return db - da;
+    if (db !== da) return db - da; // newest date first
+    // Same day: PM (later) above AM
+    const sa = String(a.session || '').toUpperCase() === 'PM' ? 0
+      : String(a.session || '').toUpperCase() === 'AM' ? 1 : 2;
+    const sb = String(b.session || '').toUpperCase() === 'PM' ? 0
+      : String(b.session || '').toUpperCase() === 'AM' ? 1 : 2;
+    if (sa !== sb) return sa - sb;
+    const subA = String(a.subject_name || '').toLowerCase();
+    const subB = String(b.subject_name || '').toLowerCase();
+    return subA.localeCompare(subB);
   });
   if (month) list = list.filter((r) => parentAttendanceMonthKey(r) === month);
   if (status && status !== 'all') {
@@ -8546,7 +9926,7 @@ function renderParentAttendance(student) {
   contentEl.innerHTML = `
     <div class="parent-main">
       <div class="chart-card">
-        <div class="teacher-header-row" style="margin-bottom:4px;">
+        <div class="teacher-header-row">
           <div>
             <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Attendance Records</h3>
             <p class="page-subheading" style="margin:4px 0 0;">Newest first. Filter by status or month.</p>
@@ -8554,7 +9934,7 @@ function renderParentAttendance(student) {
         </div>
         <div class="parent-att-toolbar">
           <div class="download-menu" id="parent-att-status-menu">
-            <button type="button" class="chip-ghost" id="parent-att-status-btn" aria-haspopup="true" aria-expanded="false">All statuses ▾</button>
+            <button type="button" class="chip-ghost" id="parent-att-status-btn" aria-haspopup="true" aria-expanded="false">All Statuses ▾</button>
             <div class="download-menu-panel" id="parent-att-status-panel" hidden></div>
           </div>
           <div class="download-menu parent-att-menu--right" id="parent-att-month-menu">
@@ -9284,7 +10664,7 @@ function openChangePasswordModal(forced) {
   const title = document.getElementById('change-password-title');
   const errEl = document.getElementById('change-password-error');
   if (hint) hint.hidden = !forcePasswordChange;
-  if (title) title.textContent = forcePasswordChange ? 'Set a new password' : 'Change Password';
+  if (title) title.textContent = forcePasswordChange ? 'Set a New Password' : 'Change Password';
   if (changePasswordCancel) changePasswordCancel.hidden = forcePasswordChange;
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   changePasswordForm?.reset();

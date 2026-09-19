@@ -30,7 +30,10 @@ const {
   safeParseJsonContent,
   pickDraftPart,
   isAiDryRun,
-  isAiConfigured
+  isAiConfigured,
+  getAiProviderMode,
+  getOpenAiBaseUrl,
+  getOpenAiModel
 } = require('../utils/aiRecommendations');
 const {
   ensureQuestionBankSchema,
@@ -49,7 +52,10 @@ const {
   getAttendanceCompletion,
   getMakeupCandidates,
   getSubmittedStudentIds,
+  loadAttendanceRoster,
   isMakeupStatus,
+  isPastManila,
+  resolveQuizWindowsFromBody,
   VALID_STATUSES
 } = require('../utils/quizAttendance');
 
@@ -1330,10 +1336,13 @@ ensureAiRecommendationsSchema().catch((e) => {
 });
 
 router.get('/ai/status', verifyToken, async (_req, res) => {
+  const mode = getAiProviderMode();
   res.json({
     dry_run: isAiDryRun(),
     configured: isAiConfigured(),
-    mode: isAiDryRun() || !isAiConfigured() ? 'mock' : 'openai'
+    mode,
+    model: getOpenAiModel(),
+    base_url: getOpenAiBaseUrl()
   });
 });
 
@@ -1410,7 +1419,9 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
 
     const generated = await generateRecommendationsForLesson({
       lessonPlan: plan,
-      subjectName: plan.subject_name
+      subjectName: plan.subject_name,
+      quizItemCount: req.body?.quiz_item_count,
+      quizItemTypes: req.body?.quiz_item_types
     });
 
     const [result] = await db.query(
@@ -1555,7 +1566,9 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
         grade_level: row.grade_level,
         subject_id: row.plan_subject_id || row.subject_id
       },
-      subjectName: row.subject_name
+      subjectName: row.subject_name,
+      quizItemCount: req.body?.quiz_item_count,
+      quizItemTypes: req.body?.quiz_item_types
     });
 
     await db.query(
@@ -1620,6 +1633,18 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
       return res.status(400).json({ error: 'section is required to create the progress record' });
     }
 
+    const [[row]] = await db.query(
+      `SELECT r.*, lp.title as lesson_title
+       FROM ai_recommendations r
+       LEFT JOIN lesson_plans lp ON lp.id = r.lesson_plan_id
+       WHERE r.id = ? AND r.teacher_id = ?`,
+      [req.params.id, teacherId]
+    );
+    if (!row) return res.status(404).json({ error: 'AI draft not found' });
+    if (row.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending drafts can be approved' });
+    }
+
     try {
       await assertTeacherClassAssignment(teacherId, row.grade_level, section);
     } catch (e) {
@@ -1631,18 +1656,6 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
       quizLink = sanitizeQuizLink(quiz_link);
     } catch (e) {
       return res.status(e.status || 400).json({ error: e.message });
-    }
-
-    const [[row]] = await db.query(
-      `SELECT r.*, lp.title as lesson_title
-       FROM ai_recommendations r
-       LEFT JOIN lesson_plans lp ON lp.id = r.lesson_plan_id
-       WHERE r.id = ? AND r.teacher_id = ?`,
-      [req.params.id, teacherId]
-    );
-    if (!row) return res.status(404).json({ error: 'AI draft not found' });
-    if (row.status !== 'pending') {
-      return res.status(400).json({ error: 'Only pending drafts can be approved' });
     }
 
     const content = safeParseJsonContent(row.content);
@@ -2306,7 +2319,8 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       subject_id,
       quarter,
       question_ids,
-      max_score
+      max_score,
+      section_totals: sectionTotalsBody
     } = req.body || {};
 
     if (!['quiz', 'activity', 'exam'].includes(type)) {
@@ -2348,8 +2362,42 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       });
     }
 
-    const pointsSum = ordered.reduce((sum, it) => sum + (Number(it.points) || 1), 0);
-    const maxScore = Math.max(1, Number(max_score) || Math.round(pointsSum) || ordered.length);
+    const pointsByItemId = new Map();
+    let sectionTotalsParsed = null;
+    if (sectionTotalsBody && typeof sectionTotalsBody === 'object' && !Array.isArray(sectionTotalsBody)) {
+      sectionTotalsParsed = {};
+      for (const [key, raw] of Object.entries(sectionTotalsBody)) {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n >= 0) sectionTotalsParsed[String(key)] = n;
+      }
+      const byType = new Map();
+      for (const it of ordered) {
+        const t = String(it.item_type || 'mcq');
+        if (!byType.has(t)) byType.set(t, []);
+        byType.get(t).push(it);
+      }
+      for (const [typeKey, list] of byType.entries()) {
+        const partTotal = sectionTotalsParsed[typeKey] != null
+          ? Number(sectionTotalsParsed[typeKey])
+          : list.reduce((s, it) => s + (Number(it.points) || 1), 0);
+        const n = list.length;
+        if (!n) continue;
+        const each = Math.floor((partTotal / n) * 100) / 100;
+        let assigned = 0;
+        list.forEach((it, idx) => {
+          const pts = idx === n - 1
+            ? Math.round((partTotal - assigned) * 100) / 100
+            : each;
+          pointsByItemId.set(it.id, Math.max(0, pts));
+          assigned += pts;
+        });
+      }
+    } else {
+      ordered.forEach((it) => pointsByItemId.set(it.id, Number(it.points) || 1));
+    }
+
+    const pointsSum = ordered.reduce((sum, it) => sum + (pointsByItemId.get(it.id) || 1), 0);
+    const maxScore = Math.max(1, Number(max_score) || Math.round(pointsSum * 100) / 100 || ordered.length);
     const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
     if (!isQuarterUnlocked(qtr, current)) {
@@ -2418,7 +2466,7 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
               : JSON.stringify(normalizeChoices(it.choices) || it.choices)
             : null,
           it.answer,
-          Number(it.points) || 1
+          pointsByItemId.has(it.id) ? pointsByItemId.get(it.id) : (Number(it.points) || 1)
         ]
       );
     }
@@ -2426,7 +2474,9 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
     await logActivity(
       db,
       teacherId,
-      'Created progress record from quiz bank',
+      type === 'exam'
+        ? 'Created period exam from Classwork'
+        : 'Created progress record from quiz bank',
       'assessment',
       recordTitle,
       `Grade ${grade_level}-${String(section).trim()} · ${ordered.length} items`
@@ -2434,7 +2484,10 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
 
     res.status(201).json({
       id: assessmentId,
-      message: 'Progress record created from Classwork. Enter scores when ready.',
+      message:
+        type === 'exam'
+          ? 'Exam created in Records. Print/PDF for paper, or enable Shared link for online.'
+          : 'Progress record created from Classwork. Enter scores when ready.',
       question_count: ordered.length,
       max_score: maxScore
     });
@@ -2460,14 +2513,14 @@ function sanitizeQuizLink(raw) {
   try {
     const u = new URL(s);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      const err = new Error('Quiz link must start with http:// or https://');
+      const err = new Error('Online link must start with http:// or https://');
       err.status = 400;
       throw err;
     }
     return u.toString().slice(0, 500);
   } catch (e) {
     if (e.status === 400) throw e;
-    const err = new Error('Invalid quiz link URL');
+    const err = new Error('Invalid online link URL');
     err.status = 400;
     throw err;
   }
@@ -2538,18 +2591,27 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
       const names = completion.unmarked.slice(0, 5).map((u) => u.name).join('; ');
       const more = completion.unmarked.length > 5 ? ` (+${completion.unmarked.length - 5} more)` : '';
       return res.status(400).json({
-        error: `Mark attendance for every student before enabling the quiz (${completion.unmarked.length} unmarked).`,
+        error: `Mark attendance for every student before enabling the link (${completion.unmarked.length} unmarked).`,
         unmarked: completion.unmarked,
         hint: names ? `Unmarked: ${names}${more}` : undefined
       });
     }
 
     let token = assessment.share_token;
+    const { quiz_closes_at } = resolveQuizWindowsFromBody(req.body || {});
+    if (!quiz_closes_at) {
+      return res.status(400).json({
+        error: 'Set how many minutes the link stays open so it can close automatically.'
+      });
+    }
+
     const attendanceUpdates = [
       slot.date,
       slot.session,
       isSubjectGrade(assessment.grade_level) ? assessment.subject_id : null,
-      JSON.stringify([])
+      JSON.stringify([]),
+      quiz_closes_at,
+      null
     ];
 
     if (!token) {
@@ -2559,7 +2621,8 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
           await db.query(
             `UPDATE assessments SET share_token = ?, share_enabled = 1,
              quiz_attendance_date = ?, quiz_attendance_session = ?,
-             quiz_subject_id = ?, quiz_makeup_student_ids = ?
+             quiz_subject_id = ?, quiz_makeup_student_ids = ?,
+             quiz_closes_at = ?, quiz_makeup_closes_at = ?
              WHERE id = ? AND created_by = ?`,
             [token, ...attendanceUpdates, id, teacherId]
           );
@@ -2569,12 +2632,13 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
           else throw err;
         }
       }
-      if (!token) return res.status(500).json({ error: 'Could not generate a unique quiz link' });
+      if (!token) return res.status(500).json({ error: 'Could not generate a unique link' });
     } else {
       await db.query(
         `UPDATE assessments SET share_enabled = 1,
          quiz_attendance_date = ?, quiz_attendance_session = ?,
-         quiz_subject_id = ?, quiz_makeup_student_ids = ?
+         quiz_subject_id = ?, quiz_makeup_student_ids = ?,
+         quiz_closes_at = ?, quiz_makeup_closes_at = ?
          WHERE id = ? AND created_by = ?`,
         [...attendanceUpdates, id, teacherId]
       );
@@ -2583,24 +2647,26 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     await logActivity(
       db,
       teacherId,
-      'Assigned shared quiz link',
+      'Assigned shared link',
       'assessment',
       assessment.title,
       `token=${token}`
     );
 
     res.json({
-      message: 'Shared quiz link is active. Present and Late students can take the quiz.',
+      message: 'Shared link is active. Present and Late students can open it.',
       share_token: token,
       share_enabled: true,
       share_path: `/quiz/${token}`,
       question_count: questions.length,
       attendance_date: today,
-      attendance_session: slot.session
+      attendance_session: slot.session,
+      quiz_closes_at,
+      quiz_makeup_closes_at: null
     });
   } catch (error) {
     console.error('Assign quiz link error:', error);
-    res.status(500).json({ error: 'Server error assigning quiz link', details: error.message });
+    res.status(500).json({ error: 'Server error assigning link', details: error.message });
   }
 });
 
@@ -2616,23 +2682,63 @@ router.post('/assessments/:id/revoke-link', verifyToken, async (req, res) => {
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
 
     await db.query(
-      `UPDATE assessments SET share_enabled = 0, quiz_makeup_student_ids = NULL WHERE id = ? AND created_by = ?`,
+      `UPDATE assessments SET share_enabled = 0, quiz_makeup_student_ids = NULL,
+       quiz_closes_at = NULL, quiz_makeup_closes_at = NULL
+       WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
 
     await logActivity(
       db,
       teacherId,
-      'Revoked shared quiz link',
+      'Revoked shared link',
       'assessment',
       assessment.title,
       null
     );
 
-    res.json({ message: 'Shared quiz link turned off.', share_enabled: false });
+    res.json({ message: 'Shared link turned off.', share_enabled: false });
   } catch (error) {
     console.error('Revoke quiz link error:', error);
-    res.status(500).json({ error: 'Server error revoking quiz link', details: error.message });
+    res.status(500).json({ error: 'Server error revoking link', details: error.message });
+  }
+});
+
+router.post('/assessments/:id/quiz-windows', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    await ensureQuizAttendanceSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const { id } = req.params;
+    const [[assessment]] = await db.query(
+      `SELECT id, title, share_enabled FROM assessments WHERE id = ? AND created_by = ?`,
+      [id, teacherId]
+    );
+    if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (!Number(assessment.share_enabled)) {
+      return res.status(400).json({ error: 'Enable the shared link before updating deadlines.' });
+    }
+
+    const { quiz_closes_at } = resolveQuizWindowsFromBody(req.body || {});
+    if (!quiz_closes_at) {
+      return res.status(400).json({
+        error: 'Set how many minutes the link stays open so it can close automatically.'
+      });
+    }
+
+    await db.query(
+      `UPDATE assessments SET quiz_closes_at = ?
+       WHERE id = ? AND created_by = ?`,
+      [quiz_closes_at, id, teacherId]
+    );
+
+    res.json({
+      message: 'Link deadline updated.',
+      quiz_closes_at
+    });
+  } catch (error) {
+    console.error('Update quiz windows error:', error);
+    res.status(500).json({ error: 'Server error updating deadlines', details: error.message });
   }
 });
 
@@ -2646,17 +2752,57 @@ router.post('/assessments/:id/makeup-quiz', verifyToken, async (req, res) => {
 
     const [[assessment]] = await db.query(
       `SELECT id, title, grade_level, section, subject_id, share_enabled, share_token,
-              quiz_attendance_date, quiz_attendance_session, quiz_subject_id, quiz_makeup_student_ids
+              quiz_attendance_date, quiz_attendance_session, quiz_subject_id, quiz_makeup_student_ids,
+              quiz_closes_at, quiz_makeup_closes_at
        FROM assessments WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
     if (!assessment.share_enabled || !assessment.share_token) {
-      return res.status(400).json({ error: 'Enable the shared quiz link first.' });
+      return res.status(400).json({ error: 'Enable the shared link first.' });
     }
     if (!assessment.quiz_attendance_date) {
       return res.status(400).json({
         error: 'This quiz has no attendance session yet. Re-enable the link after marking attendance.'
+      });
+    }
+
+    const existing = parseMakeupIds(assessment.quiz_makeup_student_ids);
+    const submittedSet = await getSubmittedStudentIds(assessment.id);
+
+    // Revoke make-up access for selected students (not yet submitted)
+    if (mode === 'revoke' || mode === 'unallow') {
+      const revokeIds = Array.isArray(studentIdsBody)
+        ? studentIdsBody.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        : [];
+      if (!revokeIds.length) {
+        return res.status(400).json({ error: 'Select at least one student to unallow.' });
+      }
+      const revokeSet = new Set(revokeIds);
+      const alreadySubmitted = revokeIds.filter((sid) => submittedSet.has(sid));
+      if (alreadySubmitted.length) {
+        return res.status(400).json({
+          error: 'Cannot unallow students who already submitted.',
+          invalid_ids: alreadySubmitted
+        });
+      }
+      const merged = existing.filter((sid) => !revokeSet.has(Number(sid)));
+      await db.query(
+        `UPDATE assessments SET quiz_makeup_student_ids = ? WHERE id = ? AND created_by = ?`,
+        [JSON.stringify(merged), id, teacherId]
+      );
+      await logActivity(
+        db,
+        teacherId,
+        'Revoked quiz make-up access',
+        'assessment',
+        assessment.title,
+        `${revokeIds.length} student(s)`
+      );
+      return res.json({
+        message: `Make-up access removed for ${revokeIds.length} student(s).`,
+        revoked_count: revokeIds.length,
+        makeup_student_ids: merged
       });
     }
 
@@ -2676,20 +2822,31 @@ router.post('/assessments/:id/makeup-quiz', verifyToken, async (req, res) => {
         });
       }
     } else {
-      return res.status(400).json({ error: 'Use mode "all" or "selected" with student_ids.' });
+      return res.status(400).json({ error: 'Use mode "all", "selected", or "unallow" with student_ids.' });
     }
 
     if (!grantIds.length) {
       return res.status(400).json({ error: 'No eligible absent or excused students to grant make-up access.' });
     }
 
-    const existing = parseMakeupIds(assessment.quiz_makeup_student_ids);
-    const submittedSet = await getSubmittedStudentIds(assessment.id);
+    let quiz_makeup_closes_at = assessment.quiz_makeup_closes_at || null;
+    const makeupStillOpen = quiz_makeup_closes_at && !isPastManila(quiz_makeup_closes_at);
+    if (!makeupStillOpen) {
+      const resolved = resolveQuizWindowsFromBody(req.body || {});
+      quiz_makeup_closes_at = resolved.quiz_makeup_closes_at;
+      if (!quiz_makeup_closes_at) {
+        return res.status(400).json({
+          error: 'Set Extra Hours for make-up access when allowing students.'
+        });
+      }
+    }
+
     const merged = [...new Set([...existing, ...grantIds])].filter((sid) => !submittedSet.has(sid));
 
     await db.query(
-      `UPDATE assessments SET quiz_makeup_student_ids = ? WHERE id = ? AND created_by = ?`,
-      [JSON.stringify(merged), id, teacherId]
+      `UPDATE assessments SET quiz_makeup_student_ids = ?, quiz_makeup_closes_at = ?
+       WHERE id = ? AND created_by = ?`,
+      [JSON.stringify(merged), quiz_makeup_closes_at, id, teacherId]
     );
 
     await logActivity(
@@ -2704,7 +2861,8 @@ router.post('/assessments/:id/makeup-quiz', verifyToken, async (req, res) => {
     res.json({
       message: `Make-up access granted for ${grantIds.length} student(s).`,
       granted_count: grantIds.length,
-      makeup_student_ids: merged
+      makeup_student_ids: merged,
+      quiz_makeup_closes_at
     });
   } catch (error) {
     console.error('Makeup quiz error:', error);
@@ -2848,28 +3006,58 @@ router.put('/assessments/:id', verifyToken, async (req, res) => {
     await ensureAssessmentSchema();
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
-    const { quiz_link } = req.body || {};
+    const { quiz_link, max_score } = req.body || {};
 
     const [[assessment]] = await db.query(
-      'SELECT id, title FROM assessments WHERE id = ? AND created_by = ?',
+      'SELECT id, title, max_score, quiz_link FROM assessments WHERE id = ? AND created_by = ?',
       [id, teacherId]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
 
-    let quizLink;
-    try {
-      quizLink = sanitizeQuizLink(quiz_link);
-    } catch (e) {
-      return res.status(e.status || 400).json({ error: e.message });
+    const updates = [];
+    const params = [];
+    const out = {};
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'quiz_link')) {
+      let quizLink;
+      try {
+        quizLink = sanitizeQuizLink(quiz_link);
+      } catch (e) {
+        return res.status(e.status || 400).json({ error: e.message });
+      }
+      updates.push('quiz_link = ?');
+      params.push(quizLink);
+      out.quiz_link = quizLink;
     }
 
-    await db.query('UPDATE assessments SET quiz_link = ? WHERE id = ? AND created_by = ?', [
-      quizLink,
-      id,
-      teacherId
-    ]);
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'max_score')) {
+      const maxScore = Math.max(1, Number(max_score) || 0);
+      if (!Number.isFinite(maxScore) || maxScore < 1) {
+        return res.status(400).json({ error: 'Total score must be at least 1.' });
+      }
+      updates.push('max_score = ?');
+      params.push(maxScore);
+      out.max_score = maxScore;
+    }
 
-    res.json({ message: 'Quiz link saved', quiz_link: quizLink });
+    if (!updates.length) {
+      return res.status(400).json({ error: 'Nothing to update.' });
+    }
+
+    params.push(id, teacherId);
+    await db.query(
+      `UPDATE assessments SET ${updates.join(', ')} WHERE id = ? AND created_by = ?`,
+      params
+    );
+
+    res.json({
+      message: out.max_score != null && out.quiz_link !== undefined
+        ? 'Record updated'
+        : out.max_score != null
+          ? 'Total score saved'
+          : 'Online link saved',
+      ...out
+    });
   } catch (error) {
     console.error('Update assessment error:', error);
     res.status(500).json({ error: 'Server error updating assessment', details: error.message });
@@ -2885,6 +3073,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
         `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
                 a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                 a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id, a.quiz_makeup_student_ids,
+                a.quiz_closes_at, a.quiz_makeup_closes_at,
                 s.NAME as subject_name
          FROM assessments a
          LEFT JOIN subjects s ON a.subject_id = s.id
@@ -2944,14 +3133,37 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
 
     assessment.quiz_makeup_student_ids = parseMakeupIds(assessment.quiz_makeup_student_ids);
 
-    const [students] = await db.query(
-      `SELECT s.id, s.lrn, s.first_name, s.last_name, sc.score
+    const [studentRows] = await db.query(
+      `SELECT s.id, s.lrn, s.first_name, s.last_name, s.gender, sc.score
        FROM students s
        LEFT JOIN assessment_scores sc ON sc.student_id = s.id AND sc.assessment_id = ?
        WHERE s.grade_level = ? AND s.section = ? AND s.STATUS = 'active'
-       ORDER BY s.last_name, s.first_name`,
+       ORDER BY s.gender DESC, s.last_name, s.first_name`,
       [id, assessment.grade_level, assessment.section]
     );
+
+    let students = studentRows;
+    try {
+      const shareOn = Number(assessment.share_enabled) === 1;
+      if (shareOn) {
+        const slot = attendanceSlotForAssessment(assessment);
+        const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
+        const byId = new Map(roster.map((r) => [Number(r.id), r]));
+        const submittedSet = await getSubmittedStudentIds(assessment.id);
+        const makeupSet = new Set(assessment.quiz_makeup_student_ids.map(Number));
+        students = studentRows.map((s) => {
+          const row = byId.get(Number(s.id));
+          return {
+            ...s,
+            attendance_status: row?.attendance_status || null,
+            submitted: submittedSet.has(Number(s.id)),
+            makeup: makeupSet.has(Number(s.id))
+          };
+        });
+      }
+    } catch (enrichErr) {
+      console.warn('[assessment] student enrich:', enrichErr.message);
+    }
 
     let questions = [];
     try {

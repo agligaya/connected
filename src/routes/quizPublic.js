@@ -13,6 +13,7 @@ const {
   attendanceSlotForAssessment,
   loadAttendanceRoster,
   isStudentEligibleForQuiz,
+  quizBlockReason,
   getSubmittedStudentIds
 } = require('../utils/quizAttendance');
 
@@ -26,26 +27,14 @@ async function loadAssessmentByToken(token) {
     `SELECT a.id, a.title, a.TYPE as type, a.grade_level, a.section, a.max_score,
             a.subject_id, a.share_token, a.share_enabled, a.created_by,
             a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
-            a.quiz_makeup_student_ids, s.NAME as subject_name
+            a.quiz_makeup_student_ids, a.quiz_closes_at, a.quiz_makeup_closes_at,
+            s.NAME as subject_name
      FROM assessments a
      LEFT JOIN subjects s ON s.id = a.subject_id
      WHERE a.share_token = ?`,
     [token]
   );
   return assessment;
-}
-
-function eligibilityBlockReason(attendanceStatus, eligible, submitted) {
-  if (submitted) return 'You already submitted this quiz.';
-  if (!attendanceStatus) {
-    return 'Attendance has not been recorded for you yet. Ask your teacher to mark attendance first.';
-  }
-  if (eligible) return null;
-  const st = String(attendanceStatus || '');
-  if (['Absent', 'Excused'].includes(st)) {
-    return 'This quiz is not open for you yet. Ask your teacher for a make-up quiz.';
-  }
-  return 'You are not allowed to take this quiz with your current attendance status.';
 }
 
 async function findStudentByLrnInClass(assessment, lrnProvided) {
@@ -59,16 +48,16 @@ router.get('/:token', async (req, res) => {
     await ensureQuizShareSchema();
     await ensureQuizAttendanceSchema();
     const token = String(req.params.token || '').trim();
-    if (!token) return res.status(400).json({ error: 'Invalid quiz link' });
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
 
     const assessment = await loadAssessmentByToken(token);
     if (!assessment || !assessment.share_enabled) {
-      return res.status(404).json({ error: 'This quiz link is inactive or not found.' });
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
 
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
-      return res.status(400).json({ error: 'This quiz has no questions yet.' });
+      return res.status(400).json({ error: 'This link has no questions yet.' });
     }
 
     const makeupIds = parseMakeupIds(assessment.quiz_makeup_student_ids);
@@ -83,11 +72,13 @@ router.get('/:token', async (req, res) => {
       questions: questions.map(publicQuestion),
       quiz_mode: makeupIds.length ? 'live_and_makeup' : 'live_only',
       identity_verification: 'lrn_first',
-      live_statuses: ['Present', 'Late']
+      live_statuses: ['Present', 'Late'],
+      quiz_closes_at: assessment.quiz_closes_at || null,
+      quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null
     });
   } catch (error) {
     console.error('Public quiz get error:', error);
-    res.status(500).json({ error: 'Server error loading quiz', details: error.message });
+    res.status(500).json({ error: 'Server error loading link', details: error.message });
   }
 });
 
@@ -99,14 +90,14 @@ router.post('/:token/identify', async (req, res) => {
     const token = String(req.params.token || '').trim();
     const lrnProvided = normalizeLrn(req.body?.lrn);
 
-    if (!token) return res.status(400).json({ error: 'Invalid quiz link' });
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
     if (!lrnProvided) {
       return res.status(400).json({ error: 'Enter your 12-digit LRN.' });
     }
 
     const assessment = await loadAssessmentByToken(token);
     if (!assessment || !assessment.share_enabled) {
-      return res.status(404).json({ error: 'This quiz link is inactive or not found.' });
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
 
     const row = await findStudentByLrnInClass(assessment, lrnProvided);
@@ -123,9 +114,17 @@ router.post('/:token/identify', async (req, res) => {
       attendanceStatus: row.attendance_status,
       submitted,
       makeupStudentIds: makeupIds,
+      studentId: row.id,
+      assessment
+    });
+    const block_reason = quizBlockReason({
+      attendanceStatus: row.attendance_status,
+      eligible,
+      submitted,
+      assessment,
+      makeupStudentIds: makeupIds,
       studentId: row.id
     });
-    const block_reason = eligibilityBlockReason(row.attendance_status, eligible, submitted);
 
     res.json({
       student_id: row.id,
@@ -136,7 +135,9 @@ router.post('/:token/identify', async (req, res) => {
       submitted,
       eligible: !!eligible,
       block_reason,
-      makeup: makeupIds.includes(Number(row.id))
+      makeup: makeupIds.includes(Number(row.id)),
+      quiz_closes_at: assessment.quiz_closes_at || null,
+      quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null
     });
   } catch (error) {
     console.error('Public quiz identify error:', error);
@@ -151,12 +152,12 @@ router.post('/:token/submit', async (req, res) => {
     const token = String(req.params.token || '').trim();
     const { student_id, answers, lrn: lrnBody } = req.body || {};
 
-    if (!token) return res.status(400).json({ error: 'Invalid quiz link' });
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
     if (!student_id) return res.status(400).json({ error: 'Confirm your LRN before submitting.' });
 
     const assessment = await loadAssessmentByToken(token);
     if (!assessment || !assessment.share_enabled) {
-      return res.status(404).json({ error: 'This quiz link is inactive or not found.' });
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
 
     const [[student]] = await db.query(
@@ -172,7 +173,7 @@ router.post('/:token/submit', async (req, res) => {
     const lrnProvided = normalizeLrn(lrnBody);
     if (!lrnOnFile) {
       return res.status(403).json({
-        error: 'No LRN on file for this student. Ask your teacher to add your LRN before taking the quiz.'
+        error: 'No LRN on file for this student. Ask your teacher to add your LRN before opening this link.'
       });
     }
     if (!lrnProvided) {
@@ -191,7 +192,7 @@ router.post('/:token/submit', async (req, res) => {
       [assessment.id, student_id]
     );
     if (existing.length) {
-      return res.status(409).json({ error: 'You already submitted this quiz.' });
+      return res.status(409).json({ error: 'You already submitted this link.' });
     }
 
     const slot = attendanceSlotForAssessment(assessment);
@@ -202,7 +203,8 @@ router.post('/:token/submit', async (req, res) => {
       attendanceStatus: row?.attendance_status,
       submitted: false,
       makeupStudentIds: makeupIds,
-      studentId: student_id
+      studentId: student_id,
+      assessment
     });
 
     if (!row?.attendance_status) {
@@ -211,20 +213,21 @@ router.post('/:token/submit', async (req, res) => {
       });
     }
     if (!eligible) {
-      const st = String(row.attendance_status || '');
-      if (['Absent', 'Excused'].includes(st)) {
-        return res.status(403).json({
-          error: 'This quiz is not open for you yet. Ask your teacher for a make-up quiz.'
-        });
-      }
       return res.status(403).json({
-        error: 'You are not allowed to take this quiz with your current attendance status.'
+        error: quizBlockReason({
+          attendanceStatus: row.attendance_status,
+          eligible: false,
+          submitted: false,
+          assessment,
+          makeupStudentIds: makeupIds,
+          studentId: student_id
+        }) || 'You are not allowed to open this link with your current attendance status.'
       });
     }
 
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
-      return res.status(400).json({ error: 'This quiz has no questions yet.' });
+      return res.status(400).json({ error: 'This link has no questions yet.' });
     }
 
     const { earned, maxScore, detail } = scoreSubmission(questions, answers);
@@ -274,9 +277,9 @@ router.post('/:token/submit', async (req, res) => {
   } catch (error) {
     console.error('Public quiz submit error:', error);
     if (error && error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: 'You already submitted this quiz.' });
+      return res.status(409).json({ error: 'You already submitted this link.' });
     }
-    res.status(500).json({ error: 'Server error submitting quiz', details: error.message });
+    res.status(500).json({ error: 'Server error submitting answers', details: error.message });
   }
 });
 

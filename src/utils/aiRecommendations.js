@@ -37,16 +37,46 @@ function isAiDryRun() {
   const v = String(process.env.AI_DRY_RUN || '').toLowerCase();
   if (v === '0' || v === 'false' || v === 'no') return false;
   if (v === '1' || v === 'true' || v === 'yes') return true;
-  // Default: dry-run when no API key
-  return !String(process.env.OPENAI_API_KEY || '').trim();
+  // Default: dry-run when not configured for live (OpenAI key or local base URL)
+  return !isAiConfigured();
+}
+
+/** OpenAI-compatible API root, e.g. https://api.openai.com/v1 or http://127.0.0.1:11434/v1 */
+function getOpenAiBaseUrl() {
+  const raw = String(process.env.OPENAI_BASE_URL || '').trim().replace(/\/+$/, '');
+  return raw || 'https://api.openai.com/v1';
+}
+
+function isLocalAiEndpoint() {
+  try {
+    const u = new URL(getOpenAiBaseUrl());
+    const host = u.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || u.port === '11434';
+  } catch {
+    return false;
+  }
 }
 
 function isAiConfigured() {
-  return !!String(process.env.OPENAI_API_KEY || '').trim();
+  if (String(process.env.OPENAI_API_KEY || '').trim()) return true;
+  // Ollama / LM Studio: set OPENAI_BASE_URL to local; key optional
+  return !!String(process.env.OPENAI_BASE_URL || '').trim() && isLocalAiEndpoint();
 }
 
 function getOpenAiModel() {
   return String(process.env.OPENAI_MODEL || 'gpt-4o-mini').trim() || 'gpt-4o-mini';
+}
+
+function getAiProviderMode() {
+  if (isAiDryRun() || !isAiConfigured()) return 'mock';
+  return isLocalAiEndpoint() ? 'ollama' : 'openai';
+}
+
+function getOpenAiApiKey() {
+  const key = String(process.env.OPENAI_API_KEY || '').trim();
+  if (key) return key;
+  if (isLocalAiEndpoint()) return 'ollama';
+  return '';
 }
 
 function publicFileToDisk(filePath) {
@@ -92,14 +122,60 @@ function buildSourceText({ title, objectives, fileText }) {
   return parts.join('\n\n').trim();
 }
 
-function mockGenerate({ title, gradeLevel, subjectName, sourceText }) {
+function defaultQuizItemCount(_gradeLevel) {
+  return 10;
+}
+
+/** Allowed quiz item types for AI drafts. */
+function normalizeQuizItemTypes(raw) {
+  const allowed = new Set(['mcq', 'identification', 'enumeration']);
+  const list = Array.isArray(raw)
+    ? [...new Set(raw.map((t) => String(t || '').toLowerCase().trim()).filter((t) => allowed.has(t)))]
+    : [];
+  return list.length ? list : ['mcq', 'identification', 'enumeration'];
+}
+
+/**
+ * Split total quiz items across selected types.
+ * @param {number} gradeLevel
+ * @param {number|null} totalItems
+ * @param {string[]|null} quizItemTypes e.g. ['mcq','identification']
+ */
+function resolveQuizItemMix(gradeLevel, totalItems, quizItemTypes = null) {
+  const grade = Number(gradeLevel) || 1;
+  let total = Number(totalItems);
+  if (!Number.isFinite(total) || total < 5) total = defaultQuizItemCount(grade);
+  total = Math.min(50, Math.max(5, Math.round(total)));
+
+  const types = normalizeQuizItemTypes(quizItemTypes);
+  const counts = { mcq: 0, identification: 0, enumeration: 0 };
+
+  if (types.length === 1) {
+    counts[types[0]] = total;
+  } else {
+    const base = Math.floor(total / types.length);
+    let rem = total - base * types.length;
+    for (const t of types) {
+      counts[t] = base + (rem > 0 ? 1 : 0);
+      if (rem > 0) rem -= 1;
+    }
+  }
+
+  return {
+    total,
+    mcqCount: counts.mcq,
+    idCount: counts.identification,
+    enumCount: counts.enumeration,
+    types
+  };
+}
+
+function mockGenerate({ title, gradeLevel, subjectName, sourceText, quizItemCount, quizItemTypes }) {
   const topic = title || 'this lesson';
   const subject = subjectName || 'the subject';
   const grade = Number(gradeLevel) || 1;
-  const mcqCount = grade <= 2 ? 3 : grade <= 4 ? 4 : 5;
-  const idCount = grade <= 2 ? 1 : 2;
-  const enumCount = grade <= 3 ? 1 : 2;
-  const quizMax = mcqCount + idCount + enumCount;
+  const mix = resolveQuizItemMix(grade, quizItemCount, quizItemTypes);
+  const { mcqCount, idCount, enumCount, total: quizMax } = mix;
 
   const items = [];
 
@@ -152,7 +228,7 @@ function mockGenerate({ title, gradeLevel, subjectName, sourceText }) {
       max_score: quizMax,
       items,
       notes:
-        'Mock draft mixes Multiple choice, Identification, and Enumeration. Save to Classwork, then pick items for Progress.'
+        `Mock draft (${quizMax} items). Save to Classwork, then pick items for Progress.`
     },
     activity: {
       title: `Activity: Explore ${topic}`,
@@ -199,14 +275,22 @@ function normalizeGeneratedContent(parsed, fallbackMeta) {
   };
 }
 
-async function callOpenAiGenerate({ title, gradeLevel, subjectName, sourceText }) {
-  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not set');
+async function callOpenAiGenerate({ title, gradeLevel, subjectName, sourceText, quizItemCount, quizItemTypes }) {
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not set (or set OPENAI_BASE_URL for local Ollama)');
 
+  const baseUrl = getOpenAiBaseUrl();
+  const local = isLocalAiEndpoint();
   const grade = Number(gradeLevel) || 1;
-  const mcqItems = grade <= 2 ? '3' : grade <= 4 ? '4' : '5';
-  const idItems = grade <= 2 ? '1–2' : '2';
-  const enumItems = grade <= 3 ? '1' : '1–2';
+  const mix = resolveQuizItemMix(grade, quizItemCount, quizItemTypes);
+  const mcqItems = String(mix.mcqCount);
+  const idItems = String(mix.idCount);
+  const enumItems = String(mix.enumCount);
+  const typeParts = [];
+  if (mix.mcqCount > 0) typeParts.push(`${mcqItems} mcq`);
+  if (mix.idCount > 0) typeParts.push(`${idItems} identification`);
+  if (mix.enumCount > 0) typeParts.push(`${enumItems} enumeration`);
+  const mixLine = typeParts.join(', ');
 
   const system = `You are an education assistant for a Philippine Montessori elementary school (Grades 1–6).
 Generate age-appropriate QUIZ and ACTIVITY drafts from ONE lesson plan only.
@@ -233,7 +317,8 @@ Return ONLY valid JSON with keys: quiz, activity.
 
 Rules by grade level:
 - Grade ${grade}: use vocabulary and sentence length suitable for that grade.
-- Quiz mix: about ${mcqItems} mcq, ${idItems} identification, ${enumItems} enumeration — all aligned to THIS lesson's objectives.
+- Quiz MUST have exactly ${mix.total} items total: ${mixLine} — all aligned to THIS lesson's objectives.
+- Only include the item types listed above (do not invent other types).
 - MCQ: one clear correct answer; distractors plausible but clearly wrong.
 - Identification: one short factual answer (term, name, number, or phrase).
 - Enumeration: ask for a short list (2–4 items); put a scoring tip in answer.
@@ -245,52 +330,64 @@ Rules by grade level:
   const user = `Grade: ${gradeLevel}
 Subject: ${subjectName || 'General'}
 Lesson: ${title}
+Quiz item count required: ${mix.total}
 
 Source material (no student PII):
 ${sourceText || '(title/objectives only)'}`;
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const body = {
+    model: getOpenAiModel(),
+    temperature: 0.4,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ]
+  };
+  // OpenAI supports json_object; many local models (Ollama) do not — skip for local.
+  if (!local) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      model: getOpenAiModel(),
-      temperature: 0.4,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ]
-    })
+    body: JSON.stringify(body)
   });
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data?.error?.message || `OpenAI HTTP ${res.status}`;
+    const msg = data?.error?.message || `AI HTTP ${res.status} (${baseUrl})`;
     throw new Error(msg);
   }
 
-  const text = data?.choices?.[0]?.message?.content || '{}';
+  let text = data?.choices?.[0]?.message?.content || '{}';
+  // Some local models wrap JSON in markdown fences
+  const fence = String(text).match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error('OpenAI returned invalid JSON');
+    throw new Error('AI returned invalid JSON');
   }
 
-  return normalizeGeneratedContent(parsed, { title, gradeLevel, subjectName, sourceText });
+  return normalizeGeneratedContent(parsed, { title, gradeLevel, subjectName, sourceText, quizItemCount: mix.total });
 }
 
 /**
  * Generate quiz/activity drafts for a single lesson plan.
- * Uses OpenAI when configured and AI_DRY_RUN is false; otherwise mock.
+ * Uses OpenAI or local Ollama (OpenAI-compatible) when configured and AI_DRY_RUN is false; otherwise mock.
  * Exams are intentionally not generated from one lesson.
  */
 async function generateRecommendationsForLesson({
   lessonPlan,
-  subjectName = null
+  subjectName = null,
+  quizItemCount = null,
+  quizItemTypes = null
 }) {
   const fileText = await extractTextFromFile(lessonPlan.file_path);
   const sourceText = buildSourceText({
@@ -309,7 +406,9 @@ async function generateRecommendationsForLesson({
     title: lessonPlan.title,
     gradeLevel: lessonPlan.grade_level,
     subjectName,
-    sourceText
+    sourceText,
+    quizItemCount,
+    quizItemTypes
   };
 
   let provider = 'mock';
@@ -317,7 +416,7 @@ async function generateRecommendationsForLesson({
 
   if (!isAiDryRun() && isAiConfigured()) {
     content = await callOpenAiGenerate(meta);
-    provider = 'openai';
+    provider = getAiProviderMode();
   } else {
     content = mockGenerate(meta);
     provider = 'mock';
@@ -342,6 +441,9 @@ module.exports = {
   ensureAiRecommendationsSchema,
   isAiDryRun,
   isAiConfigured,
+  getAiProviderMode,
+  getOpenAiBaseUrl,
+  getOpenAiModel,
   generateRecommendationsForLesson,
   safeParseJsonContent,
   pickDraftPart,

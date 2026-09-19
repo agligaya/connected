@@ -53,7 +53,9 @@ exports.getChildAttendance = async (req, res) => {
        FROM attendance a
        LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE a.student_id = ?
-       ORDER BY a.\`DATE\` DESC, a.session ASC, sub.NAME ASC
+       ORDER BY a.\`DATE\` DESC,
+                CASE WHEN a.session = 'PM' THEN 0 WHEN a.session = 'AM' THEN 1 ELSE 2 END,
+                sub.NAME ASC
        LIMIT 500`,
       [studentId]
     );

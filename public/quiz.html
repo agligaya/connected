@@ -14,11 +14,11 @@
       window.matchMedia('(max-width: 900px)').addEventListener('change', syncLayoutMode);
     })();
   </script>
-  <title>ConnectED Quiz</title>
+  <title>ConnectED Link</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260913q2" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260918e8" />
   <style>
     body { margin: 0; background: #f4ebe4; }
     .quiz-page { max-width: 720px; margin: 0 auto; padding: 16px 12px 40px; box-sizing: border-box; }
@@ -65,7 +65,7 @@
     <div class="quiz-card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
         <img src="/assets/connectED.png" alt="ConnectED" width="40" height="40" />
-        <strong class="font-heading">ConnectED Quiz</strong>
+        <strong class="font-heading">ConnectED</strong>
       </div>
       <div id="quiz-status">Loading…</div>
     </div>
@@ -80,7 +80,7 @@
           <input type="text" id="quiz-lrn" inputmode="numeric" autocomplete="off"
                  maxlength="12" placeholder="12-digit LRN" aria-describedby="quiz-lrn-hint" />
           <p id="quiz-lrn-hint" class="quiz-meta" style="margin:6px 0 0;">
-            After you confirm, your name will appear. Present or Late students can take the quiz.
+            After you confirm, your name will appear. Present or Late students can open this link.
             Absent or Excused need a teacher make-up allowance.
           </p>
         </div>
@@ -93,13 +93,13 @@
           <p class="quiz-identity-name" id="quiz-student-name"></p>
           <p class="quiz-identity-status" id="quiz-student-status"></p>
         </div>
-        <button type="button" class="chip-ghost" id="quiz-change-lrn" style="margin-bottom:14px;">← Use a different LRN</button>
+        <button type="button" class="chip-ghost" id="quiz-change-lrn" style="margin-bottom:14px;">← Use a Different LRN</button>
       </div>
 
       <div id="quiz-questions-wrap" hidden>
         <div id="quiz-questions"></div>
         <p id="quiz-form-error" class="quiz-error" hidden></p>
-        <button type="button" class="btn-solid" id="quiz-submit">Submit answers</button>
+        <button type="button" class="btn-solid" id="quiz-submit">Submit Answers</button>
       </div>
 
       <p id="quiz-block-msg" class="quiz-error" hidden></p>
@@ -175,25 +175,25 @@
 
       async function load() {
         if (!token) {
-          statusEl.textContent = 'Invalid quiz link.';
+          statusEl.textContent = 'Invalid link.';
           return;
         }
         try {
           const res = await fetch('/api/quiz/' + encodeURIComponent(token));
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Could not load quiz');
+          if (!res.ok) throw new Error(data.error || 'Could not load link');
           quizData = data;
           statusEl.hidden = true;
           formWrap.hidden = false;
-          document.getElementById('quiz-title').textContent = data.title || 'Quiz';
+          document.getElementById('quiz-title').textContent = data.title || 'Classwork';
           document.getElementById('quiz-meta').textContent =
             'Grade ' + data.grade_level + '-' + data.section +
             (data.subject_name ? ' · ' + data.subject_name : '') +
-            ' · Max ' + data.max_score;
+            ' · Total score ' + data.max_score;
           if (lrnInput) lrnInput.value = '';
           resetIdentity();
         } catch (e) {
-          statusEl.textContent = e.message || 'Failed to load quiz.';
+          statusEl.textContent = e.message || 'Failed to load link.';
         }
       }
 
@@ -235,7 +235,7 @@
 
         if (!data.eligible) {
           questionsWrap.hidden = true;
-          blockMsg.textContent = data.block_reason || 'You cannot take this quiz right now.';
+          blockMsg.textContent = data.block_reason || 'This link is temporarily unavailable. Kindly request for access.';
           blockMsg.hidden = false;
           return data;
         }

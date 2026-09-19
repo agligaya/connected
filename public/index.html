@@ -23,7 +23,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260913a2" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260918e9" />
+
 </head>
 <body data-view="login">
   <main class="page-shell">
@@ -63,7 +64,7 @@
                     <input type="checkbox" id="login-remember" name="remember" checked /> Remember me
                   </label>
                   <div class="login-actions-stack">
-                    <button class="btn-maroon" id="login-signin-btn" type="button">Log in</button>
+                    <button class="btn-maroon" id="login-signin-btn" type="button">Log In</button>
                   </div>
                   <p id="login-message" class="inline-message login-msg"></p>
                 </div>
@@ -85,12 +86,12 @@
             <nav class="sidebar-nav sidebar-nav--icons" aria-label="Teacher sections">
               <button type="button" class="sidebar-item active" data-teacher-panel="classroom"><span class="nav-ico">🏫</span> Classroom</button>
               <button type="button" class="sidebar-item" data-teacher-panel="attendance-sheet"><span class="nav-ico">📅</span> Attendance Sheet</button>
-              <button type="button" class="sidebar-item" data-teacher-panel="progress"><span class="nav-ico">📈</span> Progress</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="progress"><span class="nav-ico">📈</span> Records</button>
               <button type="button" class="sidebar-item" data-teacher-panel="lesson-plans"><span class="nav-ico">📚</span> Materials</button>
               <button type="button" class="sidebar-item" data-teacher-panel="quiz-bank"><span class="nav-ico">🗂️</span> Classwork</button>
               <button type="button" class="sidebar-item" data-teacher-panel="inbox">
                 <span class="nav-ico">✉</span> Inbox
-                <span id="teacher-inbox-badge" class="inbox-badge sidebar-inbox-badge" hidden>0</span>
+                <span id="teacher-inbox-badge" class="inbox-badge sidebar-inbox-badge inbox-badge--dot" hidden aria-hidden="true"></span>
               </button>
             </nav>
 
@@ -213,7 +214,7 @@
                             <span class="dash-search-icon" aria-hidden="true">🔍</span>
                             <input type="text" id="classroom-search-input" class="dash-search-input" placeholder="Search student..." />
                           </div>
-                          <button type="button" class="chip-ghost" id="attendance-save-all">Mark remaining Present</button>
+                          <button type="button" class="chip-ghost" id="attendance-save-all">Mark Remaining Present</button>
                         </div>
                       </div>
                       <p id="classroom-attendance-status" class="inline-message" style="margin:0 12px 12px;display:none;"></p>
@@ -280,7 +281,7 @@
                   <div class="records-card" style="margin-top:16px;">
                     <div class="records-header">
                       <div>
-                        <h3 class="page-heading font-heading" style="font-size:1.1rem;">Weekly register</h3>
+                        <h3 class="page-heading font-heading" style="font-size:1.1rem;">Weekly Attendance</h3>
                         <p class="page-subheading" id="attendance-sheet-hint">From Classroom attendance · Monday–Friday weeks.</p>
                       </div>
                     </div>
@@ -298,16 +299,16 @@
                   <div id="progress-list-chrome">
                   <div class="teacher-header-row">
                     <div>
-                      <h2 class="page-heading font-heading">Progress Records</h2>
+                      <h2 class="page-heading font-heading">Records</h2>
                       <p class="page-subheading" id="progress-class-meta">Select a class to record quizzes, activities, and exams.</p>
                     </div>
                     <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-new-btn">+ New Record</button>
                   </div>
 
-                  <p class="page-subheading" style="margin-bottom:12px;">
-                    Live ConnectED quiz: Classwork → select items → Create Progress quiz → mark attendance → Enable link.
+                  <!-- <p class="page-subheading" style="margin-bottom:12px;">
+                    Live ConnectED link: Classwork → select items → Create Progress Record → mark attendance → Enable Link.
                     Use + New Record for manual scores or an external online quiz (e.g. Google Forms).
-                  </p>
+                  </p> -->
 
                   <div class="progress-quarter-bar" id="progress-quarter-bar">
                     <span class="progress-quarter-label">Quarter</span>
@@ -317,7 +318,7 @@
                       <button type="button" class="progress-quarter-chip" data-quarter="Q3" hidden>Q3</button>
                       <button type="button" class="progress-quarter-chip" data-quarter="Q4" hidden>Q4</button>
                     </div>
-                    <p class="progress-quarter-note" id="progress-quarter-note">Unlocked through Q1</p>
+                    <p class="progress-quarter-note" id="progress-quarter-note" hidden></p>
                   </div>
 
                   <div class="progress-toolbar" id="progress-toolbar">
@@ -339,7 +340,7 @@
                   </div>
 
                   <div id="progress-editor" hidden>
-                    <button type="button" class="chip-ghost" id="progress-editor-back" style="margin-bottom:12px;">← Back to records</button>
+                    <button type="button" class="chip-ghost" id="progress-editor-back" style="margin-bottom:12px;">← Back to Records</button>
                     <div class="records-card progress-detail-card">
                       <div class="records-header progress-editor-sticky-header">
                         <div>
@@ -347,59 +348,70 @@
                           <p class="page-subheading" id="progress-editor-meta"></p>
                         </div>
                         <div class="progress-detail-header-actions">
-                          <button type="button" class="btn-outline" id="progress-mode-view" hidden>View scores</button>
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-edit">Edit scores</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--outline" id="progress-print-paper" hidden title="Print or save as PDF">Print / PDF</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--outline" id="progress-print-key" hidden title="Teacher answer key">Answer Key</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-edit">Edit Scores</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-link">Shared Link</button>
                           <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-scores-save" hidden>Save Scores</button>
                         </div>
                       </div>
 
-                      <div class="progress-detail-section progress-manage-only">
-                        <h4 class="progress-detail-section-title">ConnectED shared link</h4>
+                      <div class="progress-detail-section progress-link-only" hidden>
+                        <h4 class="progress-detail-section-title">ConnectED Shared Link</h4>
                         <p id="progress-share-attendance-note" class="page-subheading" style="margin:0 0 10px;"></p>
+                        <div class="progress-share-windows" id="progress-share-windows">
+                          <div class="form-row">
+                            <div class="field-small">
+                              <label for="progress-share-live-duration">Minutes Open</label>
+                              <input type="number" id="progress-share-live-duration" min="5" max="10080" step="5" value="60" />
+                            </div>
+                          </div>
+                          <p class="page-subheading progress-share-preview" id="progress-share-live-preview"></p>
+
+                          <div class="progress-share-actions" id="progress-share-window-actions">
+                            <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-save-windows" hidden>Save Deadline</button>
+                          </div>
+                        </div>
                         <input type="text" id="progress-share-url" class="progress-share-url-input" readonly placeholder="Enable a link to share with the class" />
                         <div class="progress-share-actions" id="progress-share-actions">
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-assign">Enable link</button>
-                          <button type="button" class="chip-ghost" id="progress-share-copy" hidden>Copy link</button>
-                          <button type="button" class="chip-ghost chip-danger" id="progress-share-revoke" hidden>Turn off link</button>
-                          <a class="chip-ghost primary" id="progress-share-open" href="#" target="_blank" rel="noopener" hidden>Open quiz</a>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-assign">Enable Link</button>
+                          <button type="button" class="chip-ghost" id="progress-share-copy" hidden>Copy Link</button>
+                          <button type="button" class="chip-ghost chip-danger" id="progress-share-revoke" hidden>Turn Off Link</button>
+                          <a class="chip-ghost primary" id="progress-share-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
                         </div>
                       </div>
 
-                      <div id="progress-makeup-section" class="progress-detail-section progress-manage-only" hidden>
-                        <h4 class="progress-detail-section-title">Make-up quiz (Absent / Excused)</h4>
-                        <p id="progress-makeup-hint" class="page-subheading" style="margin-top:0;">
-                          Grant access for students who were absent or excused and have not submitted yet.
-                        </p>
-                        <div id="progress-makeup-list" class="progress-makeup-list"></div>
-                        <div class="progress-share-actions">
-                          <button type="button" class="btn-outline" id="progress-makeup-all">Allow all absent &amp; excused</button>
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-makeup-selected">Allow selected</button>
+                      <div class="progress-detail-section progress-link-only" hidden>
+                        <h4 class="progress-detail-section-title">Online Link <span class="page-subheading">(Google Forms, etc.)</span></h4>
+                        <input type="url" id="progress-editor-quiz-link" class="progress-share-url-input" placeholder="https://forms.gle/…" />
+                        <div class="progress-share-actions" id="progress-quiz-link-actions">
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-quiz-link-save">Save Link</button>
+                          <a class="chip-ghost primary" id="progress-quiz-link-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
                         </div>
                       </div>
 
-                      <div class="progress-detail-section progress-manage-only">
-                        <h4 class="progress-detail-section-title">Online quiz link <span class="page-subheading">(Google Forms, etc.)</span></h4>
-                        <div class="progress-detail-row">
-                          <input type="url" id="progress-editor-quiz-link" placeholder="https://forms.gle/…" />
-                          <button type="button" class="btn-outline" id="progress-quiz-link-save">Save link</button>
-                          <a class="chip-ghost primary" id="progress-quiz-link-open" href="#" target="_blank" rel="noopener" hidden>Open link</a>
-                        </div>
+                      <div id="progress-attached-questions" class="progress-detail-section progress-link-only" hidden>
+                        <details class="progress-questions-fold">
+                          <summary>
+                            <span class="progress-detail-section-title" style="margin:0;display:inline;">Attached Questions</span>
+                            <span class="page-subheading" id="progress-questions-count"></span>
+                          </summary>
+                          <ol id="progress-questions-list" class="progress-questions-list"></ol>
+                          <button type="button" class="chip-ghost" id="progress-copy-questions">Copy Questions</button>
+                        </details>
                       </div>
 
-                      <div id="progress-attached-questions" class="progress-detail-section progress-manage-only" hidden>
-                        <h4 class="progress-detail-section-title">Attached questions</h4>
-                        <ol id="progress-questions-list" class="ai-draft-items progress-questions-list"></ol>
-                        <button type="button" class="chip-ghost" id="progress-copy-questions">Copy questions</button>
-                      </div>
-
-                      <div class="progress-detail-section progress-scores-section">
+                      <div class="progress-detail-section progress-scores-section progress-scores-only">
                         <div class="progress-scores-section-header">
-                          <h4 class="progress-detail-section-title" style="margin:0;">Student scores</h4>
+                          <h4 class="progress-detail-section-title" style="margin:0;">Student Scores</h4>
+                          <div class="progress-max-score-wrap">
+                            <button type="button" class="chip-ghost" id="progress-makeup-all" hidden>Allow All</button>
+                          </div>
                         </div>
                         <div class="records-table-wrapper">
                           <table id="progress-scores-table">
                             <thead>
-                              <tr>
+                              <tr id="progress-scores-thead-row">
                                 <th>Student</th>
                                 <th>Score</th>
                                 <th>%</th>
@@ -412,7 +424,6 @@
                     </div>
                   </div>
                 </section>
-
                 <!-- PANEL: Materials -->
                 <section id="teacher-panel-lesson-plans" class="teacher-panel" hidden>
                   <div class="teacher-header-row">
@@ -423,11 +434,10 @@
                     <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-upload-material-modal">+ Upload Material</button>
                   </div>
 
-                  <h3 class="admin-section-title">My Materials</h3>
                   <div id="lesson-plans-list" class="announcement-list"></div>
 
                   <h3 class="admin-section-title" style="margin-top:24px;">AI Drafts</h3>
-                  <p id="ai-mode-hint" class="page-subheading" style="margin:0 0 10px;"></p>
+                  <p id="ai-mode-hint" class="page-subheading"></p>
                   <div id="ai-recommendations-list" class="announcement-list"></div>
                 </section>
 
@@ -439,18 +449,19 @@
                       <p class="page-subheading" id="qb-selection-meta">Open a set to pick items</p>
                     </div>
                     <div class="qb-header-actions">
-                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-quiz-btn">+ Add Quiz</button>
-                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Create Progress quiz</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-quiz-btn">+ Add Classwork</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--outline" id="qb-create-exam-btn">+ Create Exam</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Create Progress Record</button>
                     </div>
                   </div>
 
-                  <div class="progress-toolbar" id="qb-filter-toolbar" style="margin-bottom:12px;">
+                  <div class="progress-toolbar" id="qb-filter-toolbar">
                     <div class="download-menu" id="qb-filter-grade-menu">
-                      <button type="button" class="chip-ghost" id="qb-filter-grade-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by grade">All my grades ▾</button>
+                      <button type="button" class="chip-ghost" id="qb-filter-grade-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by grade">All My Grades ▾</button>
                       <div class="download-menu-panel download-menu-panel--scroll" id="qb-filter-grade-panel" hidden></div>
                     </div>
                     <div class="download-menu" id="qb-filter-subject-menu">
-                      <button type="button" class="chip-ghost" id="qb-filter-subject-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by subject">All subjects ▾</button>
+                      <button type="button" class="chip-ghost" id="qb-filter-subject-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by subject">All Subjects ▾</button>
                       <div class="download-menu-panel download-menu-panel--scroll" id="qb-filter-subject-panel" hidden></div>
                     </div>
                   </div>
@@ -465,19 +476,19 @@
                           <p class="page-subheading" id="qb-set-meta"></p>
                         </div>
                         <div class="progress-detail-header-actions">
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-question-btn" hidden>+ Add question</button>
-                          <button type="button" class="chip-ghost chip-danger" id="qb-set-delete">Delete set</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-question-btn" hidden>+ Add Question</button>
+                          <button type="button" class="chip-ghost chip-danger" id="qb-set-delete">Delete Set</button>
                         </div>
                       </div>
                       <div class="qb-bulk-bar" id="qb-bulk-bar" hidden>
-                        <button type="button" class="chip-ghost" id="qb-select-all">Select all</button>
+                        <button type="button" class="chip-ghost" id="qb-select-all">Select All</button>
                         <button type="button" class="chip-ghost" id="qb-clear-selection">Clear</button>
                       </div>
                       <div id="qb-set-groups" class="qb-set-groups"></div>
                     </div>
                     <div class="qb-next-step-bar" id="qb-next-step-bar" hidden>
                       <p class="page-subheading" id="qb-next-step-meta" style="margin:0;">Select items to continue</p>
-                      <button type="button" class="btn-solid" id="qb-create-progress-next" disabled>Next: Create Progress quiz</button>
+                      <button type="button" class="btn-solid" id="qb-create-progress-next" disabled>Next: Create Progress Record</button>
                     </div>
                   </div>
                 </section>
@@ -489,7 +500,7 @@
                       <h2 class="page-heading font-heading">Inbox</h2>
                       <p class="page-subheading">Parent concerns and admin announcements.</p>
                     </div>
-                    <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-teacher-notice-modal">+ Send class notice</button>
+                    <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-teacher-notice-modal">+ Send Class Notice</button>
                   </div>
                   <div class="inbox-filters">
                     <button type="button" class="active" data-inbox-filter="unresolved">Unresolved</button>
@@ -531,7 +542,7 @@
                 <button class="sidebar-item" data-parent-tab="attendance"><span class="nav-ico">📅</span> Attendance Records</button>
                 <button class="sidebar-item" data-parent-tab="inbox">
                   <span class="nav-ico">✉</span> Inbox
-                  <span id="parent-inbox-badge" class="inbox-badge sidebar-inbox-badge" hidden>0</span>
+                  <span id="parent-inbox-badge" class="inbox-badge sidebar-inbox-badge inbox-badge--dot" hidden aria-hidden="true"></span>
                 </button>
               </nav>
             </div>
@@ -676,7 +687,7 @@
                       <div class="admin-overview-grid">
                         <div class="admin-panel">
                           <h3 class="admin-panel-title">Recent System Activity</h3>
-                          <p class="admin-panel-sub">Latest 8 actions across admin, teacher, and parent portals.</p>
+                          <p class="admin-panel-sub">Latest 5 actions across admin, teacher, and parent portals.</p>
                           <table class="admin-log-table">
                             <thead><tr><th>User</th><th>Action</th><th>Time</th></tr></thead>
                             <tbody id="admin-activity-log"></tbody>
@@ -729,18 +740,28 @@
                         <button type="button" class="btn-solid" id="open-add-account-modal">+ Add Account</button>
                       </div>
 
-                      <div class="admin-filter-bar">
+                      <div class="admin-list-toolbar">
+                        <h3 class="admin-section-title" style="margin:0;">Accounts</h3>
+                      </div>
+                      <div class="admin-filter-bar admin-accounts-filter-bar">
                         <div class="admin-filter-group">
                           <button type="button" class="chip-ghost primary" data-account-filter="all">All</button>
                           <button type="button" class="chip-ghost" data-account-filter="teacher">Teachers</button>
                           <button type="button" class="chip-ghost" data-account-filter="parent">Parents</button>
                         </div>
-                        <div class="admin-filter-group">
+                        <div class="admin-accounts-controls">
+                          <div class="dash-search-wrap admin-accounts-search">
+                            <span class="dash-search-icon" aria-hidden="true">🔍</span>
+                            <input type="text" id="admin-account-search" class="dash-search-input" placeholder="Search by name or email..." />
+                          </div>
                           <button type="button" class="chip-ghost primary" data-account-status="active">Active</button>
                           <button type="button" class="chip-ghost" data-account-status="inactive">Inactive</button>
+                          <div class="download-menu" id="admin-account-sort-menu">
+                            <button type="button" class="chip-ghost" id="admin-account-sort-btn" aria-haspopup="true" aria-expanded="false" aria-label="Sort accounts">A–Z ▾</button>
+                            <div class="download-menu-panel" id="admin-account-sort-panel" hidden></div>
+                          </div>
                         </div>
                       </div>
-                      <h3 class="admin-section-title">Accounts</h3>
                       <div class="records-table-wrapper admin-table-wrap">
                       <table id="admin-accounts-table">
                         <thead>
@@ -766,11 +787,11 @@
                       <div class="admin-filter-bar admin-student-filter-bar">
                         <div class="admin-filter-group">
                           <div class="download-menu" id="admin-student-grade-menu">
-                            <button type="button" class="chip-ghost" id="admin-student-grade-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by grade">All grades ▾</button>
+                            <button type="button" class="chip-ghost" id="admin-student-grade-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by grade">All Grades ▾</button>
                             <div class="download-menu-panel download-menu-panel--scroll" id="admin-student-grade-panel" hidden></div>
                           </div>
                           <div class="download-menu" id="admin-student-section-menu">
-                            <button type="button" class="chip-ghost" id="admin-student-section-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by section" disabled>All sections ▾</button>
+                            <button type="button" class="chip-ghost" id="admin-student-section-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by section" disabled>All Sections ▾</button>
                             <div class="download-menu-panel download-menu-panel--scroll" id="admin-student-section-panel" hidden></div>
                           </div>
                         </div>
@@ -779,7 +800,7 @@
                             <span class="dash-search-icon" aria-hidden="true">🔍</span>
                             <input type="text" id="admin-student-search" class="dash-search-input" placeholder="Search by name or LRN..." />
                           </div>
-                          <button type="button" class="chip-ghost" id="admin-student-filter-clear">Clear filters</button>
+                          <button type="button" class="chip-ghost" id="admin-student-filter-clear">Clear Filters</button>
                           <div class="download-menu" id="admin-students-export-menu">
                             <button type="button" class="chip-ghost" id="admin-students-export-btn" aria-haspopup="true" aria-expanded="false">Export ▾</button>
                             <div class="download-menu-panel" id="admin-students-export-panel" hidden>
@@ -791,14 +812,14 @@
                       </div>
                       <div id="admin-students-bulk-bar" class="admin-bulk-bar" hidden>
                         <span id="admin-students-bulk-count" class="page-subheading" style="margin:0;">0 selected</span>
-                        <button type="button" class="chip-ghost" id="admin-students-bulk-unenroll">Unenroll selected</button>
-                        <button type="button" class="chip-ghost chip-danger" id="admin-students-bulk-delete">Delete selected</button>
+                        <button type="button" class="chip-ghost" id="admin-students-bulk-unenroll">Unenroll Selected</button>
+                        <button type="button" class="chip-ghost chip-danger" id="admin-students-bulk-delete">Delete Selected</button>
                       </div>
                       <div class="records-table-wrapper admin-table-wrap admin-students-table-wrap">
                       <table id="admin-students-table">
                         <thead>
                           <tr>
-                            <th class="col-check"><input type="checkbox" id="admin-students-select-all" aria-label="Select all students" /></th>
+                            <th class="col-check"><input type="checkbox" id="admin-students-select-all" aria-label="Select All students" /></th>
                             <th>LRN</th>
                             <th>Name</th>
                             <th>Grade</th>
@@ -825,12 +846,12 @@
 
                       <div id="admin-subjects-bulk-bar" class="admin-bulk-bar" hidden>
                         <span id="admin-subjects-bulk-count" class="page-subheading" style="margin:0;">0 selected</span>
-                        <button type="button" class="chip-ghost chip-danger" id="admin-subjects-bulk-delete">Delete selected</button>
+                        <button type="button" class="chip-ghost chip-danger" id="admin-subjects-bulk-delete">Delete Selected</button>
                       </div>
                       <table id="admin-subjects-table">
                         <thead>
                           <tr>
-                            <th class="col-check"><input type="checkbox" id="admin-subjects-select-all" aria-label="Select all subjects" /></th>
+                            <th class="col-check"><input type="checkbox" id="admin-subjects-select-all" aria-label="Select All subjects" /></th>
                             <th>Code</th>
                             <th>Name</th>
                             <th>Description</th>
@@ -872,11 +893,13 @@
                         </div>
                         <button type="button" class="btn-solid" id="open-compose-announcement-modal">+ Compose</button>
                       </div>
+                      <div class="admin-list-toolbar">
+                        <h3 class="admin-section-title" style="margin:0;">Sent Announcements</h3>
+                      </div>
                       <div class="inbox-search-bar">
                         <input type="search" id="admin-announcement-search" class="inbox-search-input" placeholder="Search announcements…" autocomplete="off" />
                         <button type="button" class="inbox-search-clear" id="admin-announcement-search-clear" title="Clear search" hidden>×</button>
                       </div>
-                      <h3 class="admin-section-title">Sent Announcements</h3>
                       <ul id="admin-announcement-list" class="announcement-list inbox-list"></ul>
                     </div>
 
@@ -1015,7 +1038,7 @@
       <p class="page-subheading" id="attendance-update-sms-hint" style="margin-top:4px;"></p>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="attendance-update-cancel">Cancel</button>
-        <button type="submit" class="btn-solid">Send notices + SMS</button>
+        <button type="submit" class="btn-solid">Send Notices + SMS</button>
       </div>
     </form>
   </div>
@@ -1032,7 +1055,7 @@
 
   <div id="teacher-add-student-modal" class="modal-overlay" hidden>
     <div class="modal-card">
-      <h3 class="font-heading">Add Student to Class</h3>
+      <h3 class="font-heading">Add Student To Class</h3>
       <p class="page-subheading">Create a new student record.</p>
       <form id="teacher-add-student-form">
         <div class="field-small"><label for="add-student-lrn">LRN</label><input id="add-student-lrn" type="text" placeholder="12-digit LRN" /></div>
@@ -1051,9 +1074,59 @@
     </div>
   </div>
 
+  <div id="ai-generate-count-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:440px;">
+      <h3 class="font-heading" id="ai-generate-modal-title">Generate AI Draft</h3>
+      <p class="page-subheading" style="margin:0 0 12px;">How many items should the draft include?</p>
+      <input type="hidden" id="ai-generate-lesson-id" />
+      <input type="hidden" id="ai-generate-mode" value="generate" />
+      <input type="hidden" id="ai-generate-rec-id" />
+      <div class="ai-count-chips" id="ai-generate-count-chips" role="group" aria-label="Item count">
+        <button type="button" class="chip-ghost ai-count-chip active" data-count="10">10</button>
+        <button type="button" class="chip-ghost ai-count-chip" data-count="20">20</button>
+        <button type="button" class="chip-ghost ai-count-chip" data-count="30">30</button>
+      </div>
+      <div class="field-small" style="margin-top:12px;">
+        <label for="ai-generate-count-custom">Or custom (5–50)</label>
+        <input type="number" id="ai-generate-count-custom" min="5" max="50" placeholder="e.g. 15" />
+      </div>
+      <div class="field-small" style="margin-top:14px;">
+        <span class="page-subheading" style="display:block;margin:0 0 8px;">Question types (pick one or more)</span>
+        <div class="ai-type-checks" role="group" aria-label="Quiz item types">
+          <label class="ai-type-check">
+            <input type="checkbox" name="ai-quiz-type" value="mcq" checked />
+            Multiple choice
+          </label>
+          <label class="ai-type-check">
+            <input type="checkbox" name="ai-quiz-type" value="identification" checked />
+            Identification
+          </label>
+          <label class="ai-type-check">
+            <input type="checkbox" name="ai-quiz-type" value="enumeration" checked />
+            Enumeration
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions" style="margin-top:16px;">
+        <button type="button" class="btn-outline" id="ai-generate-count-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-solid" id="ai-generate-count-go">Generate</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ai-generating-modal" class="modal-overlay modal-overlay--blocking" hidden aria-live="polite" aria-busy="true">
+    <div class="modal-card ai-generating-card" role="status">
+      <div class="ai-generating-spinner" aria-hidden="true"></div>
+      <h3 class="font-heading" id="ai-generating-title">Generating AI Draft…</h3>
+      <p class="page-subheading" id="ai-generating-message" style="margin:0;">
+        Please wait. Local AI can take 1–3 minutes. This window stays open until generation finishes.
+      </p>
+    </div>
+  </div>
+
   <div id="ai-approve-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:440px;">
-      <h3 class="font-heading">Approve AI draft</h3>
+      <h3 class="font-heading">Approve AI Draft</h3>
       <p class="page-subheading">Creates a Progress record and saves items to Classwork.</p>
       <input type="hidden" id="ai-approve-id" />
       <input type="hidden" id="ai-approve-grade" />
@@ -1072,20 +1145,15 @@
       </div>
       <div class="field-small">
         <label for="ai-approve-quarter">Quarter</label>
-        <select id="ai-approve-quarter">
-          <option value="Q1">Q1</option>
-          <option value="Q2">Q2</option>
-          <option value="Q3">Q3</option>
-          <option value="Q4">Q4</option>
-        </select>
+        <select id="ai-approve-quarter"></select>
       </div>
       <div class="field-small">
-        <label for="ai-approve-quiz-link">Shared quiz link (optional)</label>
+        <label for="ai-approve-quiz-link">Shared Link (optional)</label>
         <input type="url" id="ai-approve-quiz-link" placeholder="https://forms.gle/… (optional)" />
       </div>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="ai-approve-cancel">Cancel</button>
-        <button type="button" class="btn-solid" id="ai-approve-confirm">Approve &amp; create</button>
+        <button type="button" class="btn-solid" id="ai-approve-confirm">Approve &amp; Create</button>
       </div>
     </div>
   </div>
@@ -1144,7 +1212,7 @@
 
   <div id="teacher-notice-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:480px;">
-      <h3 class="font-heading">Send class notice</h3>
+      <h3 class="font-heading">Send Class Notice</h3>
       <p class="page-subheading">Notify parents of one of your assigned classes.</p>
       <form id="teacher-announcement-form" class="admin-form">
         <div class="field-small">
@@ -1164,7 +1232,7 @@
         <p id="teacher-notice-msg" class="inline-message"></p>
         <div class="modal-form-actions">
           <button type="button" class="btn-outline" id="teacher-notice-cancel" data-modal-cancel>Cancel</button>
-          <button type="submit" class="btn-solid">Send to parents</button>
+          <button type="submit" class="btn-solid">Send to Parents</button>
         </div>
       </form>
     </div>
@@ -1173,7 +1241,7 @@
   <div id="progress-create-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:480px;">
       <h3 class="font-heading">New Record</h3>
-      <p class="page-subheading">Create a blank quiz, activity, or exam for the selected class.</p>
+      <p class="page-subheading">Manual score entry for the selected class. For a live ConnectED link, create from Classwork instead.</p>
       <div class="field-small">
         <label for="progress-title">Title</label>
         <input type="text" id="progress-title" placeholder="e.g., Quiz 1 — Fractions" />
@@ -1194,17 +1262,9 @@
           </select>
         </div>
       </div>
-      <div class="form-row">
-        <div class="field-small">
-          <label for="progress-max">Max Score</label>
-          <input type="number" id="progress-max" min="1" max="999" value="100" />
-        </div>
-        <div class="field-small">
-          <label for="progress-quiz-link">Online quiz link (optional)</label>
-          <input type="url" id="progress-quiz-link" placeholder="https://forms.gle/…" />
-          <p class="page-subheading" style="margin:6px 0 0;">For your own quiz (e.g. Google Forms). ConnectED live quiz uses Classwork → Enable link instead.</p>
-          <p class="page-subheading" style="margin:6px 0 0;">For your own quiz (e.g. Google Forms). ConnectED live quiz uses Classwork → Enable link instead.</p>
-        </div>
+      <div class="field-small">
+        <label for="progress-max">Total score</label>
+        <input type="number" id="progress-max" min="1" max="999" value="100" />
       </div>
       <p id="progress-create-msg" class="inline-message"></p>
       <div class="modal-form-actions">
@@ -1214,9 +1274,67 @@
     </div>
   </div>
 
+  <div id="qb-exam-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:520px;">
+      <h3 class="font-heading">Create Period Exam</h3>
+      <p class="page-subheading" style="margin:0 0 12px;">
+        Compose one exam from Classwork sets and/or Materials (items already saved from those materials). Edit in Records, then print PDF or enable an online link.
+      </p>
+      <div class="field-small">
+        <label for="qb-exam-title">Exam title</label>
+        <input type="text" id="qb-exam-title" placeholder="e.g., Q1 Periodical Exam — Math" />
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-class">Class (assigned only)</label>
+        <select id="qb-exam-class">
+          <option value="">-- Select your class --</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-quarter">Grading Period</label>
+        <select id="qb-exam-quarter"></select>
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-subject">Subject</label>
+        <select id="qb-exam-subject">
+          <option value="">All subjects</option>
+        </select>
+      </div>
+      <div class="field-small">
+        <label>Sources</label>
+        <div class="admin-filter-group" id="qb-exam-source-tabs" style="margin-bottom:8px;">
+          <button type="button" class="chip-ghost primary" data-exam-source="classwork">Classwork</button>
+          <button type="button" class="chip-ghost" data-exam-source="materials">Materials</button>
+        </div>
+        <div id="qb-exam-source-classwork">
+          <div id="qb-exam-sets-list" class="qb-exam-sets-list" role="group" aria-label="Classwork sets"></div>
+          <p class="page-subheading" id="qb-exam-sets-empty" style="margin:8px 0 0;" hidden>No Classwork sets for this class/subject yet. Upload materials, generate AI drafts, or add Classwork first.</p>
+          <label class="qb-exam-set-row qb-exam-include-row">
+            <input type="checkbox" id="qb-exam-include-activity" />
+            <span>Include Activities</span>
+          </label>
+        </div>
+        <div id="qb-exam-source-materials" hidden>
+          <div id="qb-exam-materials-list" class="qb-exam-sets-list" role="group" aria-label="Materials"></div>
+          <p class="page-subheading" id="qb-exam-materials-empty" style="margin:8px 0 0;" hidden>No materials with Classwork items for this class/subject yet. Upload a material, generate drafts, and save to Classwork first.</p>
+        </div>
+      </div>
+      <div id="qb-exam-sections" class="qb-score-sections" hidden></div>
+      <div class="field-small" id="qb-exam-max-wrap" hidden>
+        <label for="qb-exam-max">Total score</label>
+        <input type="number" id="qb-exam-max" min="1" max="9999" step="0.5" value="1" />
+      </div>
+      <p class="page-subheading" id="qb-exam-preview" style="margin:12px 0 0;">Select a classwork set or material.</p>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-outline" id="qb-exam-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-solid" id="qb-exam-confirm" disabled>Create Exam</button>
+      </div>
+    </div>
+  </div>
+
   <div id="qb-create-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:460px;">
-      <h3 class="font-heading">Create Progress quiz from Classwork</h3>
+      <h3 class="font-heading">Create Progress Record From Classwork</h3>
       <p class="page-subheading" id="qb-create-count">Selected items → new Progress record.</p>
       <div class="field-small">
         <label for="qb-create-title">Title</label>
@@ -1238,16 +1356,16 @@
       </div>
       <div class="field-small">
         <label for="qb-create-quarter">Quarter</label>
-        <select id="qb-create-quarter">
-          <option value="Q1">Q1</option>
-          <option value="Q2">Q2</option>
-          <option value="Q3">Q3</option>
-          <option value="Q4">Q4</option>
-        </select>
+        <select id="qb-create-quarter"></select>
+      </div>
+      <div id="qb-create-sections" class="qb-score-sections" hidden></div>
+      <div class="field-small">
+        <label for="qb-create-max">Total score</label>
+        <input type="number" id="qb-create-max" min="1" max="9999" step="0.5" value="1" />
       </div>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="qb-create-cancel">Cancel</button>
-        <button type="button" class="btn-solid" id="qb-create-confirm">Create record</button>
+        <button type="button" class="btn-solid" id="qb-create-confirm">Create Record</button>
       </div>
     </div>
   </div>
@@ -1255,12 +1373,12 @@
   <!-- ADD CLASSWORK QUIZ SET MODAL -->
   <div id="qb-add-quiz-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:460px;">
-      <h3 class="font-heading">Add Quiz</h3>
-      <p class="page-subheading">Create a blank classwork set you can fill with questions.</p>
+      <h3 class="font-heading">Add Classwork</h3>
+      <p class="page-subheading">Create a blank classwork set you can fill with quiz and activity items.</p>
       <form id="qb-add-quiz-form">
         <div class="field-small">
           <label for="qb-add-title">Title</label>
-          <input type="text" id="qb-add-title" placeholder="e.g., Quiz — Fractions Week 2" required />
+          <input type="text" id="qb-add-title" placeholder="e.g., Fractions Week 2" required />
         </div>
         <div class="form-row">
           <div class="field-small">
@@ -1278,7 +1396,7 @@
         </div>
         <div class="modal-form-actions">
           <button type="button" class="btn-outline" id="qb-add-quiz-cancel" data-modal-cancel>Cancel</button>
-          <button type="submit" class="btn-solid">Create set</button>
+          <button type="submit" class="btn-solid">Create Set</button>
         </div>
       </form>
     </div>
@@ -1286,7 +1404,7 @@
 
   <div id="qb-edit-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:560px;">
-      <h3 class="font-heading" id="qb-edit-modal-title">Edit question</h3>
+      <h3 class="font-heading" id="qb-edit-modal-title">Edit Question</h3>
       <p class="page-subheading" id="qb-edit-modal-subtitle" style="margin:0 0 12px;">Add or update a classwork question.</p>
       <form id="qb-edit-form" class="admin-form admin-edit-form" onsubmit="return false;">
         <input type="hidden" id="qb-edit-id" />
@@ -1350,9 +1468,30 @@
     </div>
   </div>
 
+  <div id="progress-makeup-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:440px;">
+      <h3 class="font-heading">Allow Make-Up Access</h3>
+      <p class="page-subheading" id="progress-makeup-modal-note" style="margin:0 0 12px;">Set how long make-up access stays open for absent/excused students.</p>
+      <div class="admin-form">
+        <div class="form-row">
+          <div class="field-small">
+            <label for="progress-makeup-hours">Extra Hours</label>
+            <input type="number" id="progress-makeup-hours" min="1" max="336" step="1" value="48" />
+          </div>
+        </div>
+        <p class="page-subheading progress-share-preview" id="progress-makeup-preview" style="margin:0 0 12px;"></p>
+        <p id="progress-makeup-modal-msg" class="inline-message" style="color:#b71c1c;" hidden></p>
+        <div class="modal-form-actions">
+          <button type="button" class="btn-outline" data-modal-cancel>Cancel</button>
+          <button type="button" class="btn-solid" id="progress-makeup-confirm">Allow Access</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="parent-concern-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:560px;">
-      <h3 class="font-heading">Send concern</h3>
+      <h3 class="font-heading">Send Concern</h3>
       <p class="page-subheading" style="margin:0 0 12px;">Message your child’s teacher. The conversation stays open until it is resolved.</p>
       <p id="parent-concern-msg" class="inline-message" style="color:#b71c1c;" hidden></p>
       <form id="parent-concern-form" class="admin-form admin-edit-form">
@@ -1471,7 +1610,7 @@
 </div>
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
-  <script src="/js/app.js?v=20260913a2" type="module"></script>
+  <script src="/js/app.js?v=20260918e9" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -1512,8 +1651,8 @@
         <div class="field-small"><label for="reenroll-parent">Parent</label><select id="reenroll-parent"><option value="">-- Select Parent --</option></select></div>
         <div class="field-small">
           <label for="reenroll-class-adviser-display">Class Adviser</label>
-          <div id="reenroll-class-adviser-display" style="padding:8px 11px;border:1px solid var(--border-maroon);border-radius:10px;background:#f8f6f4;color:var(--text-dark);font-size:0.84rem;min-height:35px;display:flex;align-items:center;">
-            <span id="reenroll-class-adviser-text" style="color:var(--text-muted);">-- Select Grade & Section --</span>
+          <div id="reenroll-class-adviser-display" class="select-display is-placeholder" role="status" aria-live="polite">
+            <span id="reenroll-class-adviser-text" class="select-display-text">-- Auto Select --</span>
           </div>
           <input type="hidden" id="reenroll-homeroom" />
           <small id="reenroll-class-adviser-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
@@ -1795,8 +1934,8 @@
         <div class="field-small"><label for="student-parent">Parent</label><select id="student-parent"><option value="">-- Select Parent --</option></select></div>
         <div class="field-small">
           <label for="student-class-adviser-display">Class Adviser</label>
-          <div id="student-class-adviser-display" style="padding:8px 11px;border:1px solid var(--border-maroon);border-radius:10px;background:#f8f6f4;color:var(--text-dark);font-size:0.84rem;min-height:35px;display:flex;align-items:center;">
-            <span id="student-class-adviser-text" style="color:var(--text-muted);">-- Select Grade & Section --</span>
+          <div id="student-class-adviser-display" class="select-display is-placeholder" role="status" aria-live="polite">
+            <span id="student-class-adviser-text" class="select-display-text">-- Auto Select --</span>
           </div>
           <input type="hidden" id="student-homeroom" />
           <small id="student-class-adviser-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>

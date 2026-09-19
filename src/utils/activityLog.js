@@ -1,6 +1,6 @@
 const db = require('../../db');
 
-const RECENT_LIMIT = 8;
+const RECENT_LIMIT = 5;
 let schemaPromise = null;
 let hasUserRoleColumn = false;
 
