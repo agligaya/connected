@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260918e9" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260920c30" />
 
 </head>
 <body data-view="login">
@@ -86,9 +86,9 @@
             <nav class="sidebar-nav sidebar-nav--icons" aria-label="Teacher sections">
               <button type="button" class="sidebar-item active" data-teacher-panel="classroom"><span class="nav-ico">🏫</span> Classroom</button>
               <button type="button" class="sidebar-item" data-teacher-panel="attendance-sheet"><span class="nav-ico">📅</span> Attendance Sheet</button>
-              <button type="button" class="sidebar-item" data-teacher-panel="progress"><span class="nav-ico">📈</span> Records</button>
               <button type="button" class="sidebar-item" data-teacher-panel="lesson-plans"><span class="nav-ico">📚</span> Materials</button>
               <button type="button" class="sidebar-item" data-teacher-panel="quiz-bank"><span class="nav-ico">🗂️</span> Classwork</button>
+              <button type="button" class="sidebar-item" data-teacher-panel="progress"><span class="nav-ico">📈</span> Records</button>
               <button type="button" class="sidebar-item" data-teacher-panel="inbox">
                 <span class="nav-ico">✉</span> Inbox
                 <span id="teacher-inbox-badge" class="inbox-badge sidebar-inbox-badge inbox-badge--dot" hidden aria-hidden="true"></span>
@@ -206,8 +206,8 @@
                     <div class="records-card">
                       <div class="records-header">
                         <div>
-                          <h3 class="page-heading font-heading" style="font-size: 1.1rem;">Class Roster</h3>
-                          <p class="page-subheading" id="classroom-roster-hint">Tap P, A, L, or E to mark every student before enabling a quiz.</p>
+                          <h3 class="page-heading font-heading">Class Roster</h3>
+                          <p class="page-subheading" id="classroom-roster-hint">Tap P, A, L, or E to mark every student before enabling a shared link.</p>
                         </div>
                         <div class="records-header-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
                           <div class="dash-search-wrap">
@@ -281,7 +281,7 @@
                   <div class="records-card" style="margin-top:16px;">
                     <div class="records-header">
                       <div>
-                        <h3 class="page-heading font-heading" style="font-size:1.1rem;">Weekly Attendance</h3>
+                        <h3 class="page-heading font-heading">Weekly Attendance</h3>
                         <p class="page-subheading" id="attendance-sheet-hint">From Classroom attendance · Monday–Friday weeks.</p>
                       </div>
                     </div>
@@ -344,15 +344,15 @@
                     <div class="records-card progress-detail-card">
                       <div class="records-header progress-editor-sticky-header">
                         <div>
-                          <h3 class="page-heading font-heading" style="font-size:1.1rem;" id="progress-editor-title">Record</h3>
+                          <h3 class="page-heading font-heading" id="progress-editor-title">Record</h3>
                           <p class="page-subheading" id="progress-editor-meta"></p>
                         </div>
                         <div class="progress-detail-header-actions">
                           <button type="button" class="btn-toolbar btn-toolbar--outline" id="progress-print-paper" hidden title="Print or save as PDF">Print / PDF</button>
                           <button type="button" class="btn-toolbar btn-toolbar--outline" id="progress-print-key" hidden title="Teacher answer key">Answer Key</button>
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-edit">Edit Scores</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--outline" id="progress-print-scoresheet" hidden title="Print rubric score sheet">Score Sheet</button>
                           <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-mode-link">Shared Link</button>
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-scores-save" hidden>Save Scores</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-scores-save">Save Scores</button>
                         </div>
                       </div>
 
@@ -360,11 +360,9 @@
                         <h4 class="progress-detail-section-title">ConnectED Shared Link</h4>
                         <p id="progress-share-attendance-note" class="page-subheading" style="margin:0 0 10px;"></p>
                         <div class="progress-share-windows" id="progress-share-windows">
-                          <div class="form-row">
-                            <div class="field-small">
-                              <label for="progress-share-live-duration">Minutes Open</label>
-                              <input type="number" id="progress-share-live-duration" min="5" max="10080" step="5" value="60" />
-                            </div>
+                          <div class="field-small progress-share-field">
+                            <label for="progress-share-live-duration">Minutes Open</label>
+                            <input type="number" id="progress-share-live-duration" class="progress-share-field-input" min="5" max="10080" step="5" value="60" />
                           </div>
                           <p class="page-subheading progress-share-preview" id="progress-share-live-preview"></p>
 
@@ -372,18 +370,22 @@
                             <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-save-windows" hidden>Save Deadline</button>
                           </div>
                         </div>
-                        <input type="text" id="progress-share-url" class="progress-share-url-input" readonly placeholder="Enable a link to share with the class" />
+                        <div class="field-small progress-share-field">
+                          <input type="text" id="progress-share-url" class="progress-share-url-input progress-share-field-input" readonly placeholder="Enable a link to share with the class" />
+                        </div>
                         <div class="progress-share-actions" id="progress-share-actions">
                           <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-assign">Enable Link</button>
                           <button type="button" class="chip-ghost" id="progress-share-copy" hidden>Copy Link</button>
-                          <button type="button" class="chip-ghost chip-danger" id="progress-share-revoke" hidden>Turn Off Link</button>
+                          <button type="button" class="chip-ghost chip-danger" id="progress-share-revoke" hidden>Disable Link</button>
                           <a class="chip-ghost primary" id="progress-share-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
                         </div>
                       </div>
 
                       <div class="progress-detail-section progress-link-only" hidden>
                         <h4 class="progress-detail-section-title">Online Link <span class="page-subheading">(Google Forms, etc.)</span></h4>
-                        <input type="url" id="progress-editor-quiz-link" class="progress-share-url-input" placeholder="https://forms.gle/…" />
+                        <div class="field-small progress-share-field">
+                          <input type="url" id="progress-editor-quiz-link" class="progress-share-url-input progress-share-field-input" placeholder="https://forms.gle/…" />
+                        </div>
                         <div class="progress-share-actions" id="progress-quiz-link-actions">
                           <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-quiz-link-save">Save Link</button>
                           <a class="chip-ghost primary" id="progress-quiz-link-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
@@ -393,11 +395,11 @@
                       <div id="progress-attached-questions" class="progress-detail-section progress-link-only" hidden>
                         <details class="progress-questions-fold">
                           <summary>
-                            <span class="progress-detail-section-title" style="margin:0;display:inline;">Attached Questions</span>
+                            <span class="progress-detail-section-title" style="margin:0;display:inline;">Attached Items</span>
                             <span class="page-subheading" id="progress-questions-count"></span>
                           </summary>
                           <ol id="progress-questions-list" class="progress-questions-list"></ol>
-                          <button type="button" class="chip-ghost" id="progress-copy-questions">Copy Questions</button>
+                          <button type="button" class="chip-ghost" id="progress-copy-questions">Copy Items</button>
                         </details>
                       </div>
 
@@ -408,6 +410,13 @@
                             <button type="button" class="chip-ghost" id="progress-makeup-all" hidden>Allow All</button>
                           </div>
                         </div>
+                        <details id="progress-rubric-guide" class="progress-questions-fold" hidden style="margin-bottom:12px;">
+                          <summary>
+                            <span class="progress-detail-section-title" style="margin:0;display:inline;">Activity Rubric</span>
+                            <span class="page-subheading">Guide for scoring</span>
+                          </summary>
+                          <div id="progress-rubric-guide-body"></div>
+                        </details>
                         <div class="records-table-wrapper">
                           <table id="progress-scores-table">
                             <thead>
@@ -428,17 +437,26 @@
                 <section id="teacher-panel-lesson-plans" class="teacher-panel" hidden>
                   <div class="teacher-header-row">
                     <div>
-                      <h2 class="page-heading font-heading">Materials</h2>
-                      <p class="page-subheading">Upload teaching materials, then generate AI drafts for Classwork.</p>
+                      <h2 class="page-heading font-heading" id="lp-page-title">Materials</h2>
+                      <p class="page-subheading" id="lp-page-meta">Open a subject to view files and AI drafts.</p>
                     </div>
                     <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-upload-material-modal">+ Upload Material</button>
                   </div>
 
-                  <div id="lesson-plans-list" class="announcement-list"></div>
-
-                  <h3 class="admin-section-title" style="margin-top:24px;">AI Drafts</h3>
-                  <p id="ai-mode-hint" class="page-subheading"></p>
-                  <div id="ai-recommendations-list" class="announcement-list"></div>
+                  <div id="lp-subjects-list" class="announcement-list"></div>
+                  <div id="lp-subject-detail" hidden>
+                    <button type="button" class="chip-ghost" id="lp-subject-back" style="margin-bottom:12px;">← Back</button>
+                    <div class="records-card">
+                      <div class="lp-subject-body">
+                        <div id="lesson-plans-list" class="announcement-list"></div>
+                        <div class="lp-drafts-heading">
+                          <h3 class="admin-section-title" id="lp-ai-drafts-heading">AI Drafts</h3>
+                          <p id="ai-mode-hint" class="page-subheading"></p>
+                        </div>
+                        <div id="ai-recommendations-list" class="announcement-list"></div>
+                      </div>
+                    </div>
+                  </div>
                 </section>
 
                 <!-- PANEL: Classwork -->
@@ -451,7 +469,7 @@
                     <div class="qb-header-actions">
                       <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-quiz-btn">+ Add Classwork</button>
                       <button type="button" class="btn-toolbar btn-toolbar--outline" id="qb-create-exam-btn">+ Create Exam</button>
-                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Create Progress Record</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Next: Create Quiz</button>
                     </div>
                   </div>
 
@@ -470,25 +488,20 @@
                   <div id="qb-set-detail" hidden>
                     <button type="button" class="chip-ghost" id="qb-set-back" style="margin-bottom:12px;">← Back</button>
                     <div class="records-card">
-                      <div class="records-header">
-                        <div>
-                          <h3 class="page-heading font-heading" style="font-size:1.1rem;" id="qb-set-title">Set</h3>
-                          <p class="page-subheading" id="qb-set-meta"></p>
+                      <div class="records-header qb-set-toolbar">
+                        <div class="qb-bulk-bar" id="qb-bulk-bar" hidden>
+                          <button type="button" class="chip-ghost" id="qb-select-all">Select All</button>
                         </div>
                         <div class="progress-detail-header-actions">
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-question-btn" hidden>+ Add Question</button>
+                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-question-btn" hidden>+ Add Quiz Question</button>
                           <button type="button" class="chip-ghost chip-danger" id="qb-set-delete">Delete Set</button>
                         </div>
-                      </div>
-                      <div class="qb-bulk-bar" id="qb-bulk-bar" hidden>
-                        <button type="button" class="chip-ghost" id="qb-select-all">Select All</button>
-                        <button type="button" class="chip-ghost" id="qb-clear-selection">Clear</button>
                       </div>
                       <div id="qb-set-groups" class="qb-set-groups"></div>
                     </div>
                     <div class="qb-next-step-bar" id="qb-next-step-bar" hidden>
                       <p class="page-subheading" id="qb-next-step-meta" style="margin:0;">Select items to continue</p>
-                      <button type="button" class="btn-solid" id="qb-create-progress-next" disabled>Next: Create Progress Record</button>
+                      <button type="button" class="btn-solid" id="qb-create-progress-next" disabled>Next: Create Quiz</button>
                     </div>
                   </div>
                 </section>
@@ -705,7 +718,7 @@
                               <option value="Q4">Q4</option>
                             </select>
                           </div>
-                          <p id="admin-quarter-help" class="page-subheading" style="margin-top:8px;">Unlocks Progress recording through this quarter.</p>
+                          <p id="admin-quarter-help" class="page-subheading">Unlocks Progress recording through this quarter.</p>
                           <button type="button" class="btn-solid" id="admin-save-quarter-btn" style="margin-top:10px;">Save Quarter</button>
                           <p id="admin-quarter-msg" class="inline-message"></p>
                           <hr style="border:none;border-top:1px solid var(--border-maroon);margin:16px 0;" />
@@ -959,7 +972,7 @@
 <div id="change-password-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:560px;">
     <h3 class="font-heading" id="change-password-title">Change Password</h3>
-    <p class="page-subheading" id="change-password-hint" style="margin:0 0 12px;" hidden>Your administrator set a temporary password. Enter it below as the current password, then choose a new one to continue.</p>
+    <p class="page-subheading" id="change-password-hint" hidden>Your administrator set a temporary password. Enter it below as the current password, then choose a new one to continue.</p>
     <p id="change-password-error" class="inline-message" style="color:#b71c1c;" hidden></p>
     <form id="change-password-form" class="admin-form admin-edit-form">
       <div class="form-row">
@@ -1077,7 +1090,7 @@
   <div id="ai-generate-count-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:440px;">
       <h3 class="font-heading" id="ai-generate-modal-title">Generate AI Draft</h3>
-      <p class="page-subheading" style="margin:0 0 12px;">How many items should the draft include?</p>
+      <p class="page-subheading">How many items should the draft include?</p>
       <input type="hidden" id="ai-generate-lesson-id" />
       <input type="hidden" id="ai-generate-mode" value="generate" />
       <input type="hidden" id="ai-generate-rec-id" />
@@ -1091,7 +1104,7 @@
         <input type="number" id="ai-generate-count-custom" min="5" max="50" placeholder="e.g. 15" />
       </div>
       <div class="field-small" style="margin-top:14px;">
-        <span class="page-subheading" style="display:block;margin:0 0 8px;">Question types (pick one or more)</span>
+        <span class="page-subheading" style="display:block;margin:0 0 8px;">Quiz item types (pick one or more)</span>
         <div class="ai-type-checks" role="group" aria-label="Quiz item types">
           <label class="ai-type-check">
             <input type="checkbox" name="ai-quiz-type" value="mcq" checked />
@@ -1118,7 +1131,7 @@
     <div class="modal-card ai-generating-card" role="status">
       <div class="ai-generating-spinner" aria-hidden="true"></div>
       <h3 class="font-heading" id="ai-generating-title">Generating AI Draft…</h3>
-      <p class="page-subheading" id="ai-generating-message" style="margin:0;">
+      <p class="page-subheading" id="ai-generating-message">
         Please wait. Local AI can take 1–3 minutes. This window stays open until generation finishes.
       </p>
     </div>
@@ -1127,7 +1140,7 @@
   <div id="ai-approve-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:440px;">
       <h3 class="font-heading">Approve AI Draft</h3>
-      <p class="page-subheading">Creates a Progress record and saves items to Classwork.</p>
+      <p class="page-subheading">Saves items to Classwork and creates a Quiz or Activity in Records.</p>
       <input type="hidden" id="ai-approve-id" />
       <input type="hidden" id="ai-approve-grade" />
       <div class="field-small">
@@ -1161,7 +1174,7 @@
   <div id="upload-material-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:560px;">
       <h3 class="font-heading">Upload Material</h3>
-      <p class="page-subheading" style="margin:0 0 12px;">Add a file or outline teachers can use to generate AI drafts.</p>
+      <p class="page-subheading">Add a file or outline teachers can use to generate AI drafts.</p>
       <form id="upload-material-form" class="admin-form admin-edit-form">
         <div class="form-row">
           <div class="field-small span-full">
@@ -1198,7 +1211,7 @@
           <div class="field-small span-full">
             <label for="lp-file">File (PDF/DOC/DOCX)</label>
             <input type="file" id="lp-file" accept=".pdf,.doc,.docx" />
-            <p class="page-subheading" style="margin:6px 0 0;">PDF, DOC, or DOCX · Max 10 MB</p>
+            <p class="page-subheading">PDF, DOC, or DOCX · Max 10 MB</p>
           </div>
         </div>
         <p id="lp-message" class="inline-message"></p>
@@ -1277,7 +1290,7 @@
   <div id="qb-exam-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:520px;">
       <h3 class="font-heading">Create Period Exam</h3>
-      <p class="page-subheading" style="margin:0 0 12px;">
+      <p class="page-subheading">
         Compose one exam from Classwork sets and/or Materials (items already saved from those materials). Edit in Records, then print PDF or enable an online link.
       </p>
       <div class="field-small">
@@ -1308,7 +1321,7 @@
         </div>
         <div id="qb-exam-source-classwork">
           <div id="qb-exam-sets-list" class="qb-exam-sets-list" role="group" aria-label="Classwork sets"></div>
-          <p class="page-subheading" id="qb-exam-sets-empty" style="margin:8px 0 0;" hidden>No Classwork sets for this class/subject yet. Upload materials, generate AI drafts, or add Classwork first.</p>
+          <p class="page-subheading" id="qb-exam-sets-empty" hidden>No Classwork sets for this class/subject yet. Upload materials, generate AI drafts, or add Classwork first.</p>
           <label class="qb-exam-set-row qb-exam-include-row">
             <input type="checkbox" id="qb-exam-include-activity" />
             <span>Include Activities</span>
@@ -1316,7 +1329,7 @@
         </div>
         <div id="qb-exam-source-materials" hidden>
           <div id="qb-exam-materials-list" class="qb-exam-sets-list" role="group" aria-label="Materials"></div>
-          <p class="page-subheading" id="qb-exam-materials-empty" style="margin:8px 0 0;" hidden>No materials with Classwork items for this class/subject yet. Upload a material, generate drafts, and save to Classwork first.</p>
+          <p class="page-subheading" id="qb-exam-materials-empty" hidden>No materials with Classwork items for this class/subject yet. Upload a material, generate drafts, and save to Classwork first.</p>
         </div>
       </div>
       <div id="qb-exam-sections" class="qb-score-sections" hidden></div>
@@ -1334,8 +1347,8 @@
 
   <div id="qb-create-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:460px;">
-      <h3 class="font-heading">Create Progress Record From Classwork</h3>
-      <p class="page-subheading" id="qb-create-count">Selected items → new Progress record.</p>
+      <h3 class="font-heading" id="qb-create-modal-title">Create Quiz from Classwork</h3>
+      <p class="page-subheading" id="qb-create-count">Selected items → new Quiz in Records.</p>
       <div class="field-small">
         <label for="qb-create-title">Title</label>
         <input type="text" id="qb-create-title" placeholder="e.g., Quiz — Algebra week 1" />
@@ -1365,7 +1378,7 @@
       </div>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="qb-create-cancel">Cancel</button>
-        <button type="button" class="btn-solid" id="qb-create-confirm">Create Record</button>
+        <button type="button" class="btn-solid" id="qb-create-confirm">Create Quiz</button>
       </div>
     </div>
   </div>
@@ -1403,39 +1416,40 @@
   </div>
 
   <div id="qb-edit-modal" class="modal-overlay" hidden>
-    <div class="modal-card" style="max-width:560px;">
-      <h3 class="font-heading" id="qb-edit-modal-title">Edit Question</h3>
-      <p class="page-subheading" id="qb-edit-modal-subtitle" style="margin:0 0 12px;">Add or update a classwork question.</p>
+    <div class="modal-card" style="max-width:640px;">
+      <h3 class="font-heading" id="qb-edit-modal-title">Edit Quiz Question</h3>
+      <p class="page-subheading" id="qb-edit-modal-subtitle">Add or update a Classwork item.</p>
       <form id="qb-edit-form" class="admin-form admin-edit-form" onsubmit="return false;">
         <input type="hidden" id="qb-edit-id" />
         <div class="form-row">
           <div class="field-small span-full">
-            <label for="qb-edit-type">Question type</label>
+            <label for="qb-edit-type">Item type</label>
             <select id="qb-edit-type">
               <option value="mcq">Multiple choice</option>
               <option value="identification">Identification</option>
               <option value="enumeration">Enumeration</option>
               <option value="short_answer">Short answer</option>
-              <option value="activity_prompt">Activity</option>
+              <option value="activity">Activity</option>
             </select>
           </div>
         </div>
         <div class="form-row">
           <div class="field-small span-full">
-            <label for="qb-edit-question">Question / prompt</label>
-            <textarea id="qb-edit-question" rows="3"></textarea>
+            <label for="qb-edit-question" id="qb-edit-question-label">Question</label>
+            <textarea id="qb-edit-question" rows="3" placeholder="e.g. What is…?"></textarea>
           </div>
         </div>
         <div class="form-row" id="qb-edit-choices-wrap">
           <div class="field-small span-full">
-            <label for="qb-edit-choices">Choices (one per line, for multiple choice)</label>
-            <textarea id="qb-edit-choices" rows="4" placeholder="Option A&#10;Option B&#10;Option C&#10;Option D"></textarea>
+            <label>Choices</label>
+            <div id="qb-edit-choices-list" class="qb-choices-list"></div>
+            <p class="page-subheading">Enter adds the next letter (A, B, C…). Long text wraps in the same box.</p>
           </div>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="qb-edit-answer-wrap">
           <div class="field-small span-full">
-            <label for="qb-edit-answer">Correct answer</label>
-            <input type="text" id="qb-edit-answer" />
+            <label for="qb-edit-answer">Correct Answer</label>
+            <input type="text" id="qb-edit-answer" placeholder="A" autocomplete="off" />
           </div>
         </div>
         <div class="form-row admin-edit-form-row-2">
@@ -1447,6 +1461,15 @@
             <label for="qb-edit-grade">Grade (assigned only)</label>
             <select id="qb-edit-grade"></select>
           </div>
+        </div>
+        <div id="qb-edit-rubric-wrap" hidden>
+          <div class="qb-rubric-header">
+            <h4 class="progress-detail-section-title" style="margin:0;">Rubric</h4>
+            <button type="button" class="chip-ghost primary" id="qb-edit-rubric-generate">Generate Rubric</button>
+          </div>
+          <p id="qb-edit-rubric-sum-note" class="page-subheading" style="margin:6px 0 8px;"></p>
+          <div id="qb-edit-rubric-list" class="qb-rubric-list"></div>
+          <button type="button" class="chip-ghost" id="qb-edit-rubric-add" style="margin-top:8px;">+ Add Category</button>
         </div>
         <div class="modal-form-actions">
           <button type="button" class="btn-outline" id="qb-edit-cancel">Cancel</button>
@@ -1471,7 +1494,7 @@
   <div id="progress-makeup-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:440px;">
       <h3 class="font-heading">Allow Make-Up Access</h3>
-      <p class="page-subheading" id="progress-makeup-modal-note" style="margin:0 0 12px;">Set how long make-up access stays open for absent/excused students.</p>
+      <p class="page-subheading" id="progress-makeup-modal-note">Set how long make-up access stays open for absent/excused students.</p>
       <div class="admin-form">
         <div class="form-row">
           <div class="field-small">
@@ -1489,10 +1512,21 @@
     </div>
   </div>
 
+  <div id="progress-activity-work-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:640px;">
+      <h3 class="font-heading" id="progress-activity-work-title">Student work</h3>
+      <p class="page-subheading" style="margin:0 0 12px;">Submitted from the live activity link.</p>
+      <div id="progress-activity-work-body"></div>
+      <div class="modal-form-actions">
+        <button type="button" class="btn-solid" data-modal-cancel>Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="parent-concern-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:560px;">
       <h3 class="font-heading">Send Concern</h3>
-      <p class="page-subheading" style="margin:0 0 12px;">Message your child’s teacher. The conversation stays open until it is resolved.</p>
+      <p class="page-subheading">Message your child’s teacher. The conversation stays open until it is resolved.</p>
       <p id="parent-concern-msg" class="inline-message" style="color:#b71c1c;" hidden></p>
       <form id="parent-concern-form" class="admin-form admin-edit-form">
         <div class="form-row admin-edit-form-row-2">
@@ -1610,7 +1644,7 @@
 </div>
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
-  <script src="/js/app.js?v=20260918e9" type="module"></script>
+  <script src="/js/app.js?v=20260920c30" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -1956,7 +1990,7 @@
 <div id="edit-student-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:560px;">
     <h3 class="font-heading">Edit Student</h3>
-    <p class="page-subheading" id="edit-student-subtitle" style="margin:0 0 12px;">Update LRN and name only.</p>
+    <p class="page-subheading" id="edit-student-subtitle">Update LRN and name only.</p>
     <p id="edit-student-error" class="inline-message" style="color:#b71c1c;" hidden></p>
     <form id="edit-student-form" class="admin-form admin-edit-form edit-student-form">
       <input type="hidden" id="edit-student-id" />
@@ -2094,7 +2128,7 @@
 <div id="edit-account-info-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:560px;">
     <h3 class="font-heading" id="edit-account-info-title">Edit Info</h3>
-    <p class="page-subheading" id="edit-account-info-subtitle" style="margin:0 0 12px;">Update account details.</p>
+    <p class="page-subheading" id="edit-account-info-subtitle">Update account details.</p>
     <form id="edit-account-info-form" class="admin-form admin-edit-form">
       <input type="hidden" id="edit-account-id" />
       <input type="hidden" id="edit-account-role" />

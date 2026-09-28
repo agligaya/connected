@@ -1,11 +1,17 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 const router = express.Router();
 const db = require('../../db');
 const {
   ensureQuizShareSchema,
   publicQuestion,
   getAssessmentQuestions,
-  scoreSubmission
+  scoreSubmission,
+  isActivityItemType,
+  activityWorkFromSubmission,
+  answersBagFromPayload
 } = require('../utils/quizShare');
 const {
   ensureQuizAttendanceSchema,
@@ -57,7 +63,7 @@ router.get('/:token', async (req, res) => {
 
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
-      return res.status(400).json({ error: 'This link has no questions yet.' });
+      return res.status(400).json({ error: 'This link has no items yet.' });
     }
 
     const makeupIds = parseMakeupIds(assessment.quiz_makeup_student_ids);
@@ -82,7 +88,36 @@ router.get('/:token', async (req, res) => {
   }
 });
 
-/** LRN → confirm student name + eligibility (Present/Late live; Absent/Excused if make-up granted). */
+const activitySubmitDir = path.join(__dirname, '../../public/uploads/activity-submissions');
+if (!fs.existsSync(activitySubmitDir)) {
+  fs.mkdirSync(activitySubmitDir, { recursive: true });
+}
+
+const activityFileUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, activitySubmitDir),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      cb(null, `act_${Date.now()}_${Math.random().toString(16).slice(2, 10)}${ext}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const okExt = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.webp'];
+    const okMime = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/jpeg',
+      'image/png',
+      'image/webp'
+    ];
+    if (okExt.includes(ext) || okMime.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Upload a PDF, Word file, or image (JPG, PNG, or WebP).'));
+  }
+});
+
 router.post('/:token/identify', async (req, res) => {
   try {
     await ensureQuizShareSchema();
@@ -145,12 +180,45 @@ router.post('/:token/identify', async (req, res) => {
   }
 });
 
+function mergeActivityUploads(answers, files) {
+  const next = { ...answersBagFromPayload(answers) };
+  (files || []).forEach((file) => {
+    const m = String(file.fieldname || '').match(/^file_(\d+)$/);
+    if (!m) return;
+    const qid = m[1];
+    const prev = next[qid] && typeof next[qid] === 'object' ? next[qid] : { text: String(next[qid] || '') };
+    next[qid] = {
+      ...prev,
+      file: {
+        url: `/uploads/activity-submissions/${file.filename}`,
+        name: file.originalname || file.filename,
+        mime: file.mimetype || ''
+      }
+    };
+  });
+  return next;
+}
+
+function runActivityUpload(req, res) {
+  return new Promise((resolve, reject) => {
+    activityFileUpload.any()(req, res, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 router.post('/:token/submit', async (req, res) => {
   try {
+    const contentType = String(req.headers['content-type'] || '');
+    if (contentType.includes('multipart/form-data')) {
+      await runActivityUpload(req, res);
+    }
     await ensureQuizShareSchema();
     await ensureQuizAttendanceSchema();
     const token = String(req.params.token || '').trim();
-    const { student_id, answers, lrn: lrnBody } = req.body || {};
+    const { student_id, answers: answersRaw, lrn: lrnBody } = req.body || {};
+    const answers = mergeActivityUploads(answersRaw, req.files);
 
     if (!token) return res.status(400).json({ error: 'Invalid link' });
     if (!student_id) return res.status(400).json({ error: 'Confirm your LRN before submitting.' });
@@ -227,10 +295,20 @@ router.post('/:token/submit', async (req, res) => {
 
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
-      return res.status(400).json({ error: 'This link has no questions yet.' });
+      return res.status(400).json({ error: 'This link has no items yet.' });
+    }
+
+    for (const q of questions) {
+      if (!isActivityItemType(q.item_type)) continue;
+      const raw = answers[String(q.id)];
+      const text = typeof raw === 'object' && raw ? String(raw.text || '').trim() : String(raw || '').trim();
+      if (!text) {
+        return res.status(400).json({ error: 'Write your answer for every activity item before submitting.' });
+      }
     }
 
     const { earned, maxScore, detail } = scoreSubmission(questions, answers);
+    const onlyActivity = questions.length > 0 && questions.every((q) => isActivityItemType(q.item_type));
     const recordMax = Math.max(1, Number(assessment.max_score) || maxScore || 1);
     let finalScore = earned;
     if (maxScore > 0 && Math.abs(recordMax - maxScore) > 0.01) {
@@ -246,36 +324,47 @@ router.post('/:token/submit', async (req, res) => {
         assessment.id,
         student_id,
         token,
-        JSON.stringify({ answers: Array.isArray(answers) ? answers : [], detail }),
-        finalScore,
+        JSON.stringify({ student_id, answers, detail, scored_at: new Date().toISOString() }),
+        onlyActivity ? 0 : finalScore,
         recordMax
       ]
     );
 
-    const [scoreRow] = await db.query(
-      `SELECT id FROM assessment_scores WHERE assessment_id = ? AND student_id = ?`,
-      [assessment.id, student_id]
-    );
-    if (scoreRow.length) {
-      await db.query(`UPDATE assessment_scores SET score = ? WHERE id = ?`, [
-        finalScore,
-        scoreRow[0].id
-      ]);
-    } else {
-      await db.query(
-        `INSERT INTO assessment_scores (assessment_id, student_id, score) VALUES (?, ?, ?)`,
-        [assessment.id, student_id, finalScore]
+    if (!onlyActivity) {
+      const [scoreRow] = await db.query(
+        `SELECT id FROM assessment_scores WHERE assessment_id = ? AND student_id = ?`,
+        [assessment.id, student_id]
       );
+      if (scoreRow.length) {
+        await db.query(`UPDATE assessment_scores SET score = ? WHERE id = ?`, [
+          finalScore,
+          scoreRow[0].id
+        ]);
+      } else {
+        await db.query(
+          `INSERT INTO assessment_scores (assessment_id, student_id, score) VALUES (?, ?, ?)`,
+          [assessment.id, student_id, finalScore]
+        );
+      }
     }
 
     res.status(201).json({
-      message: 'Submitted. Your teacher can see your score in Progress.',
-      score: finalScore,
+      message: onlyActivity
+        ? 'Submitted. Your teacher will score this in Records.'
+        : 'Submitted. Your teacher can see your score in Progress.',
+      score: onlyActivity ? null : finalScore,
       max_score: recordMax,
+      pending_teacher_score: onlyActivity,
       student_name: `${student.last_name}, ${student.first_name}`
     });
   } catch (error) {
     console.error('Public quiz submit error:', error);
+    if (error && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File is too large (max 10 MB).' });
+    }
+    if (error && /PDF, Word file, or image/i.test(String(error.message || ''))) {
+      return res.status(400).json({ error: error.message });
+    }
     if (error && error.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: 'You already submitted this link.' });
     }

@@ -9,6 +9,7 @@ const {
 const { audienceSql } = require('../utils/announcements');
 const { logActivity } = require('../utils/activityLog');
 const { ensureAttendanceSchema, manilaISODate } = require('../utils/attendanceSchema');
+const { buildParentInsight } = require('../utils/parentInsights');
 
 // GET /api/parent/children
 exports.getChildren = async (req, res) => {
@@ -176,6 +177,95 @@ exports.getChildProgress = async (req, res) => {
   } catch (error) {
     console.error('Get child progress error:', error);
     res.status(500).json({ error: 'Server error fetching progress', details: error.message });
+  }
+};
+
+async function assertParentChild(parentId, studentId) {
+  const [links] = await db.query(
+    'SELECT id FROM parent_student_links WHERE parent_id = ? AND student_id = ?',
+    [parentId, studentId]
+  );
+  return links.length > 0;
+}
+
+exports.getChildInsights = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+
+    const [[child]] = await db.query(
+      'SELECT first_name FROM students WHERE id = ? AND STATUS = \'active\'',
+      [studentId]
+    );
+
+    await ensureAttendanceSchema();
+    const monthAgo = manilaISODate(new Date(Date.now() - 30 * 86400000));
+
+    const [[totalDays]] = await db.query(
+      `SELECT COUNT(DISTINCT \`DATE\`) as count FROM attendance WHERE student_id = ? AND \`DATE\` >= ?`,
+      [studentId, monthAgo]
+    );
+    const [[present]] = await db.query(
+      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Present' AND \`DATE\` >= ?`,
+      [studentId, monthAgo]
+    );
+    const [[absent]] = await db.query(
+      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Absent' AND \`DATE\` >= ?`,
+      [studentId, monthAgo]
+    );
+    const [[late]] = await db.query(
+      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Late' AND \`DATE\` >= ?`,
+      [studentId, monthAgo]
+    );
+
+    const [records] = await db.query(
+      `SELECT a.title, a.TYPE as type, a.max_score, a.created_at, s.NAME as subject_name, sc.score
+       FROM assessment_scores sc
+       JOIN assessments a ON sc.assessment_id = a.id
+       LEFT JOIN subjects s ON a.subject_id = s.id
+       WHERE sc.student_id = ?
+       ORDER BY a.created_at DESC`,
+      [studentId]
+    );
+
+    const withPct = records.map((r) => {
+      const max = Number(r.max_score) || 100;
+      const score = Number(r.score);
+      return {
+        title: r.title,
+        type: r.type,
+        subject_name: r.subject_name,
+        percent: max > 0 ? Math.round((score / max) * 100) : 0
+      };
+    });
+    const average = withPct.length
+      ? Math.round(withPct.reduce((sum, r) => sum + r.percent, 0) / withPct.length)
+      : 0;
+
+    const stats = {
+      totalDays: Number(totalDays.count) || 0,
+      present: Number(present.count) || 0,
+      absent: Number(absent.count) || 0,
+      late: Number(late.count) || 0,
+      attendanceRate: (Number(totalDays.count) || 0) > 0
+        ? Math.round((Number(present.count) / Number(totalDays.count)) * 100)
+        : 0
+    };
+
+    const insight = buildParentInsight({
+      firstName: child?.first_name,
+      stats,
+      records: withPct,
+      average
+    });
+
+    res.json(insight);
+  } catch (error) {
+    console.error('Get child insights error:', error);
+    res.status(500).json({ error: 'Server error fetching insights', details: error.message });
   }
 };
 

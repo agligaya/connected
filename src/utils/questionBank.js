@@ -81,11 +81,51 @@ async function ensureQuestionBankSchema(conn = db) {
         `ALTER TABLE assessment_questions MODIFY item_type VARCHAR(32) NOT NULL DEFAULT 'mcq'`
       );
     } catch (e) { /* ignore */ }
+
+    try {
+      await conn.query(`ALTER TABLE question_bank ADD COLUMN rubric JSON NULL`);
+    } catch (e) { /* exists */ }
+    try {
+      await conn.query(`ALTER TABLE assessment_questions ADD COLUMN rubric JSON NULL`);
+    } catch (e) { /* exists */ }
+
+    // Legacy item_type: activity_prompt → activity
+    try {
+      await conn.query(
+        `UPDATE question_bank SET item_type = 'activity' WHERE item_type = 'activity_prompt'`
+      );
+    } catch (e) { /* ignore */ }
+    try {
+      await conn.query(
+        `UPDATE assessment_questions SET item_type = 'activity' WHERE item_type = 'activity_prompt'`
+      );
+    } catch (e) { /* ignore */ }
   })().catch((e) => {
     schemaPromise = null;
     throw e;
   });
   return schemaPromise;
+}
+
+/** Canonical classwork item types (quiz + activity). */
+const ITEM_TYPES = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
+
+function isActivityType(type) {
+  const t = String(type || '').toLowerCase();
+  return t === 'activity' || t === 'activity_prompt';
+}
+
+/** Normalize stored/API item_type; legacy activity_prompt → activity. */
+function canonicalItemType(type) {
+  const t = String(type || '').toLowerCase().trim();
+  if (isActivityType(t)) return 'activity';
+  if (ITEM_TYPES.includes(t)) return t;
+  return t || 'mcq';
+}
+
+function isAllowedItemType(type) {
+  const t = String(type || '').toLowerCase();
+  return ITEM_TYPES.includes(t) || t === 'activity_prompt';
 }
 
 function normalizeChoices(raw) {
@@ -118,6 +158,145 @@ function parseChoicesColumn(raw) {
   return null;
 }
 
+const DEFAULT_RUBRIC_LEVEL_LABELS = ['Excellent', 'Good', 'Fair', 'Needs Improvement'];
+
+function defaultLevelPoints(maxPoints) {
+  const max = Math.max(1, Number(maxPoints) || 5);
+  return [
+    max,
+    Math.max(1, Math.ceil(max * 0.75)),
+    Math.max(1, Math.ceil(max * 0.5)),
+    Math.max(1, Math.ceil(max * 0.25))
+  ];
+}
+
+/** Split total into n positive integers that sum exactly to total. */
+function splitTotalPoints(total, n) {
+  const count = Math.max(1, Number(n) || 1);
+  const t = Math.max(count, Math.round(Number(total) || count));
+  const base = Math.floor(t / count);
+  const rem = t - base * count;
+  return Array.from({ length: count }, (_, i) => base + (i < rem ? 1 : 0));
+}
+
+/**
+ * Reassign category max_points so they sum to totalPoints; refresh level points.
+ * Keeps names/descriptions.
+ */
+function redistributeRubricToTotal(rubric, totalPoints) {
+  const normalized = normalizeRubric(rubric, totalPoints);
+  if (!normalized?.categories?.length) return null;
+  const shares = splitTotalPoints(totalPoints, normalized.categories.length);
+  return {
+    categories: normalized.categories.map((c, i) => {
+      const max_points = shares[i] || 1;
+      const pts = defaultLevelPoints(max_points);
+      const levels = (c.levels || []).map((lv, li) => ({
+        ...lv,
+        points: pts[Math.min(li, pts.length - 1)]
+      }));
+      while (levels.length < 4) {
+        const li = levels.length;
+        levels.push({
+          label: DEFAULT_RUBRIC_LEVEL_LABELS[li] || `Level ${li + 1}`,
+          points: pts[li],
+          description: ''
+        });
+      }
+      return { name: c.name, max_points, levels: levels.slice(0, 4) };
+    })
+  };
+}
+
+/** Rubric list from new `categories` or legacy `criteria`. */
+function rubricCategoryList(parsed) {
+  if (!parsed || typeof parsed !== 'object') return [];
+  if (Array.isArray(parsed.categories) && parsed.categories.length) return parsed.categories;
+  if (Array.isArray(parsed.criteria) && parsed.criteria.length) return parsed.criteria;
+  return [];
+}
+
+function normalizeRubric(raw, fallbackMax = 20) {
+  if (raw == null || raw === '') return null;
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const list = rubricCategoryList(parsed);
+  const categories = list
+    .map((c) => {
+      if (!c || typeof c !== 'object') return null;
+      const name = String(c.name || c.title || '').trim().slice(0, 120);
+      if (!name) return null;
+      const max_points = Math.max(1, Number(c.max_points ?? c.points) || Math.max(1, Math.round(Number(fallbackMax) / 3) || 5));
+      let levels = Array.isArray(c.levels) ? c.levels : null;
+      if (!levels || !levels.length) {
+        const pts = defaultLevelPoints(max_points);
+        levels = DEFAULT_RUBRIC_LEVEL_LABELS.map((label, i) => ({
+          label,
+          points: pts[i],
+          description: String(
+            c[label.toLowerCase().replace(/\s+/g, '_')]
+              || c[['excellent', 'good', 'fair', 'needs_improvement'][i]]
+              || ''
+          ).trim().slice(0, 400)
+        }));
+      } else {
+        levels = levels.slice(0, 6).map((lv, i) => {
+          const label = String(lv?.label || DEFAULT_RUBRIC_LEVEL_LABELS[i] || `Level ${i + 1}`).trim().slice(0, 40);
+          const points = Math.max(0, Number(lv?.points) || defaultLevelPoints(max_points)[Math.min(i, 3)] || 1);
+          const description = String(lv?.description || '').trim().slice(0, 400);
+          return { label, points, description };
+        });
+      }
+      return { name, max_points, levels };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!categories.length) return null;
+  return { categories };
+}
+
+function emptyRubricTemplate(totalPoints = 20) {
+  const total = Math.max(3, Number(totalPoints) || 20);
+  const shares = splitTotalPoints(total, 3);
+  const names = ['Participation', 'Correctness', 'Effort'];
+  return {
+    categories: names.map((name, i) => {
+      const max_points = shares[i];
+      const pts = defaultLevelPoints(max_points);
+      return {
+        name,
+        max_points,
+        levels: DEFAULT_RUBRIC_LEVEL_LABELS.map((label, li) => ({
+          label,
+          points: pts[li],
+          description: ''
+        }))
+      };
+    })
+  };
+}
+
+function rubricFromActivityDraft(part) {
+  if (!part || typeof part !== 'object') return null;
+  const fromStructured = normalizeRubric(part.rubric, part.max_score);
+  if (fromStructured) return fromStructured;
+  // Soft fallback: turn notes into one category description under Excellent tip
+  const tip = String(part.notes || '').trim();
+  if (!tip) return emptyRubricTemplate(part.max_score);
+  const base = emptyRubricTemplate(part.max_score);
+  if (base.categories[0]) {
+    base.categories[0].levels[0].description = tip.slice(0, 400);
+  }
+  return base;
+}
+
 function quizItemsFromDraft(part) {
   if (!part || typeof part !== 'object') return [];
   const items = Array.isArray(part.items) ? part.items : [];
@@ -128,8 +307,8 @@ function quizItemsFromDraft(part) {
       const choices = normalizeChoices(it.choices);
       const answer = it.answer != null ? String(it.answer).trim().slice(0, 500) : null;
       const points = Math.max(0.5, Number(it.points) || 1);
-      let item_type = String(it.type || it.item_type || '').toLowerCase();
-      if (!['mcq', 'identification', 'enumeration', 'short_answer', 'activity_prompt'].includes(item_type)) {
+      let item_type = canonicalItemType(it.type || it.item_type || '');
+      if (!ITEM_TYPES.includes(item_type) || isActivityType(item_type)) {
         item_type = choices && choices.length ? 'mcq' : 'identification';
       }
       return {
@@ -137,31 +316,38 @@ function quizItemsFromDraft(part) {
         question,
         choices: item_type === 'mcq' ? choices : null,
         answer,
-        points
+        points,
+        rubric: null
       };
     })
     .filter(Boolean);
 }
 
-function activityPromptFromDraft(part) {
+function activityFromDraft(part) {
   if (!part || typeof part !== 'object') return null;
   const question = String(part.description || part.title || '').trim();
   if (!question) return null;
+  const points = Math.max(1, Number(part.max_score) || 20);
   return {
-    item_type: 'activity_prompt',
+    item_type: 'activity',
     question,
     choices: null,
     answer: null,
-    points: Math.max(1, Number(part.max_score) || 20)
+    points,
+    rubric: rubricFromActivityDraft(part)
   };
 }
 
+/** @deprecated Use activityFromDraft */
+const activityPromptFromDraft = activityFromDraft;
+
 async function insertBankItem(teacherId, setId, meta, item) {
+  const rubricJson = item.rubric ? JSON.stringify(normalizeRubric(item.rubric, item.points) || item.rubric) : null;
   const [result] = await db.query(
     `INSERT INTO question_bank
       (teacher_id, quiz_set_id, subject_id, grade_level, lesson_plan_id, lesson_title,
-       item_type, question, choices, answer, points, source, ai_recommendation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       item_type, question, choices, answer, points, rubric, source, ai_recommendation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       teacherId,
       setId,
@@ -174,6 +360,7 @@ async function insertBankItem(teacherId, setId, meta, item) {
       item.choices ? JSON.stringify(item.choices) : null,
       item.answer,
       item.points,
+      rubricJson,
       meta.source || 'ai',
       meta.aiRecommendationId || null
     ]
@@ -285,7 +472,9 @@ function formatBankRow(row) {
   if (!row) return row;
   return {
     ...row,
+    item_type: canonicalItemType(row.item_type),
     choices: parseChoicesColumn(row.choices),
+    rubric: normalizeRubric(row.rubric, row.points),
     points: Number(row.points) || 1
   };
 }
@@ -351,23 +540,23 @@ async function migrateOrphanBankItems(teacherId) {
 }
 
 function bankItemTypeLabel(type) {
-  const t = String(type || '').toLowerCase();
+  const t = canonicalItemType(type);
   if (t === 'mcq') return 'Multiple choice';
   if (t === 'identification') return 'Identification';
   if (t === 'enumeration') return 'Enumeration';
   if (t === 'short_answer') return 'Short answer';
-  if (t === 'activity_prompt') return 'Activity';
+  if (t === 'activity') return 'Activity';
   return type ? String(type) : 'Multiple choice';
 }
 
-const TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity_prompt'];
+const TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
 
 function groupItemsByType(items) {
   const map = new Map();
   for (const item of items) {
-    const key = item.item_type || 'mcq';
+    const key = canonicalItemType(item.item_type || 'mcq');
     if (!map.has(key)) map.set(key, []);
-    map.get(key).push(item);
+    map.get(key).push({ ...item, item_type: key });
   }
   const ordered = [];
   for (const key of TYPE_ORDER) {
@@ -389,8 +578,11 @@ function groupItemsByCategory(items) {
   const quizItems = [];
   const activityItems = [];
   for (const item of items || []) {
-    if (String(item.item_type) === 'activity_prompt') activityItems.push(item);
-    else quizItems.push(item);
+    if (isActivityType(item.item_type)) {
+      activityItems.push({ ...item, item_type: 'activity' });
+    } else {
+      quizItems.push(item);
+    }
   }
   const categories = [];
   if (quizItems.length) {
@@ -416,7 +608,14 @@ module.exports = {
   ensureQuestionBankSchema,
   normalizeChoices,
   parseChoicesColumn,
+  normalizeRubric,
+  emptyRubricTemplate,
+  redistributeRubricToTotal,
+  splitTotalPoints,
+  rubricCategoryList,
+  rubricFromActivityDraft,
   quizItemsFromDraft,
+  activityFromDraft,
   activityPromptFromDraft,
   saveDraftPartsToBank,
   formatBankRow,
@@ -424,5 +623,10 @@ module.exports = {
   groupItemsByType,
   groupItemsByCategory,
   migrateOrphanBankItems,
-  TYPE_ORDER
+  isActivityType,
+  canonicalItemType,
+  isAllowedItemType,
+  ITEM_TYPES,
+  TYPE_ORDER,
+  DEFAULT_RUBRIC_LEVEL_LABELS
 };

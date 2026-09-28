@@ -3538,7 +3538,7 @@ function concernThreadHtml(item, canReply) {
            : ''}
          ${!open ? '<span class="page-subheading" style="margin:0;">Replies closed</span>' : ''}
        </div>`
-    : (!open ? '<p class="page-subheading" style="margin-top:8px;">Replies closed</p>' : '');
+    : (!open ? '<p class="page-subheading">Replies closed</p>' : '');
 
   return thread + replyForm + actions;
 }
@@ -4182,6 +4182,11 @@ function resetTeacherPanelState(panelId) {
     if (typeof updateQuizBankSelectionMeta === 'function') updateQuizBankSelectionMeta();
   }
 
+  if (panelId === 'lesson-plans') {
+    materialsCurrentSubjectKey = null;
+    showMaterialsLanding();
+  }
+
   if (panelId === 'inbox') {
     document.querySelectorAll('[data-inbox-filter]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.inboxFilter === 'unresolved');
@@ -4323,6 +4328,7 @@ wireSimpleModal('ai-generate-count-modal');
 wireSimpleModal('qb-exam-modal');
 wireSimpleModal('parent-concern-modal');
 wireSimpleModal('progress-makeup-modal');
+wireSimpleModal('progress-activity-work-modal');
 
 document.getElementById('parent-concern-form')?.addEventListener('submit', submitParentConcern);
 document.getElementById('concern-student')?.addEventListener('change', (e) => {
@@ -4343,6 +4349,11 @@ document.getElementById('open-upload-material-modal')?.addEventListener('click',
   form?.reset();
   fillLessonPlanGradeOptions();
   fillTeacherSubjectSelects();
+  const prefillId = materialsSubjectIdFromKey(materialsCurrentSubjectKey);
+  const subjectSel = document.getElementById('lp-subject');
+  if (prefillId && subjectSel && [...subjectSel.options].some((o) => o.value === String(prefillId))) {
+    subjectSel.value = String(prefillId);
+  }
   const modal = document.getElementById('upload-material-modal');
   if (modal) {
     modal.hidden = false;
@@ -4372,13 +4383,41 @@ let parentExpandedInboxKey = null;
 let parentExpandedConcernId = null;
 let parentInboxCache = { announcements: [], messages: [], concerns: [] };
 
+function parentSelectedChildId() {
+  return parentCurrentChild?.id != null ? Number(parentCurrentChild.id) : null;
+}
+
+function noticeBelongsToSelectedChild(m) {
+  const sid = parentSelectedChildId();
+  if (sid == null) return true;
+  if (m.student_id == null || m.student_id === '') return true;
+  return Number(m.student_id) === sid;
+}
+
+function announcementBelongsToSelectedChild(a) {
+  const child = parentCurrentChild;
+  if (!child) return true;
+  const scope = String(a.scope || '');
+  if (!scope || scope === 'school_wide') return true;
+  if (scope === 'grade_wide') return Number(a.target_grade) === Number(child.grade_level);
+  if (scope === 'class_specific') {
+    return Number(a.target_grade) === Number(child.grade_level)
+      && String(a.target_section || '').trim().toUpperCase() === String(child.section || '').trim().toUpperCase();
+  }
+  return true;
+}
+
 function paintParentInboxList() {
   const contentEl = document.getElementById('parent-content');
   if (!contentEl) return;
 
-  const announcements = parentInboxCache.announcements || [];
-  const notices = parentInboxCache.messages || [];
-  const concerns = parentInboxCache.concerns || [];
+  const announcements = (parentInboxCache.announcements || []).filter(announcementBelongsToSelectedChild);
+  const notices = (parentInboxCache.messages || []).filter(noticeBelongsToSelectedChild);
+  const concerns = (parentInboxCache.concerns || []).filter((c) => {
+    const sid = parentSelectedChildId();
+    if (sid == null) return true;
+    return Number(c.student_id) === sid;
+  });
   const isAdminAnnouncement = (a) => String(a.sender_role || 'admin') !== 'teacher';
   const filter = parentInboxFilter || 'unresolved';
   const q = parentInboxSearchQuery;
@@ -4546,8 +4585,8 @@ async function renderParentInbox() {
         <div class="chart-card">
           <div class="teacher-header-row">
             <div>
-              <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Inbox</h3>
-              <p class="page-subheading" style="margin:4px 0 0;">Concerns, teacher notices, and school announcements.</p>
+              <h3 class="page-heading font-heading">Inbox</h3>
+              <p class="page-subheading">Concerns, teacher notices, and school announcements.</p>
             </div>
             <button type="button" class="btn-toolbar btn-toolbar--solid" id="open-parent-concern-modal">+ Send Concern</button>
           </div>
@@ -4673,8 +4712,7 @@ function applyTeacherPanel(panelId) {
   if (panelId === 'lesson-plans') {
     loadTeacherSubjects();
     ensureTeacherAssignedClasses().then(() => fillLessonPlanGradeOptions());
-    loadLessonPlans();
-    loadAiRecommendations();
+    loadMaterialsHub();
     loadAiStatusHint();
   }
   if (panelId === 'quiz-bank') {
@@ -4890,7 +4928,7 @@ function syncClassroomAttendanceChrome() {
       chip.classList.toggle('active', chip.dataset.session === attendanceCurrentSession);
     });
     if (hint) {
-      hint.textContent = `Click P, A, L, or E to save ${attendanceCurrentSession === 'PM' ? 'afternoon' : 'morning'} attendance. Mark every student before enabling a quiz.`;
+      hint.textContent = `Click P, A, L, or E to save ${attendanceCurrentSession === 'PM' ? 'afternoon' : 'morning'} attendance. Mark every student before enabling a shared link.`;
     }
     if (sessionHint) {
       sessionHint.textContent = 'Grades 1–3: class-wide morning and afternoon attendance.';
@@ -4919,11 +4957,74 @@ function bankItemTypeLabelClient(type) {
   if (t === 'identification') return 'Identification';
   if (t === 'enumeration') return 'Enumeration';
   if (t === 'short_answer') return 'Short answer';
-  if (t === 'activity_prompt') return 'Activity';
+  if (t === 'activity' || t === 'activity_prompt') return 'Activity';
   return type ? String(type) : 'Multiple choice';
 }
 
-const BANK_TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity_prompt'];
+const BANK_TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
+
+function isActivityItemType(type) {
+  const t = String(type || '').toLowerCase();
+  return t === 'activity' || t === 'activity_prompt';
+}
+
+function canonicalBankItemType(type) {
+  return isActivityItemType(type) ? 'activity' : String(type || 'mcq').toLowerCase();
+}
+
+function mcqLetterAt(index) {
+  let n = Number(index);
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  let s = '';
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
+function mcqIndexFromToken(token) {
+  const t = String(token || '').trim();
+  if (!t) return -1;
+  if (/^\d+$/.test(t)) {
+    const n = Number(t);
+    if (n >= 1) return n - 1;
+    if (n === 0) return 0;
+    return -1;
+  }
+  if (!/^[A-Za-z]+$/.test(t)) return -1;
+  const u = t.toUpperCase();
+  let n = 0;
+  for (let i = 0; i < u.length; i++) n = n * 26 + (u.charCodeAt(i) - 64);
+  return n - 1;
+}
+
+function stripMcqChoicePrefix(text) {
+  return String(text || '').replace(/^\s*(?:[A-Za-z]+|\d+)\s*[.)]\s+/, '').trimEnd();
+}
+
+function formatMcqAnswerDisplay(answer, choices) {
+  const raw = String(answer || '').trim();
+  if (!raw) return '';
+  const list = Array.isArray(choices) ? choices : [];
+  const idxFromToken = mcqIndexFromToken(raw);
+  if (idxFromToken >= 0 && idxFromToken < Math.max(list.length, idxFromToken + 1)) {
+    return mcqLetterAt(idxFromToken);
+  }
+  const idxFromText = list.findIndex(
+    (c) => stripMcqChoicePrefix(c).trim().toLowerCase() === raw.toLowerCase()
+      || String(c).trim().toLowerCase() === raw.toLowerCase()
+  );
+  if (idxFromText >= 0) return mcqLetterAt(idxFromText);
+  return raw.toUpperCase();
+}
+
+function rubricCategoriesOf(rubric) {
+  if (!rubric || typeof rubric !== 'object') return [];
+  if (Array.isArray(rubric.categories) && rubric.categories.length) return rubric.categories;
+  if (Array.isArray(rubric.criteria) && rubric.criteria.length) return rubric.criteria;
+  return [];
+}
 
 function groupBankItemsByType(items) {
   const map = new Map();
@@ -5238,7 +5339,7 @@ async function selectTeacherClassContext({
     }
     if (activePanel === 'lesson-plans') {
       fillLessonPlanGradeOptions();
-      loadLessonPlans();
+      loadMaterialsHub();
     }
   }
 }
@@ -5391,8 +5492,8 @@ async function refreshClassroomAttendanceStatus() {
       el.style.display = 'block';
       el.style.color = '#b71c1c';
       el.textContent = n
-        ? `${n} student(s) still unmarked — finish attendance before enabling a quiz.`
-        : 'Mark attendance for every student before enabling a quiz.';
+        ? `${n} student(s) still unmarked — finish attendance before enabling a shared link.`
+        : 'Mark attendance for every student before enabling a shared link.';
     }
   } catch (_) {
     el.style.display = 'none';
@@ -6108,6 +6209,20 @@ function renderProgressCards(records) {
   listEl.innerHTML = records.map(r => {
     const shareActive = Number(r.share_enabled) === 1 && r.share_token;
     const hasQuestions = Number(r.question_count) > 0;
+    const shareToken = shareActive ? escapeHtml(String(r.share_token)) : '';
+    const shareUrl = shareActive ? escapeHtml(sharedQuizAbsoluteUrl(r.share_token)) : '';
+    const quizLink = r.quiz_link ? escapeHtml(String(r.quiz_link)) : '';
+    const shareItems = shareActive
+      ? `<button type="button" class="row-menu-item" data-action="copy-share-link" data-share-token="${shareToken}">Copy Link</button>
+          <button type="button" class="row-menu-item" data-action="open-share-link" data-share-url="${shareUrl}">Open Link</button>
+          <button type="button" class="row-menu-item" data-action="disable-link" data-record-id="${r.id}">Disable Link</button>`
+      : hasQuestions
+        ? `<button type="button" class="row-menu-item" data-action="enable-link" data-record-id="${r.id}">Enable Link</button>`
+        : '';
+    const onlineItems = quizLink
+      ? `<button type="button" class="row-menu-item" data-action="copy-online-link" data-record-id="${r.id}">Copy Online Link</button>
+          <button type="button" class="row-menu-item" data-action="open-online-link" data-quiz-link="${quizLink}">Open Online Link</button>`
+      : '';
     return `
     <article class="lesson-plan-card">
       <div class="progress-card-top">
@@ -6117,9 +6232,15 @@ function renderProgressCards(records) {
           ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
           ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live link</span>' : ''}
         </div>
-        ${shareActive
-          ? `<button type="button" class="chip-ghost progress-card-copy-link" onclick="copySharedQuizLink('${escapeHtml(r.share_token)}')">Copy Link</button>`
-          : ''}
+        <div class="row-menu-wrap">
+          <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
+          <div class="row-menu" hidden>
+            ${shareItems}
+            ${onlineItems}
+            ${(shareItems || onlineItems) ? '<div class="row-menu-divider" role="separator"></div>' : ''}
+            <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-record" data-record-id="${r.id}">Delete</button>
+          </div>
+        </div>
       </div>
       <p>${escapeHtml(r.subject_name || 'No subject')} · Total score ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}${
         shareActive && r.quiz_attendance_date
@@ -6127,21 +6248,45 @@ function renderProgressCards(records) {
           : ''
       }</p>
       <div class="lesson-plan-card-actions">
-        <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'view')">View Scores</button>
-        ${shareActive
-          ? `<button type="button" class="chip-ghost chip-danger" onclick="revokeSharedQuizLink(${r.id})">Turn Off Link</button>`
-          : hasQuestions
-            ? `<button type="button" class="chip-ghost" onclick="assignSharedQuizLink(${r.id})">Enable Link</button>`
-            : ''}
-        ${r.quiz_link
-          ? `<button type="button" class="chip-ghost" onclick="copyExternalQuizLink(${r.id})">Copy Online Link</button>
-             <a class="chip-ghost" href="${escapeHtml(r.quiz_link)}" target="_blank" rel="noopener">Open Online Link</a>`
-          : ''}
-        <button type="button" class="chip-ghost chip-danger" onclick="deleteProgressRecord(${r.id})">Delete</button>
+        <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'edit')">Scores</button>
       </div>
     </article>`;
   }).join('');
 }
+
+(function setupProgressListDelegation() {
+  const listEl = document.getElementById('progress-list');
+  if (!listEl) return;
+
+  listEl.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.row-menu-toggle');
+    if (toggle) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleRowMenu(toggle, '#progress-list');
+      return;
+    }
+
+    const btn = e.target.closest('button[data-action]');
+    if (!btn || !listEl.contains(btn)) return;
+
+    const action = btn.dataset.action;
+    const recordId = Number(btn.dataset.recordId);
+    e.preventDefault();
+    e.stopPropagation();
+    closeAllRowMenus();
+
+    if (action === 'enable-link' && recordId) assignSharedQuizLink(recordId);
+    else if (action === 'disable-link' && recordId) revokeSharedQuizLink(recordId);
+    else if (action === 'copy-share-link' && btn.dataset.shareToken) copySharedQuizLink(btn.dataset.shareToken);
+    else if (action === 'open-share-link' && btn.dataset.shareUrl) {
+      window.open(btn.dataset.shareUrl, '_blank', 'noopener');
+    } else if (action === 'copy-online-link' && recordId) copyExternalQuizLink(recordId);
+    else if (action === 'open-online-link' && btn.dataset.quizLink) {
+      window.open(btn.dataset.quizLink, '_blank', 'noopener');
+    } else if (action === 'delete-record' && recordId) deleteProgressRecord(recordId);
+  });
+})();
 
 function filterProgressList() {
   const query = (document.getElementById('progress-search-input')?.value || '').trim().toLowerCase();
@@ -6223,7 +6368,7 @@ function setProgressListChromeVisible(show) {
   else chrome.setAttribute('hidden', '');
 }
 
-window.openProgressEditor = async function(id, mode = 'view') {
+window.openProgressEditor = async function(id, mode = 'edit') {
   const editor = document.getElementById('progress-editor');
   showProgressCreateForm(false);
   setProgressListChromeVisible(false);
@@ -6232,7 +6377,7 @@ window.openProgressEditor = async function(id, mode = 'view') {
     editor.removeAttribute('hidden');
   }
 
-  const normalizedMode = mode === 'edit' || mode === 'link' ? mode : 'view';
+  const normalizedMode = mode === 'link' ? 'link' : 'edit';
   if (editor) editor.dataset.mode = normalizedMode;
 
   try {
@@ -6251,6 +6396,7 @@ window.openProgressEditor = async function(id, mode = 'view') {
 
     const questions = Array.isArray(data.questions) ? data.questions : [];
     window._progressEditorQuestions = questions;
+    window._progressRubricColumns = buildProgressRubricColumns(questions);
     const hasQuestions = questions.length > 0;
     if (editor) editor.dataset.hasQuestions = hasQuestions ? '1' : '0';
 
@@ -6265,11 +6411,7 @@ window.openProgressEditor = async function(id, mode = 'view') {
     const metaEl = document.getElementById('progress-editor-meta');
     if (titleEl) titleEl.textContent = a.title;
     if (metaEl) {
-      const modeLabel = effectiveMode === 'edit'
-        ? ' · Editing scores'
-        : effectiveMode === 'link'
-          ? ' · Shared link'
-          : ' · Viewing';
+      const modeLabel = effectiveMode === 'link' ? ' · Shared link' : '';
       metaEl.textContent = `${typeLabel(a.type)} · ${a.subject_name || 'No subject'} · Total score ${progressEditorMax}${modeLabel}`;
     }
 
@@ -6277,15 +6419,25 @@ window.openProgressEditor = async function(id, mode = 'view') {
 
     const printPaperBtn = document.getElementById('progress-print-paper');
     const printKeyBtn = document.getElementById('progress-print-key');
+    const printSheetBtn = document.getElementById('progress-print-scoresheet');
     if (printPaperBtn) {
       printPaperBtn.hidden = !hasQuestions;
       if (hasQuestions) printPaperBtn.removeAttribute('hidden');
       else printPaperBtn.setAttribute('hidden', '');
     }
     if (printKeyBtn) {
-      printKeyBtn.hidden = !hasQuestions;
-      if (hasQuestions) printKeyBtn.removeAttribute('hidden');
+      const isActivityRecord = String(a.type || '').toLowerCase() === 'activity'
+        || (hasQuestions && questions.every((q) => isActivityItemType(q.item_type)));
+      const showAnswerKey = hasQuestions && !isActivityRecord;
+      printKeyBtn.hidden = !showAnswerKey;
+      if (showAnswerKey) printKeyBtn.removeAttribute('hidden');
       else printKeyBtn.setAttribute('hidden', '');
+    }
+    if (printSheetBtn) {
+      const showSheet = (window._progressRubricColumns || []).length > 0;
+      printSheetBtn.hidden = !showSheet;
+      if (showSheet) printSheetBtn.removeAttribute('hidden');
+      else printSheetBtn.setAttribute('hidden', '');
     }
 
     const linkInput = document.getElementById('progress-editor-quiz-link');
@@ -6314,7 +6466,7 @@ window.openProgressEditor = async function(id, mode = 'view') {
         qWrap.removeAttribute('hidden');
         if (qCount) qCount.textContent = `(${questions.length})`;
         qList.innerHTML = questions.map((q, idx) => {
-          const type = String(q.item_type || 'mcq').toLowerCase();
+          const type = canonicalBankItemType(q.item_type || 'mcq');
           const pts = Number(q.points) || 1;
           const typeLabelText = bankItemTypeLabel(type);
           const choices = Array.isArray(q.choices) && q.choices.length
@@ -6323,8 +6475,9 @@ window.openProgressEditor = async function(id, mode = 'view') {
               ).join('')}</ul>`
             : '';
           const answer = q.answer
-            ? `<div class="progress-q-answer"><strong>Correct:</strong> ${escapeHtml(String(q.answer))}</div>`
+            ? `<div class="progress-q-answer"><strong>Correct:</strong> ${escapeHtml(formatMcqAnswerDisplay(q.answer, q.choices) || String(q.answer))}</div>`
             : '';
+          const rubric = isActivityItemType(type) ? rubricPreviewHtml(q.rubric) : '';
           return `<li class="progress-q-item">
             <span class="progress-q-num">${idx + 1}.</span>
             <div class="progress-q-body">
@@ -6335,6 +6488,7 @@ window.openProgressEditor = async function(id, mode = 'view') {
               <div class="progress-q-text">${escapeHtml(q.question || '')}</div>
               ${choices}
               ${answer}
+              ${rubric}
             </div>
           </li>`;
         }).join('');
@@ -6346,6 +6500,8 @@ window.openProgressEditor = async function(id, mode = 'view') {
       }
     }
 
+    renderProgressRubricGuide(questions);
+
     if (effectiveMode !== 'link') {
       renderProgressScoresTable(effectiveMode, a, data.students || []);
     }
@@ -6354,6 +6510,106 @@ window.openProgressEditor = async function(id, mode = 'view') {
     loadProgressList();
   }
 };
+
+function buildProgressRubricColumns(questions) {
+  const cols = [];
+  const activities = (questions || []).filter(
+    (q) => isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
+  );
+  activities.forEach((q, ai) => {
+    const cats = rubricCategoriesOf(normalizeRubricClient(q.rubric) || q.rubric);
+    const multi = activities.length > 1;
+    cats.forEach((c, ci) => {
+      const name = String(c.name || `Category ${ci + 1}`).trim();
+      cols.push({
+        key: `a${ai}_${ci}`,
+        label: multi ? `A${ai + 1}: ${name}` : name,
+        shortLabel: name,
+        max_points: Math.max(1, Number(c.max_points) || 1),
+        activityIndex: ai
+      });
+    });
+  });
+  return cols;
+}
+
+function syncProgressRowRubricTotal(tr) {
+  if (!tr) return;
+  const totalInput = tr.querySelector('.progress-score-input');
+  const pctCell = tr.querySelector('.progress-pct-cell');
+  const catInputs = [...tr.querySelectorAll('.progress-rubric-cat-input')];
+  if (!totalInput || !catInputs.length) return;
+  const values = catInputs.map((inp) => (inp.value === '' ? null : Number(inp.value)));
+  if (values.every((v) => v == null)) {
+    totalInput.value = '';
+    if (pctCell) pctCell.textContent = '—';
+    return;
+  }
+  const sum = values.reduce((s, v) => s + (Number(v) || 0), 0);
+  totalInput.value = String(Math.round(sum * 100) / 100);
+  if (pctCell) {
+    pctCell.textContent = `${Math.round((sum / progressEditorMax) * 100)}%`;
+  }
+}
+
+function parseRubricScoresClient(raw) {
+  if (raw == null || raw === '') return null;
+  let v = raw;
+  for (let i = 0; i < 4; i++) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+    if (typeof v !== 'string') break;
+    const t = v.trim();
+    if (!t || t === '[object Object]') return null;
+    try {
+      v = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+}
+
+function rubricSavedCategoryValue(saved, col) {
+  const bag = parseRubricScoresClient(saved) || saved;
+  if (!bag || typeof bag !== 'object' || !col) return null;
+  const keys = [col.key, col.shortLabel, col.label];
+  for (const k of keys) {
+    if (!k) continue;
+    const v = bag[k];
+    if (v !== null && v !== undefined && v !== '') return v;
+  }
+  const want = String(col.shortLabel || col.label || '').trim().toLowerCase();
+  if (want) {
+    for (const [k, v] of Object.entries(bag)) {
+      if (String(k).trim().toLowerCase() === want && v !== null && v !== undefined && v !== '') return v;
+    }
+  }
+  return null;
+}
+
+function markRubricCategoryOverMax(input) {
+  if (!input) return false;
+  const max = Number(input.dataset.maxPoints);
+  const over = input.value !== '' && Number.isFinite(max) && Number(input.value) > max;
+  input.classList.toggle('progress-rubric-over', over);
+  const td = input.closest('td');
+  if (td) td.classList.toggle('progress-rubric-over-cell', over);
+  if (over && input.dataset.overToast !== '1') {
+    input.dataset.overToast = '1';
+    const label = input.dataset.rubricLabel || 'This category';
+    showToast(`${label} can't exceed ${max} pts.`, 'error');
+  }
+  if (!over) input.dataset.overToast = '';
+  return over;
+}
+
+function progressRubricHasOverMax(scope = document.getElementById('progress-scores-table')) {
+  if (!scope) return false;
+  return [...scope.querySelectorAll('.progress-rubric-cat-input')].some((inp) => {
+    const max = Number(inp.dataset.maxPoints);
+    return inp.value !== '' && Number.isFinite(max) && Number(inp.value) > max;
+  });
+}
 
 function renderProgressScoresTable(mode, assessment, students) {
   const theadRow = document.getElementById('progress-scores-thead-row');
@@ -6365,12 +6621,29 @@ function renderProgressScoresTable(mode, assessment, students) {
   const sortedStudents = [...(students || [])].sort(compareStudentsByAttendanceOrder);
   const shareOn = assessment && Number(assessment.share_enabled) === 1;
   const editMode = mode === 'edit';
-  if (table) table.classList.toggle('progress-scores-table--edit', editMode);
+  const rubricCols = Array.isArray(window._progressRubricColumns) ? window._progressRubricColumns : [];
+  const hasRubric = rubricCols.length > 0;
+  const showWorkCol = (window._progressEditorQuestions || []).some((q) => isActivityItemType(q.item_type));
+  const workHead = showWorkCol ? '<th>Work</th>' : '';
+
+  if (table) {
+    table.classList.toggle('progress-scores-table--edit', editMode);
+    table.classList.toggle('progress-scores-table--rubric', hasRubric);
+  }
 
   if (theadRow) {
-    theadRow.innerHTML = editMode
-      ? '<th>Student</th><th>Score</th><th>%</th><th>Attendance</th><th>Access</th>'
-      : '<th>Student</th><th>Score</th><th>%</th>';
+    if (hasRubric) {
+      const catHeads = rubricCols
+        .map((c) => `<th class="progress-rubric-cat-th">${escapeHtml(c.label)}<br><span class="page-subheading">${c.max_points} pts</span></th>`)
+        .join('');
+      theadRow.innerHTML = editMode
+        ? `<th>Student</th>${workHead}${catHeads}<th>Total</th><th>%</th><th>Attendance</th><th>Access</th>`
+        : `<th>Student</th>${workHead}${catHeads}<th>Total</th><th>%</th>`;
+    } else {
+      theadRow.innerHTML = editMode
+        ? `<th>Student</th>${workHead}<th>Score</th><th>%</th><th>Attendance</th><th>Access</th>`
+        : `<th>Student</th>${workHead}<th>Score</th><th>%</th>`;
+    }
   }
 
   let makeupEligible = 0;
@@ -6378,6 +6651,38 @@ function renderProgressScoresTable(mode, assessment, students) {
     const score = s.score === null || s.score === undefined ? '' : s.score;
     const pct = score === '' ? '—' : `${Math.round((Number(score) / progressEditorMax) * 100)}%`;
     const nameCell = `<td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>`;
+    const savedRubric = parseRubricScoresClient(s.rubric_scores) || {};
+    const workList = Array.isArray(s.activity_work) ? s.activity_work : [];
+    const workCell = showWorkCol
+      ? (workList.length
+        ? `<td><button type="button" class="chip-ghost" onclick="viewProgressActivityWork(${Number(s.id)})">View work</button></td>`
+        : '<td>—</td>')
+      : '';
+
+    const catCellsView = hasRubric
+      ? rubricCols.map((c) => {
+          const v = rubricSavedCategoryValue(savedRubric, c);
+          if (v === null) return '<td>—</td>';
+          const n = Number(v);
+          const over = Number.isFinite(n) && n > Number(c.max_points);
+          return `<td class="${over ? 'progress-rubric-over-cell' : ''}">${escapeHtml(String(v))}</td>`;
+        }).join('')
+      : '';
+
+    const catCellsEdit = hasRubric
+      ? rubricCols.map((c) => {
+          const v = rubricSavedCategoryValue(savedRubric, c);
+          const val = v === null ? '' : v;
+          const n = Number(val);
+          const over = val !== '' && Number.isFinite(n) && n > Number(c.max_points);
+          return `<td class="${over ? 'progress-rubric-over-cell' : ''}">
+            <input type="number" class="progress-rubric-cat-input${over ? ' progress-rubric-over' : ''}" min="0" step="0.5"
+              value="${escapeHtml(String(val))}" data-student-id="${s.id}" data-rubric-key="${escapeHtml(c.key)}"
+              data-max-points="${c.max_points}" data-rubric-label="${escapeHtml(c.shortLabel || c.label)}"
+              title="${escapeHtml(c.label)} (max ${c.max_points} pts)" />
+          </td>`;
+        }).join('')
+      : '';
 
     if (editMode) {
       const st = String(s.attendance_status || '');
@@ -6398,12 +6703,17 @@ function renderProgressScoresTable(mode, assessment, students) {
         }
       }
 
+      const totalReadonly = hasRubric ? 'readonly' : '';
+      const totalTitle = hasRubric ? 'title="Sum of rubric categories"' : '';
+
       return `
         <tr data-student-id="${s.id}">
           ${nameCell}
+          ${workCell}
+          ${catCellsEdit}
           <td>
             <input type="number" class="progress-score-input" min="0" max="${progressEditorMax}" step="0.01"
-                   value="${score}" data-student-id="${s.id}" style="width:90px;" />
+                   value="${score}" data-student-id="${s.id}" style="width:90px;" ${totalReadonly} ${totalTitle} />
           </td>
           <td class="progress-pct-cell">${pct}</td>
           <td class="progress-att-cell">${attHtml}</td>
@@ -6414,6 +6724,8 @@ function renderProgressScoresTable(mode, assessment, students) {
     return `
       <tr data-student-id="${s.id}">
         ${nameCell}
+        ${workCell}
+        ${catCellsView}
         <td>${score === '' ? '—' : escapeHtml(String(score))}</td>
         <td>${pct}</td>
       </tr>`;
@@ -6427,7 +6739,15 @@ function renderProgressScoresTable(mode, assessment, students) {
   }
 
   if (editMode) {
+    bindProgressScoreCellKeys(tbody);
+    tbody.querySelectorAll('.progress-rubric-cat-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        markRubricCategoryOverMax(input);
+        syncProgressRowRubricTotal(input.closest('tr'));
+      });
+    });
     tbody.querySelectorAll('.progress-score-input').forEach((input) => {
+      if (input.readOnly) return;
       input.addEventListener('input', () => {
         const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
         if (!cell) return;
@@ -6439,8 +6759,82 @@ function renderProgressScoresTable(mode, assessment, students) {
   }
 }
 
+function bindProgressScoreCellKeys(tbody) {
+  if (!tbody || tbody.dataset.scoreKeysBound === '1') return;
+  tbody.dataset.scoreKeysBound = '1';
+
+  const isScoreInput = (el) =>
+    el?.matches?.('.progress-score-input, .progress-rubric-cat-input');
+
+  const refreshAfterValueChange = (input) => {
+    if (input.classList.contains('progress-rubric-cat-input')) {
+      markRubricCategoryOverMax(input);
+      syncProgressRowRubricTotal(input.closest('tr'));
+      return;
+    }
+    if (input.readOnly) return;
+    const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
+    if (!cell) return;
+    if (input.value === '') { cell.textContent = '—'; return; }
+    const n = Number(input.value);
+    cell.textContent = Number.isNaN(n) ? '—' : `${Math.round((n / progressEditorMax) * 100)}%`;
+  };
+
+  tbody.addEventListener('focusin', (e) => {
+    const input = isScoreInput(e.target) ? e.target : null;
+    if (input) input.dataset.cellDraft = input.value;
+  });
+
+  tbody.addEventListener('keydown', (e) => {
+    const input = isScoreInput(e.target) ? e.target : null;
+    if (!input) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      refreshAfterValueChange(input);
+      input.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      input.value = input.dataset.cellDraft ?? '';
+      refreshAfterValueChange(input);
+      input.blur();
+    }
+  });
+}
+
+window.viewProgressActivityWork = function (studentId) {
+  const students = window._progressEditorStudents || [];
+  const s = students.find((row) => Number(row.id) === Number(studentId));
+  const work = Array.isArray(s?.activity_work) ? s.activity_work : [];
+  const titleEl = document.getElementById('progress-activity-work-title');
+  const bodyEl = document.getElementById('progress-activity-work-body');
+  if (titleEl) {
+    titleEl.textContent = s ? `${s.last_name || ''}, ${s.first_name || ''}`.replace(/^,\s*/, '') : 'Student work';
+  }
+  if (bodyEl) {
+    if (!work.length) {
+      bodyEl.innerHTML = '<p class="page-subheading">No submitted work.</p>';
+    } else {
+      bodyEl.innerHTML = work.map((item, i) => {
+        const url = String(item.file?.url || '');
+        const safeUrl = url.startsWith('/uploads/') ? url : '';
+        const fileHtml = safeUrl
+          ? `<p style="margin:0;"><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">${escapeHtml(item.file.name || 'Open file')}</a></p>`
+          : '';
+        const text = String(item.text || '').trim();
+        return `<div class="progress-work-item">
+          <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${i + 1}</strong></p>
+          ${item.question ? `<p style="margin:0 0 8px;font-size:0.86rem;">${escapeHtml(item.question)}</p>` : ''}
+          ${text ? `<p class="progress-activity-work">${escapeHtml(text)}</p>` : '<p class="page-subheading">No written answer.</p>'}
+          ${fileHtml}
+        </div>`;
+      }).join('');
+    }
+  }
+  openAdminModal('progress-activity-work-modal');
+};
+
 function setProgressEditorMode(mode, hasQuestions = true) {
-  const normalized = mode === 'edit' || mode === 'link' ? mode : 'view';
+  const normalized = mode === 'link' ? 'link' : 'edit';
   const saveBtn = document.getElementById('progress-scores-save');
   const editBtn = document.getElementById('progress-mode-edit');
   const linkBtn = document.getElementById('progress-mode-link');
@@ -6448,13 +6842,17 @@ function setProgressEditorMode(mode, hasQuestions = true) {
   const scoresSection = document.querySelector('#progress-editor .progress-scores-only');
   const allowLink = !!hasQuestions;
 
-  if (saveBtn) saveBtn.hidden = normalized !== 'edit';
+  if (saveBtn) {
+    const showSave = normalized !== 'link';
+    saveBtn.hidden = !showSave;
+    if (showSave) saveBtn.removeAttribute('hidden');
+    else saveBtn.setAttribute('hidden', '');
+  }
   if (linkSave) linkSave.hidden = normalized !== 'link';
 
   if (editBtn) {
-    editBtn.hidden = normalized === 'edit';
-    if (normalized === 'edit') editBtn.setAttribute('hidden', '');
-    else editBtn.removeAttribute('hidden');
+    editBtn.hidden = true;
+    editBtn.setAttribute('hidden', '');
   }
   // Shared link only for Classwork-created quizzes (questions attached)
   if (linkBtn) {
@@ -6479,8 +6877,32 @@ function setProgressEditorMode(mode, hasQuestions = true) {
   }
 }
 
+function renderProgressRubricGuide(questions) {
+  const wrap = document.getElementById('progress-rubric-guide');
+  const body = document.getElementById('progress-rubric-guide-body');
+  if (!wrap || !body) return;
+  const activities = (questions || []).filter((q) =>
+    isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
+  );
+  if (!activities.length) {
+    wrap.hidden = true;
+    wrap.setAttribute('hidden', '');
+    body.innerHTML = '';
+    return;
+  }
+  body.innerHTML = activities.map((q, i) => `
+    <div style="margin-bottom:12px;">
+      <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${i + 1}</strong> · ${Number(q.points) || 0} pts</p>
+      <p style="margin:0 0 6px;font-size:0.86rem;">${escapeHtml(q.question || '')}</p>
+      ${rubricPreviewHtml(q.rubric)}
+    </div>
+  `).join('');
+  wrap.hidden = false;
+  wrap.removeAttribute('hidden');
+}
+
 function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
-  const type = String(q.item_type || 'mcq').toLowerCase();
+  const type = canonicalBankItemType(q.item_type || 'mcq');
   const pts = Number(q.points) || 1;
   const typeLabelText = bankItemTypeLabel(type);
   let body = `<div class="q-text">${escapeHtml(q.question || '')}</div>`;
@@ -6489,8 +6911,8 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
     body += `<ol class="choices" type="A">${q.choices.map((c) =>
       `<li>${escapeHtml(c)}</li>`
     ).join('')}</ol>`;
-  } else if (type === 'activity_prompt') {
-    body += '<div class="write-lines"><em>Performance / activity space — use attached rubric or teacher instructions.</em></div>';
+  } else if (isActivityItemType(type)) {
+    body += '<div class="write-lines"><em>Performance / activity space — score using the rubric below.</em></div>';
   } else {
     body += '<div class="write-lines">_______________________________________________</div>';
     body += '<div class="write-lines">_______________________________________________</div>';
@@ -6498,7 +6920,20 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
 
   let answerBlock = '';
   if (includeAnswers && q.answer) {
-    answerBlock = `<div class="answer-key"><strong>Answer:</strong> ${escapeHtml(String(q.answer))}</div>`;
+    answerBlock = `<div class="answer-key"><strong>Answer:</strong> ${escapeHtml(formatMcqAnswerDisplay(q.answer, q.choices) || String(q.answer))}</div>`;
+  }
+
+  let rubricBlock = '';
+  if (isActivityItemType(type) && q.rubric) {
+    const cats = rubricCategoriesOf(q.rubric);
+    const rows = cats.map((c) => {
+      const levels = (c.levels || []).map((lv) =>
+        `<tr><td>${escapeHtml(lv.label || '')}</td><td>${Number(lv.points) || 0}</td><td>${escapeHtml(lv.description || '')}</td></tr>`
+      ).join('');
+      return `<h3 class="rubric-crit">${escapeHtml(c.name || '')} (${Number(c.max_points) || 0} pts)</h3>
+        <table class="rubric-table"><thead><tr><th>Level</th><th>Pts</th><th>Description</th></tr></thead><tbody>${levels}</tbody></table>`;
+    }).join('');
+    rubricBlock = cats.length ? `<div class="rubric-block"><strong>Rubric</strong>${rows}</div>` : '';
   }
 
   return `
@@ -6506,6 +6941,7 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
       <div class="q-head"><strong>${index + 1}.</strong> <span class="q-type">${escapeHtml(typeLabelText)}</span> <span class="q-pts">(${pts} pt${pts === 1 ? '' : 's'})</span></div>
       ${body}
       ${answerBlock}
+      ${rubricBlock}
     </div>`;
 }
 
@@ -6513,7 +6949,7 @@ function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
   const a = window._progressEditorAssessment;
   const questions = Array.isArray(window._progressEditorQuestions) ? window._progressEditorQuestions : [];
   if (!a || !questions.length) {
-    showToast('No attached questions to print.', 'error');
+    showToast('No attached items to print.', 'error');
     return;
   }
 
@@ -6573,6 +7009,11 @@ function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
       ol.choices li { margin: 2px 0; }
       .write-lines { margin: 6px 0 0; color: #888; }
       .answer-key { margin-top: 6px; padding: 6px 8px; background: #fff6e8; border-left: 3px solid #c47a12; }
+      .rubric-block { margin-top: 8px; padding: 8px; border: 1px solid #e0c8b0; border-radius: 6px; background: #fffaf4; }
+      .rubric-crit { font-size: 12px; margin: 10px 0 4px; color: #3d0a0a; }
+      .rubric-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      .rubric-table th, .rubric-table td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; vertical-align: top; }
+      .rubric-table th { background: #f5ebe0; }
       @media print {
         body { padding: 0; }
         @page { margin: 12mm; }
@@ -6592,9 +7033,92 @@ document.getElementById('progress-print-key')?.addEventListener('click', () => {
   exportAssessmentPaperPdf({ includeAnswers: true });
 });
 
-document.getElementById('progress-mode-edit')?.addEventListener('click', () => {
-  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
-  if (id) openProgressEditor(id, 'edit');
+function exportRubricScoreSheet() {
+  const a = window._progressEditorAssessment;
+  const students = Array.isArray(window._progressEditorStudents) ? window._progressEditorStudents : [];
+  const cols = Array.isArray(window._progressRubricColumns) ? window._progressRubricColumns : [];
+  const questions = Array.isArray(window._progressEditorQuestions) ? window._progressEditorQuestions : [];
+  if (!a || !cols.length) {
+    showToast('No activity rubric on this record.', 'error');
+    return;
+  }
+
+  const sorted = [...students].sort(compareStudentsByAttendanceOrder);
+  const activities = questions.filter(
+    (q) => isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
+  );
+  const guideHtml = activities.map((q, i) => {
+    const cats = rubricCategoriesOf(normalizeRubricClient(q.rubric) || q.rubric);
+    const rows = cats.map((c) => {
+      const levels = (c.levels || []).map((lv) =>
+        `<tr><td>${escapeHtml(lv.label || '')}</td><td>${Number(lv.points) || 0}</td><td>${escapeHtml(lv.description || '')}</td></tr>`
+      ).join('');
+      return `<h3>${escapeHtml(c.name || '')} (${Number(c.max_points) || 0} pts)</h3>
+        <table class="rubric-table"><thead><tr><th>Level</th><th>Pts</th><th>Description</th></tr></thead><tbody>${levels}</tbody></table>`;
+    }).join('');
+    return `<section class="act"><h2>Activity ${i + 1}${activities.length === 1 ? '' : ''}</h2>
+      <p class="prompt">${escapeHtml(q.question || '')}</p>${rows}</section>`;
+  }).join('');
+
+  const headCats = cols.map((c) =>
+    `<th>${escapeHtml(c.label)}<br><span class="max">${c.max_points} pts</span></th>`
+  ).join('');
+
+  const bodyRows = sorted.map((s, idx) => {
+    const saved = s.rubric_scores && typeof s.rubric_scores === 'object' ? s.rubric_scores : {};
+    const catTds = cols.map((c) => {
+      const v = rubricSavedCategoryValue(saved, c);
+      const shown = v === null || v === undefined || v === '' ? '' : String(v);
+      return `<td class="score-cell">${escapeHtml(shown)}</td>`;
+    }).join('');
+    const total = s.score === null || s.score === undefined || s.score === '' ? '' : String(s.score);
+    const name = [s.last_name, s.first_name].filter(Boolean).join(', ') || `Student ${s.id}`;
+    return `<tr>
+      <td class="num">${idx + 1}</td>
+      <td class="name">${escapeHtml(name)}</td>
+      ${catTds}
+      <td class="score-cell total">${escapeHtml(total)}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Score Sheet</title>
+<style>
+  body { font-family: Georgia, 'Times New Roman', serif; color: #222; margin: 16px; font-size: 12px; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #5c1010; }
+  .meta { color: #555; margin: 0 0 12px; }
+  .roster { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .roster th, .roster td { border: 1px solid #bbb; padding: 6px 5px; }
+  .roster th { background: #f5ebe0; font-size: 11px; vertical-align: bottom; }
+  .roster .max { font-weight: normal; color: #666; }
+  .roster .num { width: 28px; text-align: center; }
+  .roster .name { text-align: left; min-width: 140px; }
+  .roster .score-cell { min-width: 48px; height: 28px; text-align: center; }
+  .roster .total { font-weight: bold; background: #fffaf4; }
+  .act { margin-top: 18px; page-break-inside: avoid; }
+  .act h2 { font-size: 14px; margin: 0 0 4px; color: #5c1010; }
+  .prompt { margin: 0 0 8px; }
+  .rubric-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 8px; }
+  .rubric-table th, .rubric-table td { border: 1px solid #ddd; padding: 3px 5px; text-align: left; }
+  .rubric-table th { background: #f5ebe0; }
+  @media print { body { margin: 8px; } }
+</style></head><body>
+  <h1>${escapeHtml(a.title || 'Activity')} — Rubric Score Sheet</h1>
+  <p class="meta">${escapeHtml(typeLabel(a.type))} · Grade ${escapeHtml(String(a.grade_level || ''))}-${escapeHtml(String(a.section || ''))}
+    · ${escapeHtml(a.subject_name || 'No subject')} · Total ${Math.round((Number(a.max_score) || progressEditorMax) * 100) / 100} pts
+    · ${new Date().toLocaleDateString()}</p>
+  <table class="roster">
+    <thead><tr><th>#</th><th>Student</th>${headCats}<th>Total</th></tr></thead>
+    <tbody>${bodyRows}</tbody>
+  </table>
+  ${guideHtml}
+</body></html>`;
+
+  showToast('Opening rubric score sheet…');
+  openPrintFullDocument(html);
+}
+
+document.getElementById('progress-print-scoresheet')?.addEventListener('click', () => {
+  exportRubricScoreSheet();
 });
 
 document.getElementById('progress-mode-link')?.addEventListener('click', () => {
@@ -6837,33 +7361,42 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
         : '';
       return [live, makeup].filter(Boolean).join(' · ');
     })();
+    const showNote = (text, color) => {
+      noteEl.hidden = false;
+      noteEl.removeAttribute('hidden');
+      noteEl.textContent = text;
+      noteEl.style.color = color;
+    };
+    const hideNote = () => {
+      noteEl.hidden = true;
+      noteEl.setAttribute('hidden', '');
+      noteEl.textContent = '';
+    };
     if (!hasQuestions && !active) {
-      noteEl.textContent = 'No questions attached. Create a Progress Record from Classwork (select items → Next), then Enable Link here. + New Record is for manual scores only.';
-      noteEl.style.color = '#b71c1c';
+      showNote('No Classwork items attached. In Classwork, select items then Next: Create Quiz or Create Activity. Enable Link here after that. + New Record is for manual scores only.', '#b71c1c');
     } else if (active) {
-      const gate = gateLabel(attendanceMeta);
-      const base = gate
-        ? `Link uses attendance ${gate}. Students enter LRN first. Present/Late can submit; Absent/Excused need Allow Access in Edit Scores.`
-        : 'Students enter LRN first. Present and Late can submit. Grant make-up in Edit Scores for Absent or Excused.';
-      noteEl.textContent = windowNote ? `${base} ${windowNote}.` : base;
-      noteEl.style.color = 'var(--text-muted)';
+      if (windowNote) showNote(windowNote.endsWith('.') ? windowNote : `${windowNote}.`, 'var(--text-muted)');
+      else hideNote();
     } else if (attendanceMeta) {
       const gate = gateLabel(attendanceMeta);
       if (attendanceMeta.complete) {
-        noteEl.textContent = gate
-          ? `Attendance complete for ${gate}. Set Minutes Open, then Enable Link.`
-          : 'Attendance is complete for today. Set Minutes Open, then Enable Link.';
-        noteEl.style.color = '#1b5e20';
+        showNote(
+          gate
+            ? `Attendance complete for ${gate}. Set Minutes Open, then Enable Link.`
+            : 'Attendance is complete for today. Set Minutes Open, then Enable Link.',
+          '#1b5e20'
+        );
       } else {
         const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
-        noteEl.textContent = gate
-          ? `Mark every student for ${gate} in Classroom before enabling (${n} unmarked). Switch AM/PM to match the class session.`
-          : `Mark attendance for every student in Classroom before enabling the link (${n} unmarked).`;
-        noteEl.style.color = '#b71c1c';
+        showNote(
+          gate
+            ? `Mark every student for ${gate} in Classroom before enabling (${n} unmarked). Switch AM/PM to match the class session.`
+            : `Mark attendance for every student in Classroom before enabling the link (${n} unmarked).`,
+          '#b71c1c'
+        );
       }
     } else {
-      noteEl.textContent = 'Mark complete attendance in Classroom before enabling a shared link.';
-      noteEl.style.color = 'var(--text-muted)';
+      showNote('Mark complete attendance in Classroom before enabling a shared link.', 'var(--text-muted)');
     }
   }
 }
@@ -7081,7 +7614,7 @@ window.saveSharedQuizWindows = async function(id) {
 };
 
 window.revokeSharedQuizLink = async function(id) {
-  if (!confirm('Turn off the shared link? Students will no longer be able to open it.')) return;
+  if (!confirm('Disable the shared link? Students will no longer be able to open it.')) return;
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/revoke-link`, {
       method: 'POST',
@@ -7089,7 +7622,7 @@ window.revokeSharedQuizLink = async function(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast(data.message || 'Link turned off.');
+    showToast(data.message || 'Link disabled.');
     const editor = document.getElementById('progress-editor');
     if (editor && !editor.hidden && editor.dataset.assessmentId === String(id)) {
       openProgressEditor(id, 'link');
@@ -7158,17 +7691,41 @@ document.getElementById('progress-makeup-all')?.addEventListener('click', () => 
 
 document.getElementById('progress-scores-save')?.addEventListener('click', async () => {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
-  const inputs = document.querySelectorAll('.progress-score-input');
+  const rows = document.querySelectorAll('#progress-scores-table tbody tr[data-student-id]');
+  const rubricCols = Array.isArray(window._progressRubricColumns) ? window._progressRubricColumns : [];
 
   if (!id) {
     showToast('Could not determine which record to save.', 'error');
     return;
   }
 
-  const scores = Array.from(inputs).map(input => ({
-    student_id: Number(input.dataset.studentId),
-    score: input.value === '' ? '' : Number(input.value)
-  }));
+  if (progressRubricHasOverMax()) {
+    showToast('A category score is over its max points. Fix the red cells before saving.', 'error');
+    return;
+  }
+
+  const scores = Array.from(rows).map((tr) => {
+    const studentId = Number(tr.dataset.studentId);
+    const totalInput = tr.querySelector('.progress-score-input');
+    const rubric_scores = {};
+    let hasAnyCat = false;
+    tr.querySelectorAll('.progress-rubric-cat-input').forEach((inp) => {
+      const key = inp.dataset.rubricKey;
+      if (!key) return;
+      if (inp.value === '') return;
+      hasAnyCat = true;
+      const n = Number(inp.value);
+      rubric_scores[key] = n;
+      const label = inp.dataset.rubricLabel;
+      if (label) rubric_scores[label] = n;
+    });
+    if (rubricCols.length && hasAnyCat) syncProgressRowRubricTotal(tr);
+    return {
+      student_id: studentId,
+      score: totalInput?.value === '' ? '' : Number(totalInput.value),
+      rubric_scores: hasAnyCat ? rubric_scores : null
+    };
+  }).filter((row) => row.score !== '' || (row.rubric_scores && Object.keys(row.rubric_scores).length));
 
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/scores`, {
@@ -7180,6 +7737,11 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     if (!res.ok) throw new Error(data.error);
     showToast('Scores saved. Parents can see them in Progress Tracking.');
     loadProgressList();
+    const openFn = window.openProgressEditor || window.loadProgressEditor;
+    if (typeof openFn === 'function') {
+      const mode = document.getElementById('progress-editor')?.dataset.mode || 'edit';
+      await openFn(Number(id), mode);
+    }
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -7257,35 +7819,301 @@ function fillTeacherSubjectSelects() {
   fillAddQuizSubjectOptions();
 }
 
+let materialsPlansCache = [];
+let materialsDraftsCache = [];
+let materialsCurrentSubjectKey = null; // 'id:12' | 'none' | null (landing)
+let aiDraftExpandId = null;
+
+function materialsSubjectKey(subjectId) {
+  const n = Number(subjectId);
+  return Number.isFinite(n) && n > 0 ? `id:${n}` : 'none';
+}
+
+function materialsSubjectIdFromKey(key) {
+  if (!key || key === 'none') return null;
+  const n = Number(String(key).replace(/^id:/, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function showMaterialsLanding() {
+  const listEl = document.getElementById('lp-subjects-list');
+  const detailEl = document.getElementById('lp-subject-detail');
+  if (listEl) {
+    listEl.hidden = false;
+    listEl.removeAttribute('hidden');
+  }
+  if (detailEl) {
+    detailEl.hidden = true;
+    detailEl.setAttribute('hidden', '');
+  }
+  const titleEl = document.getElementById('lp-page-title');
+  const metaEl = document.getElementById('lp-page-meta');
+  if (titleEl) titleEl.textContent = 'Materials';
+  if (metaEl) metaEl.textContent = 'Open a subject to view files and AI drafts.';
+}
+
+function showMaterialsSubjectDetail() {
+  const listEl = document.getElementById('lp-subjects-list');
+  const detailEl = document.getElementById('lp-subject-detail');
+  if (listEl) {
+    listEl.hidden = true;
+    listEl.setAttribute('hidden', '');
+  }
+  if (detailEl) {
+    detailEl.hidden = false;
+    detailEl.removeAttribute('hidden');
+  }
+}
+
+function collectMaterialsSubjects() {
+  const map = new Map();
+  const add = (id, name) => {
+    const key = materialsSubjectKey(id);
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        subject_id: materialsSubjectIdFromKey(key),
+        name: key === 'none' ? 'Unassigned' : (name || 'Subject'),
+        plans: 0,
+        drafts: 0
+      });
+    } else if (name && key !== 'none' && map.get(key).name === 'Subject') {
+      map.get(key).name = name;
+    }
+  };
+
+  (getAssignedSubjectsForGrade() || []).forEach((s) => add(s.id, s.name));
+  (materialsPlansCache || []).forEach((p) => add(p.subject_id, p.subject_name));
+  (materialsDraftsCache || []).forEach((r) => add(r.subject_id, r.subject_name));
+
+  (materialsPlansCache || []).forEach((p) => {
+    const row = map.get(materialsSubjectKey(p.subject_id));
+    if (row) row.plans += 1;
+  });
+  (materialsDraftsCache || []).forEach((r) => {
+    const row = map.get(materialsSubjectKey(r.subject_id));
+    if (row) row.drafts += 1;
+  });
+
+  return [...map.values()].sort((a, b) => {
+    if (a.key === 'none') return 1;
+    if (b.key === 'none') return -1;
+    return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+  });
+}
+
+function renderMaterialsSubjectCards() {
+  const listEl = document.getElementById('lp-subjects-list');
+  if (!listEl) return;
+  const subjects = collectMaterialsSubjects();
+  if (!subjects.length) {
+    listEl.innerHTML = '<p class="empty-state">No subjects assigned yet. Ask admin to assign subjects, or upload a material.</p>';
+    return;
+  }
+  listEl.innerHTML = subjects.map((s) => `
+    <article class="lesson-plan-card qb-set-card" data-subject-key="${escapeHtml(s.key)}" role="button" tabindex="0">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+        <div>
+          <h3 class="page-heading font-heading" style="margin:0;">${escapeHtml(s.name)}</h3>
+          <p class="page-subheading">
+            ${s.plans} material${s.plans === 1 ? '' : 's'} · ${s.drafts} AI draft${s.drafts === 1 ? '' : 's'}
+          </p>
+        </div>
+        <span class="chip-ghost" style="pointer-events:none;">Open →</span>
+      </div>
+    </article>
+  `).join('');
+
+  listEl.querySelectorAll('.qb-set-card').forEach((card) => {
+    const open = () => openMaterialsSubject(card.dataset.subjectKey);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
+  });
+}
+
+function materialCardHtml(p) {
+  const filePath = p.file_path ? escapeHtml(String(p.file_path)) : '';
+  return `
+      <article class="lesson-plan-card">
+        <div class="progress-card-top">
+          <div class="progress-card-top-left">
+            <h4 style="margin:0;">${escapeHtml(p.title)}</h4>
+          </div>
+          <div class="row-menu-wrap">
+            <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
+            <div class="row-menu" hidden>
+              ${filePath ? `<button type="button" class="row-menu-item" data-action="open-file" data-file-path="${filePath}">Open File</button>` : ''}
+              <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-material" data-plan-id="${p.id}">Delete</button>
+            </div>
+          </div>
+        </div>
+        <p>Grade ${p.grade_level}${p.subject_name ? ' · ' + escapeHtml(p.subject_name) : ''} · ${new Date(p.created_at).toLocaleDateString()}</p>
+        ${p.objectives ? `<p style="margin-top:8px;color:var(--text-dark);">${escapeHtml(p.objectives)}</p>` : ''}
+        <div class="lesson-plan-card-actions">
+          <button type="button" class="chip-ghost primary" data-action="generate-ai" data-plan-id="${p.id}">Generate AI</button>
+        </div>
+      </article>`;
+}
+
+function aiDraftCardHtml(r, expandId) {
+  const c = r.content || {};
+  const statusClass = r.status === 'pending' ? 'ai-status-pending'
+    : r.status === 'approved' ? 'ai-status-approved' : 'ai-status-rejected';
+  const isOpen = expandId != null && Number(r.id) === expandId;
+  const meta = `Grade ${r.grade_level}${r.subject_name ? ' · ' + escapeHtml(r.subject_name) : ''} · ${new Date(r.created_at).toLocaleDateString()}`;
+  return `
+      <article class="lesson-plan-card ai-rec-card" data-rec-id="${r.id}" data-grade="${r.grade_level}">
+        <details class="ai-rec-fold"${isOpen ? ' open' : ''}>
+          <summary>
+            <div class="ai-rec-fold-summary">
+              <div>
+                <h4><span class="ai-rec-fold-chevron" aria-hidden="true">▸</span>${escapeHtml(r.lesson_title || 'Lesson')}</h4>
+                <p class="ai-rec-fold-meta">${meta}</p>
+              </div>
+              <div class="ai-rec-fold-summary-right">
+                <span class="ai-status-badge ${statusClass}">${escapeHtml(r.status)} · ${escapeHtml(r.provider)}</span>
+                <div class="row-menu-wrap">
+                  <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
+                  <div class="row-menu" hidden>
+                    ${r.status === 'pending' ? `
+                      <button type="button" class="row-menu-item" data-action="save-draft-classwork" data-rec-id="${r.id}">Save to Classwork</button>
+                      <button type="button" class="row-menu-item" data-action="regenerate-draft" data-rec-id="${r.id}">Regenerate</button>
+                      <div class="row-menu-divider" role="separator"></div>
+                    ` : ''}
+                    <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-draft" data-rec-id="${r.id}">Delete</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </summary>
+          <div class="ai-rec-fold-body">
+            <details class="ai-draft-details" open>
+              <summary>Quiz — ${escapeHtml(c.quiz?.title || 'Quiz')}</summary>
+              ${formatAiItemsPreview(c.quiz, 'quiz')}
+            </details>
+            <details class="ai-draft-details">
+              <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
+              ${formatAiItemsPreview(c.activity, 'activity')}
+            </details>
+            ${r.status === 'pending' ? `
+            <div class="lesson-plan-card-actions">
+              <button type="button" class="chip-ghost primary" data-action="approve-draft" data-rec-id="${r.id}">Approve</button>
+            </div>` : r.assessment_id ? `<p class="page-subheading" style="margin-top:10px;">Saved to Records${r.approved_type ? ` as ${escapeHtml(typeLabel(r.approved_type))}` : ''}</p>` : ''}
+          </div>
+        </details>
+      </article>`;
+}
+
+function renderMaterialsSubjectDetail() {
+  const key = materialsCurrentSubjectKey;
+  const subjects = collectMaterialsSubjects();
+  const subject = subjects.find((s) => s.key === key);
+  const pageTitle = document.getElementById('lp-page-title');
+  const pageMeta = document.getElementById('lp-page-meta');
+  const name = subject?.name || 'Subject';
+  if (pageTitle) pageTitle.textContent = name;
+  if (pageMeta) pageMeta.textContent = 'Upload a file, then generate AI drafts for Classwork.';
+
+  const plansEl = document.getElementById('lesson-plans-list');
+  const draftsEl = document.getElementById('ai-recommendations-list');
+  const plans = (materialsPlansCache || []).filter((p) => materialsSubjectKey(p.subject_id) === key);
+  const drafts = (materialsDraftsCache || []).filter((r) => materialsSubjectKey(r.subject_id) === key);
+
+  if (plansEl) {
+    plansEl.innerHTML = plans.length
+      ? plans.map(materialCardHtml).join('')
+      : '<p class="empty-state">No materials in this subject yet. Click + Upload Material to add one.</p>';
+  }
+
+  const expandId = aiDraftExpandId != null ? Number(aiDraftExpandId) : null;
+  aiDraftExpandId = null;
+  if (draftsEl) {
+    draftsEl.innerHTML = drafts.length
+      ? drafts.map((r) => aiDraftCardHtml(r, expandId)).join('')
+      : '<p class="empty-state">No AI drafts for this subject yet.</p>';
+    if (expandId != null) {
+      const opened = draftsEl.querySelector(`.ai-rec-card[data-rec-id="${expandId}"]`);
+      if (opened) opened.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+}
+
+function openMaterialsSubject(key) {
+  materialsCurrentSubjectKey = key || 'none';
+  showMaterialsSubjectDetail();
+  renderMaterialsSubjectDetail();
+}
+
+function renderMaterialsHub() {
+  if (materialsCurrentSubjectKey) {
+    showMaterialsSubjectDetail();
+    renderMaterialsSubjectDetail();
+  } else {
+    showMaterialsLanding();
+    renderMaterialsSubjectCards();
+  }
+}
+
+async function loadMaterialsHub() {
+  await Promise.all([loadLessonPlans(), loadAiRecommendations()]);
+}
+
+(function setupMaterialsCardDelegation() {
+  const panel = document.getElementById('teacher-panel-lesson-plans');
+  if (!panel) return;
+
+  panel.addEventListener('click', (e) => {
+    const toggle = e.target.closest('.row-menu-toggle');
+    if (toggle && panel.contains(toggle)) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleRowMenu(toggle, '#teacher-panel-lesson-plans');
+      return;
+    }
+
+    const btn = e.target.closest('button[data-action]');
+    if (!btn || !panel.contains(btn)) return;
+
+    const action = btn.dataset.action;
+    const planId = Number(btn.dataset.planId);
+    const recId = Number(btn.dataset.recId);
+    e.preventDefault();
+    e.stopPropagation();
+    closeAllRowMenus();
+
+    if (action === 'generate-ai' && planId) generateAiForLesson(planId);
+    else if (action === 'open-file' && btn.dataset.filePath) {
+      window.open(btn.dataset.filePath, '_blank', 'noopener');
+    } else if (action === 'delete-material' && planId) deleteLessonPlan(planId);
+    else if (action === 'approve-draft' && recId) openAiApproveModal(recId);
+    else if (action === 'save-draft-classwork' && recId) saveAiDraftToBank(recId);
+    else if (action === 'regenerate-draft' && recId) regenerateAiRecommendation(recId);
+    else if (action === 'delete-draft' && recId) deleteAiRecommendation(recId);
+  });
+})();
+
 async function loadLessonPlans() {
   const listEl = document.getElementById('lesson-plans-list');
-  if (!listEl) return;
-
   try {
     const res = await fetch(`${API_URL}/teacher/lesson-plans`, { headers: getAuthHeaders() });
     const plans = await res.json();
     if (!res.ok) throw new Error(plans.error);
-
-    if (!plans.length) {
-      listEl.innerHTML = '<p class="empty-state">No materials uploaded yet. Click + Upload Material to add one.</p>';
-      return;
-    }
-
-    listEl.innerHTML = plans.map(p => `
-      <article class="lesson-plan-card">
-        <h4>${escapeHtml(p.title)}</h4>
-        <p>Grade ${p.grade_level}${p.subject_name ? ' · ' + escapeHtml(p.subject_name) : ''} · ${new Date(p.created_at).toLocaleDateString()}</p>
-        ${p.objectives ? `<p style="margin-top:8px;color:var(--text-dark);">${escapeHtml(p.objectives)}</p>` : ''}
-        <div class="lesson-plan-card-actions">
-          ${p.file_path ? `<a class="chip-ghost primary" href="${p.file_path}" target="_blank" rel="noopener">Open File</a>` : ''}
-          <button type="button" class="chip-ghost primary" onclick="generateAiForLesson(${p.id})">Generate AI</button>
-          <button type="button" class="chip-ghost" onclick="deleteLessonPlan(${p.id})">Delete</button>
-        </div>
-      </article>
-    `).join('');
+    materialsPlansCache = Array.isArray(plans) ? plans : [];
+    renderMaterialsHub();
   } catch (err) {
     console.error('Load materials error:', err);
-    listEl.innerHTML = '<p class="empty-state">Failed to load materials.</p>';
+    materialsPlansCache = [];
+    if (listEl && materialsCurrentSubjectKey) {
+      listEl.innerHTML = '<p class="empty-state">Failed to load materials.</p>';
+    } else {
+      const landing = document.getElementById('lp-subjects-list');
+      if (landing) landing.innerHTML = '<p class="empty-state">Failed to load materials.</p>';
+    }
   }
 }
 
@@ -7342,13 +8170,11 @@ async function loadAiStatusHint() {
   }
 }
 
-/** After Generate/Regenerate, keep that draft card open once. */
-let aiDraftExpandId = null;
-
 function formatAiItemsPreview(part, type) {
   if (!part) return '<p class="empty-state">No content.</p>';
   if (type === 'activity') {
-    return `<p>${escapeHtml(part.description || '')}</p>`;
+    const rubricHtml = rubricPreviewHtml(part.rubric);
+    return `<p>${escapeHtml(part.description || '')}</p>${rubricHtml}`;
   }
   const items = Array.isArray(part.items) ? part.items : [];
   if (!items.length) return `<p>${escapeHtml(part.notes || '')}</p>`;
@@ -7365,70 +8191,18 @@ function formatAiItemsPreview(part, type) {
 
 async function loadAiRecommendations() {
   const listEl = document.getElementById('ai-recommendations-list');
-  if (!listEl) return;
-
   try {
     const res = await fetch(`${API_URL}/teacher/ai/recommendations`, { headers: getAuthHeaders() });
     const rows = await res.json();
     if (!res.ok) throw new Error(rows.error);
-
-    if (!rows.length) {
-      listEl.innerHTML = '<p class="empty-state">No AI drafts yet.</p>';
-      return;
-    }
-
-    const expandId = aiDraftExpandId != null ? Number(aiDraftExpandId) : null;
-    aiDraftExpandId = null;
-
-    listEl.innerHTML = rows.map((r) => {
-      const c = r.content || {};
-      const statusClass = r.status === 'pending' ? 'ai-status-pending'
-        : r.status === 'approved' ? 'ai-status-approved' : 'ai-status-rejected';
-      const isOpen = expandId != null && Number(r.id) === expandId;
-      const meta = `Grade ${r.grade_level}${r.subject_name ? ' · ' + escapeHtml(r.subject_name) : ''} · ${new Date(r.created_at).toLocaleDateString()}`;
-      return `
-      <article class="lesson-plan-card ai-rec-card" data-rec-id="${r.id}" data-grade="${r.grade_level}">
-        <details class="ai-rec-fold"${isOpen ? ' open' : ''}>
-          <summary>
-            <div class="ai-rec-fold-summary">
-              <div>
-                <h4><span class="ai-rec-fold-chevron" aria-hidden="true">▸</span>${escapeHtml(r.lesson_title || 'Lesson')}</h4>
-                <p class="ai-rec-fold-meta">${meta}</p>
-              </div>
-              <span class="ai-status-badge ${statusClass}">${escapeHtml(r.status)} · ${escapeHtml(r.provider)}</span>
-            </div>
-          </summary>
-          <div class="ai-rec-fold-body">
-            <details class="ai-draft-details" open>
-              <summary>Quiz — ${escapeHtml(c.quiz?.title || 'Quiz')}</summary>
-              ${formatAiItemsPreview(c.quiz, 'quiz')}
-            </details>
-            <details class="ai-draft-details">
-              <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
-              ${formatAiItemsPreview(c.activity, 'activity')}
-            </details>
-            <div class="lesson-plan-card-actions">
-              ${r.status === 'pending' ? `
-                <button type="button" class="chip-ghost primary" onclick="openAiApproveModal(${r.id})">Approve</button>
-                <button type="button" class="chip-ghost" onclick="saveAiDraftToBank(${r.id})">Save to Classwork</button>
-                <button type="button" class="chip-ghost" onclick="regenerateAiRecommendation(${r.id})">Regenerate</button>
-              ` : r.assessment_id ? `<span class="page-subheading">Linked #${r.assessment_id}</span>` : ''}
-              <button type="button" class="chip-ghost" onclick="deleteAiRecommendation(${r.id})">Delete</button>
-            </div>
-          </div>
-        </details>
-      </article>`;
-    }).join('');
-
-    if (expandId != null) {
-      const opened = listEl.querySelector(`.ai-rec-card[data-rec-id="${expandId}"]`);
-      if (opened) {
-        opened.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }
+    materialsDraftsCache = Array.isArray(rows) ? rows : [];
+    renderMaterialsHub();
   } catch (err) {
     console.error('Load AI recommendations error:', err);
-    listEl.innerHTML = '<p class="empty-state">Failed to load AI drafts.</p>';
+    materialsDraftsCache = [];
+    if (listEl && materialsCurrentSubjectKey) {
+      listEl.innerHTML = '<p class="empty-state">Failed to load AI drafts.</p>';
+    }
   }
 }
 
@@ -7506,7 +8280,7 @@ async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes
     showToast(data.message || 'AI draft created.');
     aiDraftExpandId = data.id;
     await loadAiRecommendations();
-    const draftsHeading = document.querySelector('#teacher-panel-lesson-plans .admin-section-title');
+    const draftsHeading = document.getElementById('lp-ai-drafts-heading');
     if (draftsHeading) draftsHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     showToast(err.message, 'error');
@@ -7568,7 +8342,7 @@ document.getElementById('ai-generate-count-go')?.addEventListener('click', async
   const types = getSelectedAiGenerateTypes();
   const modal = document.getElementById('ai-generate-count-modal');
   if (!types.length) {
-    showToast('Select at least one question type.', 'error');
+    showToast('Select at least one quiz item type.', 'error');
     return;
   }
   if (modal) {
@@ -7632,7 +8406,7 @@ window.deleteAiRecommendation = async function(id) {
 window.saveAiDraftToBank = async function(id) {
   try {
     showToast('Saving to Classwork…');
-    const res = await fetch(`${API_URL}/teacher/question-bank/from-ai/${id}`, {
+    const res = await fetch(`${API_URL}/teacher/classwork/from-ai/${id}`, {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ types: ['quiz', 'activity'] })
@@ -7727,7 +8501,7 @@ document.getElementById('ai-approve-confirm')?.addEventListener('click', async (
 document.getElementById('progress-copy-questions')?.addEventListener('click', async () => {
   const questions = window._progressEditorQuestions || [];
   if (!questions.length) {
-    showToast('No attached questions.', 'error');
+    showToast('No attached items.', 'error');
     return;
   }
   const text = questions.map((q, i) => {
@@ -7737,12 +8511,12 @@ document.getElementById('progress-copy-questions')?.addEventListener('click', as
     if (Array.isArray(q.choices) && q.choices.length) {
       block += '\n' + q.choices.map((c, j) => `   ${String.fromCharCode(65 + j)}. ${c}`).join('\n');
     }
-    if (q.answer) block += `\n   Correct: ${q.answer}`;
+    if (q.answer) block += `\n   Correct: ${formatMcqAnswerDisplay(q.answer, q.choices) || q.answer}`;
     return block;
   }).join('\n\n');
   try {
     await navigator.clipboard.writeText(text);
-    showToast('Questions copied.');
+    showToast('Attached items copied.');
   } catch {
     showToast('Could not copy to clipboard.', 'error');
   }
@@ -7859,7 +8633,7 @@ function bankItemTypeLabel(type) {
   if (t === 'identification') return 'Identification';
   if (t === 'enumeration') return 'Enumeration';
   if (t === 'short_answer') return 'Short answer';
-  if (t === 'activity_prompt') return 'Activity';
+  if (isActivityItemType(t)) return 'Activity';
   return type ? String(type) : 'Multiple choice';
 }
 
@@ -7885,6 +8659,30 @@ function syncQuizBankLandingChrome() {
   }
 }
 
+function classworkCreateKind(typeOverride) {
+  const t = String(typeOverride || '').toLowerCase();
+  if (t === 'activity' || t === 'quiz' || t === 'exam') return t;
+  return questionBankCurrentCategory === 'activity' ? 'activity' : 'quiz';
+}
+
+function classworkCreateKindLabel(typeOverride) {
+  return typeLabel(classworkCreateKind(typeOverride));
+}
+
+function classworkCreateKindPhrase(typeOverride) {
+  const label = classworkCreateKindLabel(typeOverride);
+  return (/^[aeiou]/i.test(label) ? 'an ' : 'a ') + label;
+}
+
+function syncClassworkCreateModalLabels() {
+  const kind = classworkCreateKind(document.getElementById('qb-create-type')?.value);
+  const label = typeLabel(kind);
+  const titleEl = document.getElementById('qb-create-modal-title');
+  const confirmBtn = document.getElementById('qb-create-confirm');
+  if (titleEl) titleEl.textContent = `Create ${label} from Classwork`;
+  if (confirmBtn) confirmBtn.textContent = `Create ${label}`;
+}
+
 function updateQuizBankSelectionMeta() {
   const meta = document.getElementById('qb-selection-meta');
   const titleEl = document.getElementById('qb-page-title');
@@ -7899,14 +8697,14 @@ function updateQuizBankSelectionMeta() {
     if (questionBankCurrentCategory) {
       titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Activity' : 'Quizzes';
     } else if (questionBankCurrentSetId) {
-      titleEl.textContent = questionBankCurrentSet?.title || 'Quiz set';
+      titleEl.textContent = questionBankCurrentSet?.title || 'Classwork set';
     } else {
       titleEl.textContent = 'Classwork';
     }
   }
   if (meta) {
     if (questionBankCurrentCategory) {
-      meta.textContent = n ? `${n} selected` : 'Select items to create a Progress record';
+      meta.textContent = n ? `${n} selected` : `Select items to create ${classworkCreateKindPhrase()}`;
     } else if (questionBankCurrentSetId) {
       meta.textContent = 'Open Quizzes or Activity';
     } else {
@@ -7925,12 +8723,17 @@ function updateQuizBankSelectionMeta() {
     if (showNext) nextBar.removeAttribute('hidden');
     else nextBar.setAttribute('hidden', '');
   }
-  if (nextBtn) nextBtn.disabled = n === 0;
+  if (nextBtn) {
+    nextBtn.disabled = n === 0;
+    nextBtn.textContent = `Next: Create ${classworkCreateKindLabel()}`;
+  }
+  if (headerBtn) headerBtn.textContent = `Next: Create ${classworkCreateKindLabel()}`;
   if (nextMeta) {
     nextMeta.textContent = n
-      ? `${n} item(s) selected — create a Progress record next`
+      ? `${n} item(s) selected`
       : 'Select items to continue';
   }
+  syncQuizBankSelectAllButton();
   syncQuizBankLandingChrome();
 }
 
@@ -7982,8 +8785,8 @@ function renderQuizBankSets() {
     <article class="lesson-plan-card qb-set-card" data-set-id="${set.id}" role="button" tabindex="0">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
         <div>
-          <h3 class="page-heading font-heading" style="font-size:1.05rem;margin:0;">${escapeHtml(set.title || 'Quiz set')}</h3>
-          <p class="page-subheading" style="margin:6px 0 0;">
+          <h3 class="page-heading font-heading" style="margin:0;">${escapeHtml(set.title || 'Classwork set')}</h3>
+          <p class="page-subheading">
             Grade ${set.grade_level}${set.subject_name ? ' · ' + escapeHtml(set.subject_name) : ''}
             · ${Number(set.item_count) || 0} item(s)
             ${set.source === 'ai' ? ' · AI' : ''}
@@ -8020,13 +8823,27 @@ function currentCategoryItemIds() {
   return (cat.groups || []).flatMap((g) => (g.items || []).map((i) => i.id));
 }
 
-function selectAllQuizBankItems() {
-  currentCategoryItemIds().forEach((id) => questionBankSelected.add(id));
-  syncQuizBankCheckboxes();
+function allCurrentCategorySelected() {
+  const ids = currentCategoryItemIds();
+  return ids.length > 0 && ids.every((id) => questionBankSelected.has(id));
 }
 
-function clearQuizBankSelection() {
-  questionBankSelected.clear();
+function syncQuizBankSelectAllButton() {
+  const btn = document.getElementById('qb-select-all');
+  if (!btn) return;
+  const ids = currentCategoryItemIds();
+  btn.disabled = ids.length === 0;
+  btn.textContent = allCurrentCategorySelected() ? 'Unselect All' : 'Select All';
+}
+
+function toggleQuizBankSelectAll() {
+  const ids = currentCategoryItemIds();
+  if (!ids.length) return;
+  if (allCurrentCategorySelected()) {
+    ids.forEach((id) => questionBankSelected.delete(id));
+  } else {
+    ids.forEach((id) => questionBankSelected.add(id));
+  }
   syncQuizBankCheckboxes();
 }
 
@@ -8046,22 +8863,303 @@ function setQuizBankBulkBarVisible(visible) {
     else del.removeAttribute('hidden');
   }
   if (addBtn) {
-    // Add question only inside Quizzes/Activity questions view
+    // Add question/activity only inside Quizzes/Activity questions view
     addBtn.hidden = !visible;
-    if (visible) addBtn.removeAttribute('hidden');
-    else addBtn.setAttribute('hidden', '');
+    if (visible) {
+      addBtn.removeAttribute('hidden');
+      addBtn.textContent = questionBankCurrentCategory === 'activity'
+        ? '+ Add Activity'
+        : '+ Add Quiz Question';
+    } else {
+      addBtn.setAttribute('hidden', '');
+    }
   }
+}
+
+function relabelQbChoiceRows() {
+  const list = document.getElementById('qb-edit-choices-list');
+  if (!list) return;
+  [...list.querySelectorAll('.qb-choice-row')].forEach((row, i) => {
+    const letter = row.querySelector('.qb-choice-letter');
+    if (letter) letter.textContent = mcqLetterAt(i);
+    const remove = row.querySelector('.qb-choice-remove');
+    if (remove) remove.hidden = list.querySelectorAll('.qb-choice-row').length <= 2;
+  });
+}
+
+function collectQbChoices() {
+  const list = document.getElementById('qb-edit-choices-list');
+  if (!list) return [];
+  return [...list.querySelectorAll('.qb-choice-input')]
+    .map((el) => stripMcqChoicePrefix(el.value).trim())
+    .filter(Boolean);
+}
+
+function addQbChoiceRow(text = '', focus = false) {
+  const list = document.getElementById('qb-edit-choices-list');
+  if (!list) return null;
+  const row = document.createElement('div');
+  row.className = 'qb-choice-row';
+  row.innerHTML = `
+    <span class="qb-choice-letter"></span>
+    <textarea class="qb-choice-input" rows="1" aria-label="Choice"></textarea>
+    <button type="button" class="icon-btn qb-choice-remove" title="Remove choice" aria-label="Remove choice">×</button>
+  `;
+  const input = row.querySelector('.qb-choice-input');
+  input.value = text;
+  list.appendChild(row);
+  relabelQbChoiceRows();
+  if (focus) input.focus();
+  return row;
+}
+
+function setQbChoiceValues(choices) {
+  const list = document.getElementById('qb-edit-choices-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const items = Array.isArray(choices) && choices.length
+    ? choices.map((c) => stripMcqChoicePrefix(String(c)))
+    : ['', ''];
+  if (items.length < 2) items.push('');
+  items.forEach((t) => addQbChoiceRow(t, false));
+}
+
+function bindQbChoicesListOnce() {
+  const list = document.getElementById('qb-edit-choices-list');
+  if (!list || list.dataset.bound === '1') return;
+  list.dataset.bound = '1';
+  list.addEventListener('keydown', (e) => {
+    const input = e.target.closest('.qb-choice-input');
+    if (!input || !list.contains(input)) return;
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    e.preventDefault();
+    const row = input.closest('.qb-choice-row');
+    const next = addQbChoiceRow('', false);
+    if (row && next) row.after(next);
+    relabelQbChoiceRows();
+    next?.querySelector('.qb-choice-input')?.focus();
+  });
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('.qb-choice-remove');
+    if (!btn || !list.contains(btn)) return;
+    const rows = list.querySelectorAll('.qb-choice-row');
+    if (rows.length <= 2) return;
+    btn.closest('.qb-choice-row')?.remove();
+    relabelQbChoiceRows();
+  });
 }
 
 function syncQuizBankChoicesVisibility() {
   const type = document.getElementById('qb-edit-type')?.value || 'mcq';
   const wrap = document.getElementById('qb-edit-choices-wrap');
+  const answerWrap = document.getElementById('qb-edit-answer-wrap');
+  const rubricWrap = document.getElementById('qb-edit-rubric-wrap');
+  const qLabel = document.getElementById('qb-edit-question-label');
+  const qInput = document.getElementById('qb-edit-question');
+  const isActivity = type === 'activity';
+
+  if (qLabel) qLabel.textContent = isActivity ? 'Description' : 'Question';
+  if (qInput) {
+    qInput.placeholder = isActivity
+      ? 'Describe what students will do…'
+      : 'e.g. What is…?';
+  }
+
   if (wrap) {
     const show = type === 'mcq';
     wrap.hidden = !show;
-    if (show) wrap.removeAttribute('hidden');
-    else wrap.setAttribute('hidden', '');
+    if (show) {
+      wrap.removeAttribute('hidden');
+      bindQbChoicesListOnce();
+      const list = document.getElementById('qb-edit-choices-list');
+      if (list && !list.querySelector('.qb-choice-row')) setQbChoiceValues(['', '']);
+    } else wrap.setAttribute('hidden', '');
   }
+  if (answerWrap) {
+    const showAns = !isActivity;
+    answerWrap.hidden = !showAns;
+    if (showAns) answerWrap.removeAttribute('hidden');
+    else answerWrap.setAttribute('hidden', '');
+  }
+  if (rubricWrap) {
+    rubricWrap.hidden = !isActivity;
+    if (isActivity) rubricWrap.removeAttribute('hidden');
+    else rubricWrap.setAttribute('hidden', '');
+  }
+}
+
+const QB_RUBRIC_LEVELS = ['Excellent', 'Good', 'Fair', 'Needs Improvement'];
+
+function defaultRubricLevelPoints(maxPoints) {
+  const max = Math.max(1, Number(maxPoints) || 5);
+  return [
+    max,
+    Math.max(1, Math.ceil(max * 0.75)),
+    Math.max(1, Math.ceil(max * 0.5)),
+    Math.max(1, Math.ceil(max * 0.25))
+  ];
+}
+
+function emptyRubricCategory(name = '', maxPoints = 5) {
+  const pts = defaultRubricLevelPoints(maxPoints);
+  return {
+    name,
+    max_points: maxPoints,
+    levels: QB_RUBRIC_LEVELS.map((label, i) => ({
+      label,
+      points: pts[i],
+      description: ''
+    }))
+  };
+}
+
+function emptyRubricTemplateClient(totalPoints = 20) {
+  const total = Math.max(3, Number(totalPoints) || 20);
+  const n = 3;
+  const base = Math.floor(total / n);
+  const rem = total - base * n;
+  const shares = Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0));
+  return {
+    categories: ['Participation', 'Correctness', 'Effort'].map((name, i) =>
+      emptyRubricCategory(name, shares[i])
+    )
+  };
+}
+
+function normalizeRubricClient(raw, fallbackMax = 20) {
+  if (!raw || typeof raw !== 'object') return null;
+  const list = rubricCategoriesOf(raw);
+  const categories = list
+    .map((c) => {
+      if (!c || typeof c !== 'object') return null;
+      const name = String(c.name || '').trim();
+      if (!name) return null;
+      const max_points = Math.max(1, Number(c.max_points) || 5);
+      const pts = defaultRubricLevelPoints(max_points);
+      let levels = Array.isArray(c.levels) ? c.levels : [];
+      levels = QB_RUBRIC_LEVELS.map((label, i) => {
+        const lv = levels[i] || {};
+        return {
+          label: String(lv.label || label),
+          points: Math.max(0, Number(lv.points) || pts[i]),
+          description: String(lv.description || '').trim()
+        };
+      });
+      return { name, max_points, levels };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  return categories.length ? { categories } : null;
+}
+
+function rubricCategoriesSum(rubric) {
+  const data = normalizeRubricClient(rubric);
+  if (!data) return 0;
+  return data.categories.reduce((s, c) => s + (Number(c.max_points) || 0), 0);
+}
+
+function syncRubricSumWarning() {
+  const note = document.getElementById('qb-edit-rubric-sum-note');
+  if (!note) return;
+  const total = Math.max(1, Number(document.getElementById('qb-edit-points')?.value) || 0);
+  note.textContent = `Total Points: ${total}`;
+  note.className = 'page-subheading';
+}
+
+function renderRubricEditor(rubric) {
+  const list = document.getElementById('qb-edit-rubric-list');
+  if (!list) return;
+  const data = normalizeRubricClient(rubric) || emptyRubricTemplateClient(
+    Number(document.getElementById('qb-edit-points')?.value) || 20
+  );
+  list.innerHTML = data.categories.map((c, idx) => `
+    <div class="qb-rubric-category" data-rubric-idx="${idx}">
+      <div class="form-row admin-edit-form-row-2" style="margin-bottom:6px;">
+        <div class="field-small">
+          <label>Category</label>
+          <input type="text" class="qb-rubric-name" value="${escapeHtml(c.name)}" placeholder="e.g. Participation" />
+        </div>
+        <div class="field-small">
+          <label>Max Points</label>
+          <input type="number" class="qb-rubric-max" min="1" step="1" value="${Number(c.max_points) || 5}" />
+        </div>
+      </div>
+      <div class="qb-rubric-levels">
+        ${(c.levels || []).map((lv, li) => `
+          <div class="field-small">
+            <label>${escapeHtml(lv.label || QB_RUBRIC_LEVELS[li] || 'Level')} (${Number(lv.points) || 0} pts)</label>
+            <input type="text" class="qb-rubric-level-desc" data-level-idx="${li}" value="${escapeHtml(lv.description || '')}" placeholder="Description for this level" />
+          </div>
+        `).join('')}
+      </div>
+      <button type="button" class="chip-ghost chip-danger qb-rubric-remove" style="margin-top:6px;">Remove Category</button>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.qb-rubric-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.qb-rubric-category');
+      if (!card) return;
+      card.remove();
+      if (!list.querySelector('.qb-rubric-category')) {
+        renderRubricEditor(emptyRubricTemplateClient(Number(document.getElementById('qb-edit-points')?.value) || 20));
+      }
+      syncRubricSumWarning();
+    });
+  });
+
+  list.querySelectorAll('.qb-rubric-max, .qb-rubric-name').forEach((input) => {
+    input.addEventListener('input', syncRubricSumWarning);
+    input.addEventListener('change', () => {
+      if (input.classList.contains('qb-rubric-max')) {
+        const card = input.closest('.qb-rubric-category');
+        if (!card) return;
+        const max = Math.max(1, Number(input.value) || 5);
+        const pts = defaultRubricLevelPoints(max);
+        card.querySelectorAll('.qb-rubric-level-desc').forEach((descInput, li) => {
+          const label = descInput.closest('.field-small')?.querySelector('label');
+          if (label) {
+            label.textContent = `${QB_RUBRIC_LEVELS[li] || 'Level'} (${pts[li]} pts)`;
+          }
+        });
+      }
+      syncRubricSumWarning();
+    });
+  });
+
+  syncRubricSumWarning();
+}
+
+function collectRubricFromEditor() {
+  const list = document.getElementById('qb-edit-rubric-list');
+  if (!list) return null;
+  const categories = [...list.querySelectorAll('.qb-rubric-category')].map((card) => {
+    const name = card.querySelector('.qb-rubric-name')?.value?.trim() || '';
+    const max_points = Math.max(1, Number(card.querySelector('.qb-rubric-max')?.value) || 5);
+    const pts = defaultRubricLevelPoints(max_points);
+    const levels = [...card.querySelectorAll('.qb-rubric-level-desc')].map((inp, li) => ({
+      label: QB_RUBRIC_LEVELS[li] || `Level ${li + 1}`,
+      points: pts[li],
+      description: inp.value.trim()
+    }));
+    return { name, max_points, levels };
+  }).filter((c) => c.name);
+  return categories.length ? { categories } : null;
+}
+
+function rubricPreviewHtml(rubric) {
+  const data = normalizeRubricClient(rubric);
+  if (!data) return '';
+  const rows = data.categories.map((c) => {
+    const levels = (c.levels || [])
+      .map((lv) => `<li><strong>${escapeHtml(lv.label)}</strong> (${Number(lv.points) || 0}): ${escapeHtml(lv.description || '—')}</li>`)
+      .join('');
+    return `<div class="progress-q-answer qb-rubric-preview-block">
+      <strong>${escapeHtml(c.name)}</strong> · ${Number(c.max_points) || 0} pts
+      <ul class="progress-choice-list">${levels}</ul>
+    </div>`;
+  }).join('');
+  return `<div class="qb-rubric-preview"><p class="progress-q-type" style="margin:6px 0 4px;">Rubric</p>${rows}</div>`;
 }
 
 const QB_QUIZ_TYPE_OPTIONS = [
@@ -8072,7 +9170,7 @@ const QB_QUIZ_TYPE_OPTIONS = [
 ];
 
 const QB_ACTIVITY_TYPE_OPTIONS = [
-  { value: 'activity_prompt', label: 'Activity' }
+  { value: 'activity', label: 'Activity' }
 ];
 
 /** Quizzes folder = quiz types only; Activity folder = activity only. */
@@ -8088,7 +9186,7 @@ function fillQuizBankTypeOptions(preferredValue, categoryOverride = null) {
   let type = preferredValue;
   if (type === 'quizzes') type = 'mcq';
   if (!options.some((o) => o.value === type)) {
-    type = inActivity ? 'activity_prompt' : 'mcq';
+    type = inActivity ? 'activity' : 'mcq';
   }
   typeSel.value = type;
   return type;
@@ -8102,19 +9200,20 @@ window.openQuizBankAdd = function(preferredType) {
   const modal = document.getElementById('qb-edit-modal');
   if (!modal) return;
   const titleEl = document.getElementById('qb-edit-modal-title');
-  if (titleEl) titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Add Activity' : 'Add Question';
+  if (titleEl) titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Add Activity' : 'Add Quiz Question';
   const subEl = document.getElementById('qb-edit-modal-subtitle');
   if (subEl) {
     subEl.textContent = questionBankCurrentCategory === 'activity'
-      ? 'Add an activity prompt to this classwork set.'
+      ? 'Add an activity to this Classwork set.'
       : 'Add a quiz question to this classwork set.';
   }
   document.getElementById('qb-edit-id').value = '';
   document.getElementById('qb-edit-question').value = '';
-  document.getElementById('qb-edit-choices').value = '';
+  bindQbChoicesListOnce();
+  setQbChoiceValues(['', '']);
   document.getElementById('qb-edit-answer').value = '';
-  document.getElementById('qb-edit-points').value = '1';
-  const preferred = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+  document.getElementById('qb-edit-points').value = preferredType === 'activity' || questionBankCurrentCategory === 'activity' ? '20' : '1';
+  const preferred = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity' : 'mcq');
   fillQuizBankTypeOptions(preferred);
   const gradeSel = document.getElementById('qb-edit-grade');
   const grades = getTeacherAssignedGrades();
@@ -8128,6 +9227,9 @@ window.openQuizBankAdd = function(preferredType) {
     gradeSel.disabled = true;
   }
   syncQuizBankChoicesVisibility();
+  if ((document.getElementById('qb-edit-type')?.value || '') === 'activity') {
+    renderRubricEditor(emptyRubricTemplateClient(Number(document.getElementById('qb-edit-points')?.value) || 20));
+  }
   modal.hidden = false;
   modal.removeAttribute('hidden');
 };
@@ -8136,21 +9238,23 @@ window.openQuizBankEdit = function(id) {
   const item = questionBankItems.find((i) => i.id === id);
   const modal = document.getElementById('qb-edit-modal');
   if (!item || !modal) return;
-  const isActivity = String(item.item_type || '') === 'activity_prompt'
-    || questionBankCurrentCategory === 'activity';
+  const isActivity = isActivityItemType(item.item_type);
   const titleEl = document.getElementById('qb-edit-modal-title');
-  if (titleEl) titleEl.textContent = isActivity ? 'Edit Activity' : 'Edit Question';
+  if (titleEl) titleEl.textContent = isActivity ? 'Edit Activity' : 'Edit Quiz Question';
   const subEl = document.getElementById('qb-edit-modal-subtitle');
-  if (subEl) subEl.textContent = isActivity ? 'Update this activity prompt.' : 'Update this quiz question.';
+  if (subEl) subEl.textContent = isActivity ? 'Update this activity.' : 'Update this quiz question.';
   document.getElementById('qb-edit-id').value = String(item.id);
   document.getElementById('qb-edit-question').value = item.question || '';
-  document.getElementById('qb-edit-choices').value = Array.isArray(item.choices) ? item.choices.join('\n') : '';
-  document.getElementById('qb-edit-answer').value = item.answer || '';
+  bindQbChoicesListOnce();
+  setQbChoiceValues(Array.isArray(item.choices) ? item.choices : ['', '']);
+  document.getElementById('qb-edit-answer').value = Array.isArray(item.choices) && item.choices.length
+    ? formatMcqAnswerDisplay(item.answer, item.choices)
+    : (item.answer || '');
   document.getElementById('qb-edit-points').value = String(Number(item.points) || 1);
   // Prefer folder category; fall back to item type when editing
   const editCat = questionBankCurrentCategory
     || (isActivity ? 'activity' : 'quizzes');
-  fillQuizBankTypeOptions(item.item_type || (isActivity ? 'activity_prompt' : 'mcq'), editCat);
+  fillQuizBankTypeOptions(item.item_type || (isActivity ? 'activity' : 'mcq'), editCat);
   const gradeSel = document.getElementById('qb-edit-grade');
   const grades = getTeacherAssignedGrades();
   if (gradeSel) {
@@ -8162,6 +9266,9 @@ window.openQuizBankEdit = function(id) {
     else if (grades[0]) gradeSel.value = String(grades[0]);
   }
   syncQuizBankChoicesVisibility();
+  if (isActivity || String(item.item_type || '') === 'activity') {
+    renderRubricEditor(item.rubric || emptyRubricTemplateClient(Number(item.points) || 20));
+  }
   modal.hidden = false;
   modal.removeAttribute('hidden');
 };
@@ -8172,16 +9279,9 @@ function renderQuizBankCategoryFolders() {
   questionBankCurrentCategory = null;
   setQuizBankBulkBarVisible(false);
 
-  const titleEl = document.getElementById('qb-set-title');
-  const metaEl = document.getElementById('qb-set-meta');
   const groupsEl = document.getElementById('qb-set-groups');
   const backBtn = document.getElementById('qb-set-back');
-  const set = questionBankCurrentSet || {};
 
-  if (titleEl) titleEl.textContent = set.title || 'Quiz set';
-  if (metaEl) {
-    metaEl.textContent = `Grade ${set.grade_level}${set.subject_name ? ' · ' + set.subject_name : ''} · ${questionBankItems.length} item(s)`;
-  }
   if (backBtn) backBtn.textContent = '← Classwork';
   if (!groupsEl) return;
 
@@ -8189,8 +9289,8 @@ function renderQuizBankCategoryFolders() {
     <article class="lesson-plan-card qb-category-card" data-category="${escapeHtml(cat.category)}" role="button" tabindex="0">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
         <div>
-          <h3 class="page-heading font-heading" style="font-size:1.05rem;margin:0;">${escapeHtml(cat.label)}</h3>
-          <p class="page-subheading" style="margin:6px 0 0;">${Number(cat.item_count) || 0} item(s)</p>
+          <h3 class="page-heading font-heading" style="margin:0;">${escapeHtml(cat.label)}</h3>
+          <p class="page-subheading">${Number(cat.item_count) || 0} item(s)</p>
         </div>
         <span class="chip-ghost" style="pointer-events:none;">Open →</span>
       </div>
@@ -8200,7 +9300,7 @@ function renderQuizBankCategoryFolders() {
   if (!questionBankItems.length) {
     groupsEl.insertAdjacentHTML('beforeend', `
       <p class="page-subheading" style="margin:12px 0 0;">
-        No questions yet. Open <strong>Quizzes</strong> or <strong>Activity</strong> to add items, or generate an AI draft in <strong>Materials</strong> and use <strong>Save to Classwork</strong>.
+        No items yet. Open <strong>Quizzes</strong> or <strong>Activity</strong> to add items, or generate an AI draft in <strong>Materials</strong> and use <strong>Save to Classwork</strong>.
       </p>`);
   }
 
@@ -8224,13 +9324,21 @@ function renderQuizBankItemRow(item) {
         `${String.fromCharCode(65 + i)}. ${escapeHtml(c)}`
       ).join(' · ')}</p>`
     : '';
-  const ans = item.answer ? `<p class="page-subheading">Answer: ${escapeHtml(item.answer)}</p>` : '';
+  const ans = item.answer
+    ? `<p class="page-subheading">Answer: ${escapeHtml(formatMcqAnswerDisplay(item.answer, item.choices) || item.answer)}</p>`
+    : '';
+  const rubricCount = rubricCategoriesOf(item.rubric).length;
+  const rubricNote = rubricCount
+    ? `<p class="page-subheading" style="margin:4px 0 0;">Rubric · ${rubricCount} categor${rubricCount === 1 ? 'y' : 'ies'}</p>`
+    : (isActivityItemType(item.item_type)
+      ? '<p class="page-subheading" style="margin:4px 0 0;">No rubric yet — edit to add categories</p>'
+      : '');
   return `
     <div class="qb-set-item" data-qb-id="${item.id}">
       <input type="checkbox" class="qb-select" data-id="${item.id}" ${checked} />
       <div style="flex:1;">
         <p style="margin:0;color:var(--text-dark);">${escapeHtml(item.question)}</p>
-        ${choices}${ans}
+        ${choices}${ans}${rubricNote}
         <p class="page-subheading" style="margin:4px 0 0;">${Number(item.points) || 1} pts</p>
         <div class="lesson-plan-card-actions">
           <button type="button" class="chip-ghost" onclick="openQuizBankEdit(${item.id})">Edit</button>
@@ -8247,16 +9355,10 @@ function renderQuizBankCategoryDetail(categoryKey) {
   setQuizBankBulkBarVisible(true);
 
   const cat = questionBankCategories.find((c) => c.category === categoryKey);
-  const titleEl = document.getElementById('qb-set-title');
-  const metaEl = document.getElementById('qb-set-meta');
   const groupsEl = document.getElementById('qb-set-groups');
   const backBtn = document.getElementById('qb-set-back');
   const set = questionBankCurrentSet || {};
 
-  if (titleEl) titleEl.textContent = cat?.label || (categoryKey === 'activity' ? 'Activity' : 'Quizzes');
-  if (metaEl) {
-    metaEl.textContent = `${set.title || 'Set'} · ${Number(cat?.item_count) || 0} item(s)`;
-  }
   if (backBtn) {
     const setTitle = (set.title || '').trim();
     backBtn.textContent = setTitle ? `← ${setTitle}` : '← Back to set';
@@ -8266,7 +9368,7 @@ function renderQuizBankCategoryDetail(categoryKey) {
   const groups = cat?.groups || [];
   if (!groups.length) {
     groupsEl.innerHTML = `
-      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>+ Add Question</strong> above to create one.</p>`;
+      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>${questionBankCurrentCategory === 'activity' ? '+ Add Activity' : '+ Add Quiz Question'}</strong> above to create one.</p>`;
     updateQuizBankSelectionMeta();
     return;
   }
@@ -8314,8 +9416,8 @@ function openQuizBankCategory(categoryKey) {
 }
 
 function buildCategoriesClientSide(items) {
-  const quizItems = items.filter((i) => i.item_type !== 'activity_prompt');
-  const activityItems = items.filter((i) => i.item_type === 'activity_prompt');
+  const quizItems = items.filter((i) => !isActivityItemType(i.item_type));
+  const activityItems = items.filter((i) => isActivityItemType(i.item_type));
   const byType = (list) => {
     const map = new Map();
     list.forEach((item) => {
@@ -8371,7 +9473,7 @@ async function loadQuestionBank() {
   if (subjectId) params.set('subject_id', subjectId);
 
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/sets?${params}`, { headers: getAuthHeaders() });
+    const res = await fetch(`${API_URL}/teacher/classwork/sets?${params}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     questionBankSets = Array.isArray(data) ? data : [];
@@ -8390,7 +9492,7 @@ async function loadQuestionBank() {
 async function openQuizBankSet(setId, opts = {}) {
   if (!setId) return;
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/sets/${setId}`, { headers: getAuthHeaders() });
+    const res = await fetch(`${API_URL}/teacher/classwork/sets/${setId}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     questionBankCurrentSetId = setId;
@@ -8430,7 +9532,7 @@ window.copyQuizBankItem = async function(id) {
   if (Array.isArray(item.choices) && item.choices.length) {
     text += '\n' + item.choices.map((c, j) => `${String.fromCharCode(65 + j)}. ${c}`).join('\n');
   }
-  if (item.answer) text += `\nAnswer: ${item.answer}`;
+  if (item.answer) text += `\nAnswer: ${formatMcqAnswerDisplay(item.answer, item.choices) || item.answer}`;
   try {
     await navigator.clipboard.writeText(text);
     showToast('Copied.');
@@ -8440,9 +9542,11 @@ window.copyQuizBankItem = async function(id) {
 };
 
 window.deleteQuizBankItem = async function(id) {
-  if (!confirm('Remove this item from Classwork?')) return;
+  const delItem = questionBankItems.find((i) => i.id === id);
+  const delLabel = isActivityItemType(delItem?.item_type) ? 'activity' : 'quiz question';
+  if (!confirm(`Remove this ${delLabel} from Classwork?`)) return;
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/${id}`, {
+    const res = await fetch(`${API_URL}/teacher/classwork/${id}`, {
       method: 'DELETE',
       headers: getAuthHeaders()
     });
@@ -8502,14 +9606,18 @@ document.getElementById('qb-set-back')?.addEventListener('click', () => {
   loadQuestionBank();
 });
 
-document.getElementById('qb-select-all')?.addEventListener('click', () => selectAllQuizBankItems());
-document.getElementById('qb-clear-selection')?.addEventListener('click', () => clearQuizBankSelection());
+document.getElementById('lp-subject-back')?.addEventListener('click', () => {
+  materialsCurrentSubjectKey = null;
+  renderMaterialsHub();
+});
+
+document.getElementById('qb-select-all')?.addEventListener('click', () => toggleQuizBankSelectAll());
 
 document.getElementById('qb-set-delete')?.addEventListener('click', async () => {
   if (!questionBankCurrentSetId) return;
-  if (!confirm('Delete this entire quiz set and its items?')) return;
+  if (!confirm('Delete this entire Classwork set and its items?')) return;
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/sets/${questionBankCurrentSetId}`, {
+    const res = await fetch(`${API_URL}/teacher/classwork/sets/${questionBankCurrentSetId}`, {
       method: 'DELETE',
       headers: getAuthHeaders()
     });
@@ -8531,26 +9639,91 @@ document.getElementById('qb-edit-cancel')?.addEventListener('click', () => {
   if (modal) modal.hidden = true;
 });
 
-document.getElementById('qb-edit-type')?.addEventListener('change', () => syncQuizBankChoicesVisibility());
+document.getElementById('qb-edit-type')?.addEventListener('change', () => {
+  syncQuizBankChoicesVisibility();
+  if ((document.getElementById('qb-edit-type')?.value || '') === 'activity') {
+    const list = document.getElementById('qb-edit-rubric-list');
+    if (list && !list.querySelector('.qb-rubric-category')) {
+      renderRubricEditor(emptyRubricTemplateClient(Number(document.getElementById('qb-edit-points')?.value) || 20));
+    }
+  }
+});
+
+document.getElementById('qb-edit-rubric-add')?.addEventListener('click', () => {
+  const current = collectRubricFromEditor() || { categories: [] };
+  current.categories.push(emptyRubricCategory('', 5));
+  renderRubricEditor(current);
+});
+
+document.getElementById('qb-edit-points')?.addEventListener('input', syncRubricSumWarning);
+document.getElementById('qb-edit-points')?.addEventListener('change', syncRubricSumWarning);
+
+document.getElementById('qb-edit-rubric-generate')?.addEventListener('click', async () => {
+  const description = document.getElementById('qb-edit-question')?.value?.trim() || '';
+  const totalPoints = Number(document.getElementById('qb-edit-points')?.value) || 20;
+  const gradeLevel = Number(document.getElementById('qb-edit-grade')?.value) || questionBankCurrentSet?.grade_level;
+  const btn = document.getElementById('qb-edit-rubric-generate');
+  if (!description) {
+    showToast('Enter a description first, then Generate Rubric.', 'error');
+    return;
+  }
+  const existing = collectRubricFromEditor();
+  const hasContent = existing?.categories?.some((c) =>
+    c.name || (c.levels || []).some((lv) => lv.description)
+  );
+  if (hasContent && !confirm('Replace the current rubric with a generated one?')) return;
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+  }
+  try {
+    const res = await fetch(`${API_URL}/teacher/ai/generate-rubric`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        description,
+        total_points: totalPoints,
+        grade_level: gradeLevel,
+        subject_name: questionBankCurrentSet?.subject_name || null
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not generate rubric');
+    renderRubricEditor(data.rubric);
+    showToast(data.provider === 'mock' ? 'Rubric drafted (mock AI). Edit as needed.' : 'Rubric generated. Edit as needed.');
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Generate Rubric';
+    }
+  }
+});
 
 document.getElementById('qb-add-question-btn')?.addEventListener('click', () => {
-  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity' : 'mcq');
 });
 document.getElementById('qb-add-question-btn-bulk')?.addEventListener('click', () => {
-  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity_prompt' : 'mcq');
+  openQuizBankAdd(questionBankCurrentCategory === 'activity' ? 'activity' : 'mcq');
 });
 
 document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
   const id = document.getElementById('qb-edit-id')?.value;
   const question = document.getElementById('qb-edit-question')?.value?.trim();
-  const choicesRaw = document.getElementById('qb-edit-choices')?.value || '';
-  const choices = choicesRaw.split('\n').map((s) => s.trim()).filter(Boolean);
-  const answer = document.getElementById('qb-edit-answer')?.value?.trim() || null;
+  const choices = collectQbChoices();
+  const answerRaw = document.getElementById('qb-edit-answer')?.value?.trim() || null;
   const points = document.getElementById('qb-edit-points')?.value;
   const grade_level = document.getElementById('qb-edit-grade')?.value;
   const item_type = document.getElementById('qb-edit-type')?.value || 'mcq';
   if (!question) {
-    showToast('Enter a question.', 'error');
+    showToast(
+      (document.getElementById('qb-edit-type')?.value || '') === 'activity'
+        ? 'Enter a description.'
+        : 'Enter a question.',
+      'error'
+    );
     return;
   }
   if (!grade_level) {
@@ -8558,26 +9731,35 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
     return;
   }
   if (item_type === 'mcq' && choices.length < 2) {
-    showToast('Multiple choice needs at least 2 choices (one per line).', 'error');
+    showToast('Multiple choice needs at least 2 choices.', 'error');
     return;
   }
+  const answer = item_type === 'mcq'
+    ? (formatMcqAnswerDisplay(answerRaw, choices) || answerRaw)
+    : answerRaw;
 
   const payload = {
     question,
     choices: item_type === 'mcq' ? choices : null,
-    answer,
+    answer: item_type === 'activity' ? null : answer,
     points,
     grade_level: Number(grade_level),
     item_type,
     subject_id: questionBankCurrentSet?.subject_id || null,
     quiz_set_id: questionBankCurrentSetId || null,
-    lesson_title: questionBankCurrentSet?.title || null
+    lesson_title: questionBankCurrentSet?.title || null,
+    rubric: item_type === 'activity' ? collectRubricFromEditor() : null
   };
+
+  if (item_type === 'activity' && !payload.rubric) {
+    showToast('Add at least one rubric category with a name.', 'error');
+    return;
+  }
 
   try {
     const isNew = !id;
     const res = await fetch(
-      isNew ? `${API_URL}/teacher/question-bank` : `${API_URL}/teacher/question-bank/${id}`,
+      isNew ? `${API_URL}/teacher/classwork` : `${API_URL}/teacher/classwork/${id}`,
       {
         method: isNew ? 'POST' : 'PUT',
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
@@ -8587,10 +9769,14 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     document.getElementById('qb-edit-modal').hidden = true;
-    showToast(isNew ? 'Question added.' : 'Question updated.');
+    showToast(
+      isActivityItemType(item_type)
+        ? (isNew ? 'Activity added.' : 'Activity updated.')
+        : (isNew ? 'Quiz question added.' : 'Quiz question updated.')
+    );
     if (questionBankCurrentSetId) {
       const keepCat = questionBankCurrentCategory
-        || (item_type === 'activity_prompt' ? 'activity' : 'quizzes');
+        || (item_type === 'activity' ? 'activity' : 'quizzes');
       await openQuizBankSet(questionBankCurrentSetId, { keepCategory: keepCat });
     } else loadQuestionBank();
   } catch (err) {
@@ -8607,7 +9793,7 @@ async function openCreateProgressFromBank() {
   const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
   const gradesInSelection = [...new Set(selectedItems.map((i) => Number(i.grade_level)))];
   if (gradesInSelection.length > 1) {
-    showToast('Select items from one grade only, then create a Progress record.', 'error');
+    showToast(`Select items from one grade only, then create ${classworkCreateKindPhrase()}.`, 'error');
     return;
   }
   const targetGrade = gradesInSelection[0];
@@ -8653,6 +9839,7 @@ async function openCreateProgressFromBank() {
   if (typeSel) {
     typeSel.value = questionBankCurrentCategory === 'activity' ? 'activity' : 'quiz';
   }
+  syncClassworkCreateModalLabels();
 
   const qtrSel = document.getElementById('qb-create-quarter');
   fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter);
@@ -8760,7 +9947,7 @@ async function loadExamComposerSets() {
   if (subjectId) params.set('subject_id', subjectId);
 
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/sets?${params}`, { headers: getAuthHeaders() });
+    const res = await fetch(`${API_URL}/teacher/classwork/sets?${params}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load sets');
     examComposerSetsCache = Array.isArray(data) ? data.filter((s) => Number(s.item_count) > 0) : [];
@@ -8833,7 +10020,7 @@ async function loadExamComposerMaterials() {
     if (subjectId) params.set('subject_id', subjectId);
     const [plansRes, setsRes] = await Promise.all([
       fetch(`${API_URL}/teacher/lesson-plans`, { headers: getAuthHeaders() }),
-      fetch(`${API_URL}/teacher/question-bank/sets?${params}`, { headers: getAuthHeaders() })
+      fetch(`${API_URL}/teacher/classwork/sets?${params}`, { headers: getAuthHeaders() })
     ]);
     const plansData = await plansRes.json();
     const setsData = await setsRes.json();
@@ -8926,7 +10113,7 @@ async function refreshExamComposerItems() {
   try {
     const results = await Promise.all(
       ids.map(async (setId) => {
-        const res = await fetch(`${API_URL}/teacher/question-bank/sets/${setId}`, { headers: getAuthHeaders() });
+        const res = await fetch(`${API_URL}/teacher/classwork/sets/${setId}`, { headers: getAuthHeaders() });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load set items');
         return Array.isArray(data.items) ? data.items : [];
@@ -8951,7 +10138,7 @@ function getExamComposerFilteredItems() {
   const includeActivity = !!document.getElementById('qb-exam-include-activity')?.checked
     && examComposerSelectedSets.size > 0;
   return examComposerItemsCache.filter((it) => {
-    if (String(it.item_type) === 'activity_prompt') return includeActivity;
+    if (isActivityItemType(it.item_type)) return includeActivity;
     return true;
   });
 }
@@ -8961,8 +10148,8 @@ function updateExamComposerPreview() {
   const confirmBtn = document.getElementById('qb-exam-confirm');
   const maxWrap = document.getElementById('qb-exam-max-wrap');
   const items = getExamComposerFilteredItems();
-  const quizCount = items.filter((i) => String(i.item_type) !== 'activity_prompt').length;
-  const activityCount = items.filter((i) => String(i.item_type) === 'activity_prompt').length;
+  const quizCount = items.filter((i) => !isActivityItemType(i.item_type)).length;
+  const activityCount = items.filter((i) => isActivityItemType(i.item_type)).length;
   const hasSource = examComposerSelectedSets.size > 0 || examComposerSelectedMaterials.size > 0;
 
   if (items.length) {
@@ -9139,7 +10326,7 @@ document.getElementById('qb-exam-confirm')?.addEventListener('click', async () =
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not create exam');
     document.getElementById('qb-exam-modal').hidden = true;
-    showToast(data.message || 'Exam created in Records.');
+    showToast(data.message || 'Exam created. Find it in Records → Exam.');
     applyTeacherPanel('progress');
     if (data.id) {
       setTimeout(() => openProgressEditor(data.id, 'edit'), 200);
@@ -9179,7 +10366,7 @@ document.getElementById('qb-add-quiz-form')?.addEventListener('submit', async (e
     return;
   }
   try {
-    const res = await fetch(`${API_URL}/teacher/question-bank/sets`, {
+    const res = await fetch(`${API_URL}/teacher/classwork/sets`, {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, grade_level, subject_id })
@@ -9188,7 +10375,7 @@ document.getElementById('qb-add-quiz-form')?.addEventListener('submit', async (e
     if (!res.ok) throw new Error(data.error);
     const modal = document.getElementById('qb-add-quiz-modal');
     if (modal) modal.hidden = true;
-    showToast(data.message || 'Classwork set created.');
+    showToast(data.message || 'Classwork set created. Find it in Classwork.');
     questionBankCurrentSetId = null;
     questionBankCurrentCategory = null;
     questionBankSelected.clear();
@@ -9203,6 +10390,8 @@ document.getElementById('qb-create-cancel')?.addEventListener('click', () => {
   const modal = document.getElementById('qb-create-modal');
   if (modal) modal.hidden = true;
 });
+
+document.getElementById('qb-create-type')?.addEventListener('change', syncClassworkCreateModalLabels);
 
 document.getElementById('qb-create-confirm')?.addEventListener('click', async () => {
   const title = document.getElementById('qb-create-title')?.value?.trim();
@@ -9255,7 +10444,7 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
     document.getElementById('qb-create-modal').hidden = true;
     questionBankSelected.clear();
     updateQuizBankSelectionMeta();
-    showToast(data.message || 'Progress record created.');
+    showToast(data.message || `${classworkCreateKindLabel(type)} created. Find it in Records → ${classworkCreateKindLabel(type)}.`);
     applyTeacherPanel('progress');
     if (data.id) {
       setTimeout(() => openProgressEditor(data.id, 'edit'), 200);
@@ -9323,6 +10512,7 @@ document.getElementById('upload-material-form')?.addEventListener('submit', asyn
       modal.setAttribute('hidden', '');
     }
     showToast(data.message || 'Material uploaded.');
+    if (subjectId) materialsCurrentSubjectKey = materialsSubjectKey(subjectId);
     loadLessonPlans();
   } catch (err) {
     if (msg) { msg.textContent = err.message; msg.style.color = '#b71c1c'; }
@@ -9452,7 +10642,7 @@ function updateParentChildName(text) {
       if (activeTab === 'overview') renderParentOverview(selected);
       else if (activeTab === 'attendance') renderParentAttendance(selected);
       else if (activeTab === 'progress') renderParentProgress(selected);
-      else if (activeTab === 'inbox' || activeTab === 'contact') renderParentInbox();
+      else if (activeTab === 'inbox' || activeTab === 'contact') paintParentInboxList();
     }
   });
 }
@@ -9733,17 +10923,31 @@ async function renderParentOverview(student) {
 
       <div class="chart-card" style="background:var(--peach-soft);border-color:rgba(243,156,18,0.35);">
         <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:8px;">🤖 AI Progress Summary</h3>
-        <p style="font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
-          <em>AI-generated insights will appear here once enough attendance and assessment data is collected.</em>
+        <p class="page-subheading" id="parent-ai-summary" style="margin:0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
+          Loading summary…
         </p>
       </div>
     </div>
   `;
 
   loadParentAttendanceTable(student.id);
+  loadParentAiSummary(student.id);
   document.getElementById('parent-attendance-see-more')?.addEventListener('click', () => {
     document.querySelector('[data-parent-tab="attendance"]')?.click();
   });
+}
+
+async function loadParentAiSummary(studentId) {
+  const el = document.getElementById('parent-ai-summary');
+  if (!el) return;
+  try {
+    const res = await fetch(`${API_URL}/parent/child/${studentId}/insights`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load summary');
+    el.textContent = data.text || 'Insights will appear here once attendance or scores are recorded.';
+  } catch {
+    el.textContent = 'Could not load the progress summary right now.';
+  }
 }
 
 let parentAttendanceCache = [];
@@ -9928,8 +11132,8 @@ function renderParentAttendance(student) {
       <div class="chart-card">
         <div class="teacher-header-row">
           <div>
-            <h3 class="page-heading font-heading" style="font-size:1.15rem;margin:0;">Attendance Records</h3>
-            <p class="page-subheading" style="margin:4px 0 0;">Newest first. Filter by status or month.</p>
+            <h3 class="page-heading font-heading">Attendance Records</h3>
+            <p class="page-subheading">Newest first. Filter by status or month.</p>
           </div>
         </div>
         <div class="parent-att-toolbar">
@@ -10017,7 +11221,7 @@ function renderParentProgress(student) {
   contentEl.innerHTML = `
     <div class="parent-main">
       <div class="chart-card">
-        <h3 style="font-size:1.1rem;color:var(--maroon-deep);">Progress Tracking</h3>
+        <h3 class="page-heading font-heading">Progress Tracking</h3>
         <p class="page-subheading" id="parent-progress-avg">Loading scores…</p>
         <div id="parent-progress-table-wrap" style="margin-top:12px;"></div>
       </div>

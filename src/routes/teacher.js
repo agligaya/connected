@@ -27,6 +27,7 @@ const { enqueueSms, pickParentPhone, processSmsQueue } = require('../utils/sms')
 const {
   ensureAiRecommendationsSchema,
   generateRecommendationsForLesson,
+  generateActivityRubric,
   safeParseJsonContent,
   pickDraftPart,
   isAiDryRun,
@@ -41,9 +42,14 @@ const {
   formatBankRow,
   normalizeChoices,
   parseChoicesColumn,
+  normalizeRubric,
   groupItemsByType,
   groupItemsByCategory,
-  migrateOrphanBankItems
+  migrateOrphanBankItems,
+  isActivityType,
+  canonicalItemType,
+  isAllowedItemType,
+  ITEM_TYPES
 } = require('../utils/questionBank');
 const {
   ensureQuizAttendanceSchema,
@@ -1346,6 +1352,34 @@ router.get('/ai/status', verifyToken, async (_req, res) => {
   });
 });
 
+router.post('/ai/generate-rubric', verifyToken, async (req, res) => {
+  try {
+    const {
+      description,
+      total_points: totalPoints,
+      grade_level: gradeLevel,
+      subject_name: subjectName
+    } = req.body || {};
+
+    const result = await generateActivityRubric({
+      description,
+      totalPoints,
+      gradeLevel,
+      subjectName
+    });
+
+    res.json({
+      message: 'Rubric generated.',
+      provider: result.provider,
+      rubric: result.rubric
+    });
+  } catch (error) {
+    console.error('Generate rubric error:', error);
+    const status = /description/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ error: error.message || 'Could not generate rubric' });
+  }
+});
+
 router.get('/ai/recommendations', verifyToken, async (req, res) => {
   try {
     await ensureAiRecommendationsSchema();
@@ -1745,7 +1779,7 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
         types: ['quiz', 'activity']
       });
     } catch (bankErr) {
-      console.warn('[question-bank] save on approve failed:', bankErr.message);
+      console.warn('[classwork] save on approve failed:', bankErr.message);
     }
 
     await logActivity(
@@ -1783,10 +1817,10 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
 
 // ========== QUESTION BANK ==========
 ensureQuestionBankSchema().catch((e) => {
-  console.error('[question-bank] schema ensure failed:', e.message);
+  console.error('[classwork] schema ensure failed:', e.message);
 });
 
-router.post('/question-bank/from-ai/:id', verifyToken, async (req, res) => {
+router.post('/classwork/from-ai/:id', verifyToken, async (req, res) => {
   try {
     await ensureAiRecommendationsSchema();
     await ensureQuestionBankSchema();
@@ -1820,7 +1854,7 @@ router.post('/question-bank/from-ai/:id', verifyToken, async (req, res) => {
     await logActivity(
       db,
       teacherId,
-      'Saved AI set to quiz bank',
+      'Saved AI set to Classwork',
       'question_bank',
       result.title || row.lesson_title || `Draft #${row.id}`,
       `${result.created} created, set #${result.quiz_set_id || '-'}`
@@ -1838,12 +1872,12 @@ router.post('/question-bank/from-ai/:id', verifyToken, async (req, res) => {
       ...result
     });
   } catch (error) {
-    console.error('Save AI to question bank error:', error);
+    console.error('Save AI to classwork error:', error);
     res.status(500).json({ error: 'Server error saving to Classwork', details: error.message });
   }
 });
 
-router.get('/question-bank/sets', verifyToken, async (req, res) => {
+router.get('/classwork/sets', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -1886,11 +1920,11 @@ router.get('/question-bank/sets', verifyToken, async (req, res) => {
     );
   } catch (error) {
     console.error('List quiz sets error:', error);
-    res.status(500).json({ error: 'Server error fetching quiz sets', details: error.message });
+    res.status(500).json({ error: 'Server error fetching Classwork sets', details: error.message });
   }
 });
 
-router.post('/question-bank/sets', verifyToken, async (req, res) => {
+router.post('/classwork/sets', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -1965,7 +1999,7 @@ router.post('/question-bank/sets', verifyToken, async (req, res) => {
       title: setTitle,
       grade_level: grade,
       subject_id: subjectId,
-      message: 'Classwork set created'
+      message: 'Classwork set created. Find it in Classwork.'
     });
   } catch (error) {
     console.error('Create quiz set error:', error);
@@ -1973,7 +2007,7 @@ router.post('/question-bank/sets', verifyToken, async (req, res) => {
   }
 });
 
-router.get('/question-bank/sets/:id', verifyToken, async (req, res) => {
+router.get('/classwork/sets/:id', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -1986,7 +2020,7 @@ router.get('/question-bank/sets/:id', verifyToken, async (req, res) => {
        WHERE qs.id = ? AND qs.teacher_id = ? AND qs.status = 'active'`,
       [setId, teacherId]
     );
-    if (!setRow) return res.status(404).json({ error: 'Quiz set not found' });
+    if (!setRow) return res.status(404).json({ error: 'Classwork set not found' });
 
     const assignmentRows = await getTeacherAssignmentRows(teacherId);
     const allowedGrades = [...new Set(assignmentRows.map((r) => Number(r.grade_level)).filter(Boolean))];
@@ -1999,7 +2033,7 @@ router.get('/question-bank/sets/:id', verifyToken, async (req, res) => {
        FROM question_bank qb
        LEFT JOIN subjects s ON s.id = qb.subject_id
        WHERE qb.quiz_set_id = ? AND qb.teacher_id = ? AND qb.status = 'active'
-       ORDER BY FIELD(qb.item_type, 'mcq', 'identification', 'enumeration', 'short_answer', 'activity_prompt'),
+       ORDER BY FIELD(qb.item_type, 'mcq', 'identification', 'enumeration', 'short_answer', 'activity', 'activity_prompt'),
                 qb.id ASC`,
       [setId, teacherId]
     );
@@ -2012,11 +2046,11 @@ router.get('/question-bank/sets/:id', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get quiz set error:', error);
-    res.status(500).json({ error: 'Server error fetching quiz set', details: error.message });
+    res.status(500).json({ error: 'Server error fetching Classwork set', details: error.message });
   }
 });
 
-router.delete('/question-bank/sets/:id', verifyToken, async (req, res) => {
+router.delete('/classwork/sets/:id', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -2026,7 +2060,7 @@ router.delete('/question-bank/sets/:id', verifyToken, async (req, res) => {
       `SELECT id FROM quiz_sets WHERE id = ? AND teacher_id = ? AND status = 'active'`,
       [setId, teacherId]
     );
-    if (!setRow) return res.status(404).json({ error: 'Quiz set not found' });
+    if (!setRow) return res.status(404).json({ error: 'Classwork set not found' });
 
     await db.query(
       `UPDATE question_bank SET status = 'archived'
@@ -2037,14 +2071,14 @@ router.delete('/question-bank/sets/:id', verifyToken, async (req, res) => {
       `UPDATE quiz_sets SET status = 'archived' WHERE id = ? AND teacher_id = ?`,
       [setId, teacherId]
     );
-    res.json({ message: 'Quiz set removed' });
+    res.json({ message: 'Classwork set removed' });
   } catch (error) {
     console.error('Delete quiz set error:', error);
-    res.status(500).json({ error: 'Server error deleting quiz set', details: error.message });
+    res.status(500).json({ error: 'Server error deleting Classwork set', details: error.message });
   }
 });
 
-router.get('/question-bank', verifyToken, async (req, res) => {
+router.get('/classwork', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -2087,7 +2121,7 @@ router.get('/question-bank', verifyToken, async (req, res) => {
     }
     if (
       item_type &&
-      ['mcq', 'short_answer', 'identification', 'enumeration', 'activity_prompt'].includes(String(item_type))
+      isAllowedItemType(item_type)
     ) {
       sql += ` AND qb.item_type = ?`;
       params.push(String(item_type));
@@ -2102,12 +2136,12 @@ router.get('/question-bank', verifyToken, async (req, res) => {
     const [rows] = await db.query(sql, params);
     res.json(rows.map(formatBankRow));
   } catch (error) {
-    console.error('List question bank error:', error);
-    res.status(500).json({ error: 'Server error fetching quiz bank', details: error.message });
+    console.error('List classwork error:', error);
+    res.status(500).json({ error: 'Server error fetching Classwork', details: error.message });
   }
 });
 
-router.post('/question-bank', verifyToken, async (req, res) => {
+router.post('/classwork', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -2121,11 +2155,18 @@ router.post('/question-bank', verifyToken, async (req, res) => {
       lesson_plan_id,
       lesson_title,
       item_type,
-      quiz_set_id
+      quiz_set_id,
+      rubric
     } = req.body || {};
 
     const qText = String(question || '').trim();
-    if (!qText) return res.status(400).json({ error: 'question is required' });
+    if (!qText) {
+      return res.status(400).json({
+        error: isActivityType(item_type)
+          ? 'Activity description is required'
+          : 'Quiz question is required'
+      });
+    }
     if (!grade_level) return res.status(400).json({ error: 'grade_level is required' });
 
     const assignmentRows = await getTeacherAssignmentRows(teacherId);
@@ -2146,29 +2187,32 @@ router.post('/question-bank', verifyToken, async (req, res) => {
       );
       if (!setRow) return res.status(404).json({ error: 'Classwork set not found' });
       if (Number(setRow.grade_level) !== Number(grade_level)) {
-        return res.status(400).json({ error: 'Question grade must match the Classwork set grade.' });
+        return res.status(400).json({ error: 'Item grade must match the Classwork set grade.' });
       }
       if (!inheritedSubjectId && setRow.subject_id) {
         inheritedSubjectId = Number(setRow.subject_id);
       }
     }
 
-    const allowedTypes = ['mcq', 'short_answer', 'identification', 'enumeration', 'activity_prompt'];
-    const type = allowedTypes.includes(item_type)
-      ? item_type
+    let type = isAllowedItemType(item_type)
+      ? canonicalItemType(item_type)
       : normalizeChoices(choices)?.length
         ? 'mcq'
         : 'short_answer';
+    type = canonicalItemType(type);
     const choiceList = type === 'mcq' ? normalizeChoices(choices) : null;
     if (type === 'mcq' && (!choiceList || choiceList.length < 2)) {
       return res.status(400).json({ error: 'MCQ items need at least 2 choices' });
     }
 
+    const pts = Math.max(0.5, Number(points) || 1);
+    const rubricObj = isActivityType(type) ? normalizeRubric(rubric, pts) : null;
+
     const [result] = await db.query(
       `INSERT INTO question_bank
         (teacher_id, quiz_set_id, subject_id, grade_level, lesson_plan_id, lesson_title,
-         item_type, question, choices, answer, points, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
+         item_type, question, choices, answer, points, rubric, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
       [
         teacherId,
         quizSetId,
@@ -2180,18 +2224,23 @@ router.post('/question-bank', verifyToken, async (req, res) => {
         qText,
         choiceList ? JSON.stringify(choiceList) : null,
         answer != null ? String(answer).trim().slice(0, 500) : null,
-        Math.max(0.5, Number(points) || 1)
+        pts,
+        rubricObj ? JSON.stringify(rubricObj) : null
       ]
     );
 
-    res.status(201).json({ id: result.insertId, quiz_set_id: quizSetId, message: 'Question added' });
+    res.status(201).json({
+      id: result.insertId,
+      quiz_set_id: quizSetId,
+      message: isActivityType(type) ? 'Activity added.' : 'Quiz question added.'
+    });
   } catch (error) {
-    console.error('Create question bank item error:', error);
+    console.error('Create classwork item error:', error);
     res.status(500).json({ error: 'Server error creating bank item', details: error.message });
   }
 });
 
-router.put('/question-bank/:id', verifyToken, async (req, res) => {
+router.put('/classwork/:id', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -2200,7 +2249,7 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
       `SELECT * FROM question_bank WHERE id = ? AND teacher_id = ? AND status = 'active'`,
       [id, teacherId]
     );
-    if (!row) return res.status(404).json({ error: 'Bank item not found' });
+    if (!row) return res.status(404).json({ error: 'Classwork item not found' });
 
     const {
       question,
@@ -2210,21 +2259,29 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
       grade_level,
       subject_id,
       lesson_title,
-      item_type
+      item_type,
+      rubric
     } = req.body || {};
 
     const qText = question != null ? String(question).trim() : row.question;
-    if (!qText) return res.status(400).json({ error: 'question cannot be empty' });
+    if (!qText) {
+      return res.status(400).json({
+        error: isActivityType(item_type || row.item_type)
+          ? 'Activity description cannot be empty'
+          : 'Quiz question cannot be empty'
+      });
+    }
 
     let choiceList = parseChoicesColumn(row.choices);
     if (choices !== undefined) choiceList = normalizeChoices(choices);
 
     let type = row.item_type;
-    if (item_type && ['mcq', 'short_answer', 'identification', 'enumeration', 'activity_prompt'].includes(item_type)) {
-      type = item_type;
+    if (item_type && isAllowedItemType(item_type)) {
+      type = canonicalItemType(item_type);
     } else if (choices !== undefined) {
-      type = choiceList && choiceList.length >= 2 ? 'mcq' : row.item_type === 'activity_prompt' ? 'activity_prompt' : 'short_answer';
+      type = choiceList && choiceList.length >= 2 ? 'mcq' : isActivityType(row.item_type) ? 'activity' : 'short_answer';
     }
+    type = canonicalItemType(type);
 
     if (type === 'mcq' && (!choiceList || choiceList.length < 2)) {
       return res.status(400).json({ error: 'MCQ items need at least 2 choices' });
@@ -2256,10 +2313,17 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
     const nextLessonTitle =
       lesson_title != null ? String(lesson_title).slice(0, 255) : row.lesson_title;
 
+    let nextRubric = normalizeRubric(row.rubric, nextPoints);
+    if (rubric !== undefined) {
+      nextRubric = isActivityType(type) ? normalizeRubric(rubric, nextPoints) : null;
+    } else if (!isActivityType(type)) {
+      nextRubric = null;
+    }
+
     await db.query(
       `UPDATE question_bank SET
          question = ?, choices = ?, answer = ?, points = ?,
-         grade_level = ?, subject_id = ?, lesson_title = ?, item_type = ?
+         grade_level = ?, subject_id = ?, lesson_title = ?, item_type = ?, rubric = ?
        WHERE id = ? AND teacher_id = ?`,
       [
         qText,
@@ -2270,6 +2334,7 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
         nextSubject,
         nextLessonTitle,
         type,
+        nextRubric ? JSON.stringify(nextRubric) : null,
         id,
         teacherId
       ]
@@ -2282,14 +2347,17 @@ router.put('/question-bank/:id', verifyToken, async (req, res) => {
        WHERE qb.id = ?`,
       [id]
     );
-    res.json({ message: 'Bank item updated', item: formatBankRow(updated) });
+    res.json({
+      message: isActivityType(type) ? 'Activity updated.' : 'Quiz question updated.',
+      item: formatBankRow(updated)
+    });
   } catch (error) {
-    console.error('Update question bank item error:', error);
+    console.error('Update classwork item error:', error);
     res.status(500).json({ error: 'Server error updating bank item', details: error.message });
   }
 });
 
-router.delete('/question-bank/:id', verifyToken, async (req, res) => {
+router.delete('/classwork/:id', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
@@ -2298,10 +2366,10 @@ router.delete('/question-bank/:id', verifyToken, async (req, res) => {
       `UPDATE question_bank SET status = 'archived' WHERE id = ? AND teacher_id = ? AND status = 'active'`,
       [id, teacherId]
     );
-    if (!result.affectedRows) return res.status(404).json({ error: 'Bank item not found' });
-    res.json({ message: 'Removed from quiz bank' });
+    if (!result.affectedRows) return res.status(404).json({ error: 'Classwork item not found' });
+    res.json({ message: 'Removed from Classwork.' });
   } catch (error) {
-    console.error('Delete question bank item error:', error);
+    console.error('Delete classwork item error:', error);
     res.status(500).json({ error: 'Server error deleting bank item', details: error.message });
   }
 });
@@ -2450,15 +2518,19 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
 
     for (let i = 0; i < ordered.length; i++) {
       const it = ordered[i];
+      const itemType = canonicalItemType(it.item_type || 'mcq');
+      const rubricObj = isActivityType(itemType)
+        ? normalizeRubric(it.rubric, it.points)
+        : null;
       await db.query(
         `INSERT INTO assessment_questions
-          (assessment_id, question_bank_id, sort_order, item_type, question, choices, answer, points)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          (assessment_id, question_bank_id, sort_order, item_type, question, choices, answer, points, rubric)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           assessmentId,
           it.id,
           i,
-          it.item_type || 'mcq',
+          itemType,
           it.question,
           it.choices
             ? typeof it.choices === 'string'
@@ -2466,7 +2538,8 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
               : JSON.stringify(normalizeChoices(it.choices) || it.choices)
             : null,
           it.answer,
-          pointsByItemId.has(it.id) ? pointsByItemId.get(it.id) : (Number(it.points) || 1)
+          pointsByItemId.has(it.id) ? pointsByItemId.get(it.id) : (Number(it.points) || 1),
+          rubricObj ? JSON.stringify(rubricObj) : null
         ]
       );
     }
@@ -2476,7 +2549,9 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       teacherId,
       type === 'exam'
         ? 'Created period exam from Classwork'
-        : 'Created progress record from quiz bank',
+        : type === 'activity'
+          ? 'Created activity from Classwork'
+          : 'Created quiz from Classwork',
       'assessment',
       recordTitle,
       `Grade ${grade_level}-${String(section).trim()} · ${ordered.length} items`
@@ -2486,8 +2561,10 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       id: assessmentId,
       message:
         type === 'exam'
-          ? 'Exam created in Records. Print/PDF for paper, or enable Shared link for online.'
-          : 'Progress record created from Classwork. Enter scores when ready.',
+          ? 'Exam created. Find it in Records → Exam.'
+          : type === 'activity'
+            ? 'Activity created. Find it in Records → Activity.'
+            : 'Quiz created. Find it in Records → Quiz.',
       question_count: ordered.length,
       max_score: maxScore
     });
@@ -2534,6 +2611,9 @@ async function ensureAssessmentSchema() {
     await db.query(`ALTER TABLE assessments ADD COLUMN quiz_link VARCHAR(500) NULL`);
   } catch (e) { /* column may already exist */ }
   try {
+    await db.query(`ALTER TABLE assessment_scores ADD COLUMN rubric_scores JSON NULL`);
+  } catch (e) { /* column may already exist */ }
+  try {
     const { ensureQuizShareSchema } = require('../utils/quizShare');
     await ensureQuizShareSchema();
   } catch (e) {
@@ -2544,6 +2624,26 @@ async function ensureAssessmentSchema() {
   } catch (e) {
     console.warn('[quiz-attendance] schema ensure:', e.message);
   }
+}
+
+function parseRubricScoresColumn(raw) {
+  if (raw == null || raw === '') return null;
+  let v = raw;
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) {
+    v = v.toString('utf8');
+  }
+  for (let i = 0; i < 4; i++) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+    if (typeof v !== 'string') break;
+    const t = v.trim();
+    if (!t || t === '[object Object]') return null;
+    try {
+      v = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
 }
 
 ensureAssessmentSchema();
@@ -2573,7 +2673,7 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     const questions = await getAssessmentQuestions(assessment.id);
     if (!questions.length) {
       return res.status(400).json({
-        error: 'Add questions first (create from Classwork) before assigning a shared link.'
+        error: 'Add Classwork items first before assigning a shared link.'
       });
     }
 
@@ -2697,7 +2797,7 @@ router.post('/assessments/:id/revoke-link', verifyToken, async (req, res) => {
       null
     );
 
-    res.json({ message: 'Shared link turned off.', share_enabled: false });
+    res.json({ message: 'Shared link disabled.', share_enabled: false });
   } catch (error) {
     console.error('Revoke quiz link error:', error);
     res.status(500).json({ error: 'Server error revoking link', details: error.message });
@@ -3066,6 +3166,7 @@ router.put('/assessments/:id', verifyToken, async (req, res) => {
 
 router.get('/assessments/:id', verifyToken, async (req, res) => {
   try {
+    await ensureAssessmentSchema();
     const { id } = req.params;
     let assessment;
     try {
@@ -3134,7 +3235,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
     assessment.quiz_makeup_student_ids = parseMakeupIds(assessment.quiz_makeup_student_ids);
 
     const [studentRows] = await db.query(
-      `SELECT s.id, s.lrn, s.first_name, s.last_name, s.gender, sc.score
+      `SELECT s.id, s.lrn, s.first_name, s.last_name, s.gender, sc.score, sc.rubric_scores
        FROM students s
        LEFT JOIN assessment_scores sc ON sc.student_id = s.id AND sc.assessment_id = ?
        WHERE s.grade_level = ? AND s.section = ? AND s.STATUS = 'active'
@@ -3142,7 +3243,10 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       [id, assessment.grade_level, assessment.section]
     );
 
-    let students = studentRows;
+    let students = studentRows.map((s) => ({
+      ...s,
+      rubric_scores: parseRubricScoresColumn(s.rubric_scores)
+    }));
     try {
       const shareOn = Number(assessment.share_enabled) === 1;
       if (shareOn) {
@@ -3151,7 +3255,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
         const byId = new Map(roster.map((r) => [Number(r.id), r]));
         const submittedSet = await getSubmittedStudentIds(assessment.id);
         const makeupSet = new Set(assessment.quiz_makeup_student_ids.map(Number));
-        students = studentRows.map((s) => {
+        students = students.map((s) => {
           const row = byId.get(Number(s.id));
           return {
             ...s,
@@ -3169,19 +3273,36 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
     try {
       await ensureQuestionBankSchema();
       const [qrows] = await db.query(
-        `SELECT id, question_bank_id, sort_order, item_type, question, choices, answer, points
+        `SELECT id, question_bank_id, sort_order, item_type, question, choices, answer, points, rubric
          FROM assessment_questions
          WHERE assessment_id = ?
          ORDER BY sort_order ASC, id ASC`,
         [id]
       );
       questions = qrows.map((r) => ({
-        ...r,
-        choices: formatBankRow(r).choices,
+        ...formatBankRow(r),
         points: Number(r.points) || 1
       }));
     } catch (qErr) {
       questions = [];
+    }
+
+    try {
+      const { ensureQuizShareSchema, activityWorkFromSubmission } = require('../utils/quizShare');
+      await ensureQuizShareSchema();
+      const [subs] = await db.query(
+        `SELECT student_id, answers FROM quiz_submissions WHERE assessment_id = ?`,
+        [id]
+      );
+      const workByStudent = new Map(
+        subs.map((row) => [Number(row.student_id), activityWorkFromSubmission(row.answers, questions)])
+      );
+      students = students.map((s) => ({
+        ...s,
+        activity_work: workByStudent.get(Number(s.id)) || []
+      }));
+    } catch (workErr) {
+      console.warn('[assessment] activity work:', workErr.message);
     }
 
     res.json({ assessment, students, questions, attendance_meta, makeup_candidates });
@@ -3193,6 +3314,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
 
 router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
   try {
+    await ensureAssessmentSchema();
     const { id } = req.params;
     const { scores } = req.body;
     if (!Array.isArray(scores)) {
@@ -3209,25 +3331,48 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
 
     for (const row of scores) {
       if (!row.student_id) continue;
-      if (row.score === '' || row.score === null || row.score === undefined) continue;
-      const score = Number(row.score);
-      if (Number.isNaN(score) || score < 0 || score > maxScore) {
+      const hasScore = !(row.score === '' || row.score === null || row.score === undefined);
+      const rubricObj =
+        row.rubric_scores && typeof row.rubric_scores === 'object' && !Array.isArray(row.rubric_scores)
+          ? row.rubric_scores
+          : null;
+      const hasRubric = rubricObj && Object.keys(rubricObj).length > 0;
+
+      if (!hasScore && !hasRubric) continue;
+
+      let score = hasScore ? Number(row.score) : null;
+      if (hasScore && (Number.isNaN(score) || score < 0 || score > maxScore)) {
         return res.status(400).json({ error: `Score must be between 0 and ${maxScore}` });
       }
+      if (!hasScore && hasRubric) {
+        score = Object.values(rubricObj).reduce((sum, v) => sum + (Number(v) || 0), 0);
+        if (score > maxScore) {
+          return res.status(400).json({ error: `Rubric total exceeds max score (${maxScore})` });
+        }
+      }
+
+      const rubricJson = hasRubric ? JSON.stringify(rubricObj) : null;
 
       const [existing] = await db.query(
         'SELECT id FROM assessment_scores WHERE assessment_id = ? AND student_id = ?',
         [id, row.student_id]
       );
       if (existing.length) {
-        await db.query(
-          'UPDATE assessment_scores SET score = ? WHERE id = ?',
-          [score, existing[0].id]
-        );
+        if (hasRubric) {
+          await db.query(
+            'UPDATE assessment_scores SET score = ?, rubric_scores = ? WHERE id = ?',
+            [score, rubricJson, existing[0].id]
+          );
+        } else {
+          await db.query(
+            'UPDATE assessment_scores SET score = ? WHERE id = ?',
+            [score, existing[0].id]
+          );
+        }
       } else {
         await db.query(
-          'INSERT INTO assessment_scores (assessment_id, student_id, score) VALUES (?, ?, ?)',
-          [id, row.student_id, score]
+          'INSERT INTO assessment_scores (assessment_id, student_id, score, rubric_scores) VALUES (?, ?, ?, ?)',
+          [id, row.student_id, score, rubricJson]
         );
       }
     }
@@ -3367,5 +3512,26 @@ router.patch('/concerns/:id/resolve', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Server error resolving concern', details: error.message });
   }
 });
+
+/* Legacy /question-bank path aliases (same handlers as /classwork) */
+function mountClassworkLegacyAliases(routerRef) {
+  const pairs = [];
+  for (const layer of routerRef.stack || []) {
+    if (!layer.route) continue;
+    const path = layer.route.path;
+    if (typeof path === 'string' && path.startsWith('/classwork')) {
+      pairs.push(layer.route);
+    }
+  }
+  for (const route of pairs) {
+    const legacyPath = route.path.replace(/^\/classwork/, '/question-bank');
+    if (legacyPath === route.path) continue;
+    for (const method of Object.keys(route.methods)) {
+      const handlers = route.stack.map((l) => l.handle);
+      routerRef[method](legacyPath, ...handlers);
+    }
+  }
+}
+mountClassworkLegacyAliases(router);
 
 module.exports = router;

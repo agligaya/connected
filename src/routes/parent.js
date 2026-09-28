@@ -8,6 +8,7 @@ router.get('/children', verifyToken, requireRole('parent'), parentController.get
 router.get('/child/:id/attendance', verifyToken, requireRole('parent'), parentController.getChildAttendance);
 router.get('/child/:id/stats', verifyToken, requireRole('parent'), parentController.getChildStats);
 router.get('/child/:id/progress', verifyToken, requireRole('parent'), parentController.getChildProgress);
+router.get('/child/:id/insights', verifyToken, requireRole('parent'), parentController.getChildInsights);
 router.get('/inbox', verifyToken, requireRole('parent'), parentController.getParentInbox);
 router.post('/messages/:id/read', verifyToken, requireRole('parent'), parentController.markMessageRead);
 router.delete('/messages/:id/read', verifyToken, requireRole('parent'), parentController.markMessageRead);

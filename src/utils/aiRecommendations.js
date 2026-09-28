@@ -235,11 +235,44 @@ function mockGenerate({ title, gradeLevel, subjectName, sourceText, quizItemCoun
       max_score: grade <= 2 ? 10 : 20,
       description:
         `Students work in pairs on a short Grade ${grade} task about "${topic}" (${subject}). ` +
-        `They write or draw examples, share with a partner, then present one idea. ` +
-        `Teacher scores with a simple checklist (participation, correctness, effort).`,
+        `They write or draw examples, share with a partner, then present one idea.`,
       notes: sourceText
         ? 'Generated from lesson title/objectives (and file text if available).'
-        : 'Generated from lesson title/objectives only.'
+        : 'Generated from lesson title/objectives only.',
+      rubric: {
+        categories: [
+          {
+            name: 'Participation',
+            max_points: grade <= 2 ? 4 : 7,
+            levels: [
+              { label: 'Excellent', points: grade <= 2 ? 4 : 7, description: 'Fully engaged; helps partner; stays on task.' },
+              { label: 'Good', points: grade <= 2 ? 3 : 5, description: 'Mostly engaged with little prompting.' },
+              { label: 'Fair', points: grade <= 2 ? 2 : 3, description: 'Needs reminders to stay on task.' },
+              { label: 'Needs Improvement', points: 1, description: 'Rarely participates or off-task.' }
+            ]
+          },
+          {
+            name: 'Correctness',
+            max_points: grade <= 2 ? 3 : 7,
+            levels: [
+              { label: 'Excellent', points: grade <= 2 ? 3 : 7, description: 'Ideas clearly match the lesson.' },
+              { label: 'Good', points: grade <= 2 ? 2 : 5, description: 'Mostly accurate with small gaps.' },
+              { label: 'Fair', points: grade <= 2 ? 2 : 3, description: 'Partial understanding shown.' },
+              { label: 'Needs Improvement', points: 1, description: 'Little connection to the lesson.' }
+            ]
+          },
+          {
+            name: 'Effort',
+            max_points: grade <= 2 ? 3 : 6,
+            levels: [
+              { label: 'Excellent', points: grade <= 2 ? 3 : 6, description: 'Complete, neat, thoughtful work.' },
+              { label: 'Good', points: grade <= 2 ? 2 : 4, description: 'Complete with adequate care.' },
+              { label: 'Fair', points: grade <= 2 ? 2 : 3, description: 'Incomplete or rushed.' },
+              { label: 'Needs Improvement', points: 1, description: 'Minimal effort.' }
+            ]
+          }
+        ]
+      }
     },
     exam: null
   };
@@ -310,9 +343,23 @@ Return ONLY valid JSON with keys: quiz, activity.
   }
 - activity: {
     title,
-    max_score (number),
+    max_score (number — sum of rubric category max_points should match),
     description (classroom-friendly steps a teacher can run),
-    notes (how to score simply, e.g. checklist)
+    notes (short tip),
+    rubric: {
+      categories: [
+        {
+          name (e.g. Participation, Correctness, Effort),
+          max_points (number),
+          levels: [
+            { label: "Excellent", points, description },
+            { label: "Good", points, description },
+            { label: "Fair", points, description },
+            { label: "Needs Improvement", points, description }
+          ]
+        }
+      ]
+    }
   }
 
 Rules by grade level:
@@ -376,6 +423,104 @@ ${sourceText || '(title/objectives only)'}`;
   }
 
   return normalizeGeneratedContent(parsed, { title, gradeLevel, subjectName, sourceText, quizItemCount: mix.total });
+}
+
+/**
+ * Generate an activity rubric from description + total points.
+ * Mock when AI dry-run / unconfigured; otherwise OpenAI-compatible JSON.
+ */
+async function generateActivityRubric({
+  description,
+  totalPoints = 20,
+  gradeLevel = 1,
+  subjectName = null
+}) {
+  const { normalizeRubric, redistributeRubricToTotal, emptyRubricTemplate } = require('./questionBank');
+  const desc = String(description || '').trim();
+  const total = Math.max(3, Math.round(Number(totalPoints) || 20));
+  const grade = Number(gradeLevel) || 1;
+
+  if (!desc) {
+    throw new Error('Enter an activity description before generating a rubric.');
+  }
+
+  const applyTotal = (rubric) => {
+    const normalized = normalizeRubric(rubric, total) || emptyRubricTemplate(total);
+    return redistributeRubricToTotal(normalized, total) || emptyRubricTemplate(total);
+  };
+
+  if (isAiDryRun() || !isAiConfigured()) {
+    const tip = desc.slice(0, 120);
+    const base = emptyRubricTemplate(total);
+    base.categories[0].levels[0].description = `Fully engaged in: ${tip}${desc.length > 120 ? '…' : ''}`;
+    base.categories[1].levels[0].description = 'Work clearly matches the activity goals.';
+    base.categories[2].levels[0].description = 'Complete, careful effort throughout.';
+    base.categories.forEach((c) => {
+      c.levels[1].description = c.levels[1].description || 'Mostly meets expectations with small gaps.';
+      c.levels[2].description = c.levels[2].description || 'Partial; needs support or reminders.';
+      c.levels[3].description = c.levels[3].description || 'Minimal evidence for this category.';
+    });
+    return { provider: 'mock', rubric: applyTotal(base) };
+  }
+
+  const apiKey = getOpenAiApiKey();
+  if (!apiKey) throw new Error('AI is not configured');
+
+  const system = `You write short grading rubrics for Philippine Montessori elementary (Grades 1–6).
+Return ONLY valid JSON:
+{ "categories": [ { "name", "max_points", "levels": [
+  { "label": "Excellent", "points", "description" },
+  { "label": "Good", "points", "description" },
+  { "label": "Fair", "points", "description" },
+  { "label": "Needs Improvement", "points", "description" }
+] } ] }
+Use 3 categories. Sum of max_points MUST equal ${total}.
+Descriptions must be short, grade ${grade} appropriate, and based on the activity.`;
+
+  const user = `Total points: ${total}
+Grade: ${grade}
+Subject: ${subjectName || 'General'}
+Activity description:
+${desc.slice(0, 2500)}`;
+
+  const baseUrl = getOpenAiBaseUrl();
+  const local = isLocalAiEndpoint();
+  const body = {
+    model: getOpenAiModel(),
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ],
+    temperature: 0.4
+  };
+  if (!local) body.response_format = { type: 'json_object' };
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error?.message || `AI HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  let text = data?.choices?.[0]?.message?.content || '{}';
+  const fence = String(text).match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('AI returned invalid JSON');
+  }
+  return {
+    provider: getAiProviderMode(),
+    rubric: applyTotal(parsed)
+  };
 }
 
 /**
@@ -445,6 +590,7 @@ module.exports = {
   getOpenAiBaseUrl,
   getOpenAiModel,
   generateRecommendationsForLesson,
+  generateActivityRubric,
   safeParseJsonContent,
   pickDraftPart,
   extractTextFromFile,

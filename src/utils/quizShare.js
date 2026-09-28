@@ -70,12 +70,91 @@ async function getAssessmentQuestions(assessmentId) {
   }));
 }
 
+function isActivityItemType(type) {
+  const t = String(type || '').toLowerCase();
+  return t === 'activity' || t === 'activity_prompt';
+}
+
+function extractAnswerText(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'object') return String(raw.text ?? raw.answer ?? '').trim();
+  return String(raw).trim();
+}
+
+function parseJsonMaybe(raw) {
+  if (raw == null || raw === '') return null;
+  let v = raw;
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) v = v.toString('utf8');
+  for (let i = 0; i < 4; i++) {
+    if (v && typeof v === 'object') return v;
+    if (typeof v !== 'string') break;
+    const t = v.trim();
+    if (!t) return null;
+    try {
+      v = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  return v && typeof v === 'object' ? v : null;
+}
+
+function answersBagFromPayload(payload) {
+  const parsed = parseJsonMaybe(payload) || payload;
+  if (!parsed || typeof parsed !== 'object') return {};
+  if (Array.isArray(parsed)) {
+    const map = {};
+    parsed.forEach((a) => {
+      if (a == null || a.question_id == null) return;
+      map[String(a.question_id)] = a.answer;
+    });
+    return map;
+  }
+  if (parsed.answers && typeof parsed.answers === 'object') {
+    if (Array.isArray(parsed.answers)) {
+      const map = {};
+      parsed.answers.forEach((a) => {
+        if (a == null || a.question_id == null) return;
+        map[String(a.question_id)] = a.answer;
+      });
+      return map;
+    }
+    return parsed.answers;
+  }
+  return parsed;
+}
+
+function activityWorkFromSubmission(answersPayload, questions) {
+  const bag = answersBagFromPayload(answersPayload);
+  return (questions || [])
+    .filter((q) => isActivityItemType(q.item_type))
+    .map((q) => {
+      const raw = bag[String(q.id)] ?? bag[q.id];
+      const text = extractAnswerText(raw);
+      const file = raw && typeof raw === 'object' && raw.file && raw.file.url
+        ? {
+            url: String(raw.file.url),
+            name: String(raw.file.name || 'Attachment'),
+            mime: String(raw.file.mime || '')
+          }
+        : null;
+      return {
+        question_id: q.id,
+        question: q.question || '',
+        text,
+        file
+      };
+    })
+    .filter((w) => w.text || w.file);
+}
+
 function scoreSubmission(questions, answersInput) {
-  const byId = new Map(questions.map((q) => [Number(q.id), q]));
   const answerMap = new Map();
-  (Array.isArray(answersInput) ? answersInput : []).forEach((a) => {
-    if (a == null || a.question_id == null) return;
-    answerMap.set(Number(a.question_id), a.answer != null ? String(a.answer).trim() : '');
+  const bag = answersBagFromPayload(answersInput);
+  Object.entries(bag).forEach(([qid, val]) => {
+    const n = Number(qid);
+    if (!Number.isFinite(n)) return;
+    answerMap.set(n, extractAnswerText(val));
   });
 
   let earned = 0;
@@ -87,20 +166,17 @@ function scoreSubmission(questions, answersInput) {
     maxScore += pts;
     const given = answerMap.has(Number(q.id)) ? answerMap.get(Number(q.id)) : '';
     let correct = false;
-    if (q.item_type === 'mcq' || (Array.isArray(q.choices) && q.choices.length)) {
-      const expected = String(q.answer || '').trim();
-      correct = expected !== '' && given.toLowerCase() === expected.toLowerCase();
+    const isMcq = q.item_type === 'mcq' || (Array.isArray(q.choices) && q.choices.length);
+    if (isMcq) {
+      correct = mcqAnswersMatch(given, q.answer, q.choices);
       if (correct) earned += pts;
-    } else if (q.item_type === 'activity_prompt') {
-      // Activity prompts are not auto-scored; count toward max only if teacher uses total
-      // Leave earned at 0 for auto — teacher can override in Progress
-    } else {
-      // short_answer: no auto-score
+    } else if (isActivityItemType(q.item_type)) {
+      // not auto-scored
     }
     detail.push({
       question_id: q.id,
       given,
-      correct: q.item_type === 'mcq' || (Array.isArray(q.choices) && q.choices.length) ? correct : null,
+      correct: isMcq ? correct : null,
       points: pts
     });
   }
@@ -108,10 +184,68 @@ function scoreSubmission(questions, answersInput) {
   return { earned, maxScore, detail };
 }
 
+function mcqLetterAt(index) {
+  let n = Number(index);
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  let s = '';
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
+function mcqIndexFromToken(token) {
+  const t = String(token || '').trim();
+  if (!t) return -1;
+  if (/^\d+$/.test(t)) {
+    const n = Number(t);
+    if (n >= 1) return n - 1;
+    if (n === 0) return 0;
+    return -1;
+  }
+  if (!/^[A-Za-z]+$/.test(t)) return -1;
+  const u = t.toUpperCase();
+  let n = 0;
+  for (let i = 0; i < u.length; i++) n = n * 26 + (u.charCodeAt(i) - 64);
+  return n - 1;
+}
+
+function stripMcqChoicePrefix(text) {
+  return String(text || '').replace(/^\s*(?:[A-Za-z]+|\d+)\s*[.)]\s+/, '').trimEnd();
+}
+
+function mcqCanonicalKey(answer, choices) {
+  const raw = String(answer || '').trim();
+  if (!raw) return '';
+  const list = Array.isArray(choices) ? choices : [];
+  const idxFromToken = mcqIndexFromToken(raw);
+  if (idxFromToken >= 0 && (list.length === 0 || idxFromToken < list.length || idxFromToken < 26)) {
+    return mcqLetterAt(idxFromToken);
+  }
+  const idxFromText = list.findIndex((c) => {
+    const plain = stripMcqChoicePrefix(c).trim().toLowerCase();
+    const full = String(c).trim().toLowerCase();
+    const want = raw.toLowerCase();
+    return plain === want || full === want;
+  });
+  if (idxFromText >= 0) return mcqLetterAt(idxFromText);
+  return raw.toUpperCase();
+}
+
+function mcqAnswersMatch(given, expected, choices) {
+  const a = mcqCanonicalKey(given, choices);
+  const b = mcqCanonicalKey(expected, choices);
+  return a !== '' && a === b;
+}
+
 module.exports = {
   ensureQuizShareSchema,
   generateShareToken,
   publicQuestion,
   getAssessmentQuestions,
-  scoreSubmission
+  scoreSubmission,
+  isActivityItemType,
+  activityWorkFromSubmission,
+  answersBagFromPayload
 };

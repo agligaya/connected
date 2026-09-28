@@ -18,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260918e8" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260920c20" />
   <style>
     body { margin: 0; background: #f4ebe4; }
     .quiz-page { max-width: 720px; margin: 0 auto; padding: 16px 12px 40px; box-sizing: border-box; }
@@ -71,7 +71,7 @@
     </div>
 
     <div id="quiz-form-wrap" class="quiz-card" hidden>
-      <h1 class="page-heading font-heading" id="quiz-title" style="font-size:1.35rem;"></h1>
+      <h1 class="page-heading font-heading" id="quiz-title"></h1>
       <p class="quiz-meta" id="quiz-meta"></p>
 
       <div id="quiz-lrn-step">
@@ -150,10 +150,17 @@
               const id = 'q' + q.id + '_' + j;
               return '<label for="' + id + '"><input type="radio" name="q_' + q.id + '" id="' + id + '" value="' + esc(c) + '" /> ' + esc(c) + '</label>';
             }).join('') + '</div>';
+          } else if (q.item_type === 'activity' || q.item_type === 'activity_prompt') {
+            body = '<textarea class="quiz-sa" data-qid="' + q.id + '" placeholder="Write your answer"></textarea>' +
+              '<p class="quiz-meta" style="margin:8px 0 4px;">Optional: one file (PDF, Word, or image, max 10 MB)</p>' +
+              '<input type="file" class="quiz-file" data-qid="' + q.id + '" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" />';
           } else {
             body = '<textarea class="quiz-sa" data-qid="' + q.id + '" placeholder="Your answer"></textarea>';
           }
-          return '<div class="quiz-q" data-qid="' + q.id + '" data-mcq="' + (isMcq ? '1' : '0') + '">' +
+          const kind = (q.item_type === 'activity' || q.item_type === 'activity_prompt')
+            ? 'activity'
+            : (isMcq ? 'mcq' : 'text');
+          return '<div class="quiz-q" data-qid="' + q.id + '" data-kind="' + kind + '">' +
             '<p><strong>' + (i + 1) + '.</strong> ' + esc(q.question) +
             ' <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>' + body + '</div>';
         }).join('');
@@ -189,7 +196,7 @@
           document.getElementById('quiz-meta').textContent =
             'Grade ' + data.grade_level + '-' + data.section +
             (data.subject_name ? ' · ' + data.subject_name : '') +
-            ' · Total score ' + data.max_score;
+            ' · Total Score: ' + data.max_score;
           if (lrnInput) lrnInput.value = '';
           resetIdentity();
         } catch (e) {
@@ -304,38 +311,70 @@
           return;
         }
 
-        const answers = [];
+        const answers = {};
+        const fd = new FormData();
+        let hasFile = false;
+        let missingActivity = false;
         qBox.querySelectorAll('.quiz-q').forEach(function (block) {
           const qid = block.getAttribute('data-qid');
-          const isMcq = block.getAttribute('data-mcq') === '1';
-          let answer = '';
-          if (isMcq) {
+          const kind = block.getAttribute('data-kind');
+          if (kind === 'mcq') {
             const checked = block.querySelector('input[type="radio"]:checked');
-            answer = checked ? checked.value : '';
-          } else {
-            const ta = block.querySelector('textarea');
-            answer = ta ? ta.value.trim() : '';
+            answers[qid] = checked ? checked.value : '';
+            return;
           }
-          answers.push({ question_id: Number(qid), answer: answer });
+          const ta = block.querySelector('textarea');
+          const text = ta ? ta.value.trim() : '';
+          if (kind === 'activity') {
+            if (!text) missingActivity = true;
+            answers[qid] = { text: text };
+            const fileInput = block.querySelector('input.quiz-file');
+            if (fileInput && fileInput.files && fileInput.files[0]) {
+              fd.append('file_' + qid, fileInput.files[0]);
+              hasFile = true;
+            }
+            return;
+          }
+          answers[qid] = text;
         });
+        if (missingActivity) {
+          errEl.textContent = 'Write your answer for every activity item before submitting.';
+          errEl.hidden = false;
+          return;
+        }
 
         try {
-          const res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              student_id: Number(identified.student_id),
-              lrn: confirmedLrn,
-              answers: answers
-            })
-          });
+          let res;
+          if (hasFile) {
+            fd.append('student_id', String(identified.student_id));
+            fd.append('lrn', confirmedLrn);
+            fd.append('answers', JSON.stringify(answers));
+            res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
+              method: 'POST',
+              body: fd
+            });
+          } else {
+            res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                student_id: Number(identified.student_id),
+                lrn: confirmedLrn,
+                answers: answers
+              })
+            });
+          }
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Submit failed');
           formWrap.hidden = true;
           doneWrap.hidden = false;
-          document.getElementById('quiz-done-msg').textContent =
-            (data.student_name || 'Student') + ' — score ' + data.score + ' / ' + data.max_score +
-            '. ' + (data.message || '');
+          var doneMsg = data.student_name || 'Student';
+          if (data.pending_teacher_score || data.score == null) {
+            doneMsg += '. ' + (data.message || 'Submitted. Your teacher will score this in Records.');
+          } else {
+            doneMsg += ' — score ' + data.score + ' / ' + data.max_score + '. ' + (data.message || '');
+          }
+          document.getElementById('quiz-done-msg').textContent = doneMsg;
         } catch (e) {
           errEl.textContent = e.message || 'Submit failed.';
           errEl.hidden = false;

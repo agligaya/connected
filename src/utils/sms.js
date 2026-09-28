@@ -68,6 +68,7 @@ function isValidPhMobile(raw) {
 function getSmsProvider() {
   const p = String(process.env.SMS_PROVIDER || 'itexmo').trim().toLowerCase();
   if (p === 'semaphore') return 'semaphore';
+  if (p === 'philsms') return 'philsms';
   return 'itexmo';
 }
 
@@ -80,6 +81,13 @@ function isSmsConfigured() {
     return !!(email && password);
   }
   return true;
+}
+
+/** PhilSMS wants 63XXXXXXXXXX (no leading 0). Queue stores 09XXXXXXXXX. */
+function toPhilsmsRecipient(phone) {
+  const local = normalizePhMobile(phone);
+  if (!local) return null;
+  return `63${local.slice(1)}`;
 }
 
 function isSmsDryRun() {
@@ -117,6 +125,7 @@ async function enqueueSms({
      WHERE phone = ? AND student_id <=> ? AND body = ?
        AND status IN ('pending','sent')
        AND DATE(created_at) = CURDATE()
+       AND (last_error IS NULL OR last_error NOT LIKE 'DRY_RUN:%')
      LIMIT 1`,
     [normalized, studentId, text]
   );
@@ -176,6 +185,65 @@ async function sendViaSemaphore(phone, message) {
   }
 
   return data;
+}
+
+/**
+ * PhilSMS API v3 (POST {base}/sms/send)
+ * Account docs: https://dashboard.philsms.com/api/v3/
+ * Authorization: Bearer {api_token}
+ * Body JSON: recipient (63…), sender_id, type, message
+ */
+async function sendViaPhilsms(phone, message) {
+  const token = String(process.env.SMS_API_KEY || '').trim();
+  if (!token) {
+    const err = new Error('SMS_API_KEY (PhilSMS token) is not configured');
+    err.code = 'NO_API_KEY';
+    throw err;
+  }
+
+  const recipient = toPhilsmsRecipient(phone);
+  if (!recipient) {
+    throw new Error('Invalid Philippine mobile number for PhilSMS');
+  }
+
+  const senderId = String(process.env.SMS_SENDER || 'ConnectED').trim().slice(0, 11) || 'ConnectED';
+  const base = String(process.env.SMS_PHILSMS_BASE || 'https://dashboard.philsms.com/api/v3')
+    .trim()
+    .replace(/\/$/, '');
+  const res = await fetch(`${base}/sms/send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({
+      recipient,
+      sender_id: senderId,
+      type: 'plain',
+      message
+    })
+  });
+
+  const raw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = { raw };
+  }
+
+  if (!res.ok || String(data?.status || '').toLowerCase() === 'error') {
+    const msg =
+      data?.message ||
+      data?.error ||
+      (typeof data?.raw === 'string' ? data.raw : null) ||
+      raw ||
+      `HTTP ${res.status}`;
+    throw new Error(String(msg).slice(0, 400));
+  }
+
+  return { provider: 'philsms', version: 'v3', data };
 }
 
 /**
@@ -256,6 +324,9 @@ async function sendSms(phone, message) {
   const provider = getSmsProvider();
   if (provider === 'semaphore') {
     return sendViaSemaphore(phone, message);
+  }
+  if (provider === 'philsms') {
+    return sendViaPhilsms(phone, message);
   }
   return sendViaItexmo(phone, message);
 }

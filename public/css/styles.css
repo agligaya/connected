@@ -1019,10 +1019,27 @@ body[data-view="admin"] .page-shell {
   margin: 0;
 }
 
+.records-header .page-heading,
+.lesson-plan-card .page-heading {
+  font-size: 1.1rem;
+}
+
 .page-subheading {
   font-size: 0.86rem;
   color: var(--orange-dark);
   margin: 4px 0 0;
+}
+
+.page-heading + .page-subheading,
+.font-heading + .page-subheading,
+.admin-section-title + .page-subheading,
+.admin-panel-title + .admin-panel-sub,
+.admin-panel-title + .page-subheading {
+  margin-top: 4px;
+}
+
+.modal-card > .font-heading + .page-subheading {
+  margin: 4px 0 12px;
 }
 
 /* Consistent space under page headers → first content (all teacher panels) */
@@ -1362,7 +1379,9 @@ select,
 input[type="number"],
 input[type="text"],
 input[type="email"],
-input[type="date"] {
+input[type="url"],
+input[type="date"],
+input[type="datetime-local"] {
   border-radius: 10px;
   border: 1px solid var(--border-maroon);
   padding: 8px 11px;
@@ -1573,7 +1592,18 @@ select:disabled {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 8px 16px 4px;
+  padding: 0;
+  margin-right: auto;
+}
+
+.qb-bulk-bar[hidden] {
+  display: none !important;
+}
+
+.qb-set-toolbar {
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
 }
 
 .progress-detail-section {
@@ -1600,10 +1630,24 @@ select:disabled {
   min-width: 200px;
 }
 
-.progress-share-url-input {
+.progress-share-url-input,
+.progress-share-field-input {
+  display: block;
   width: 100%;
+  max-width: 100%;
   box-sizing: border-box;
+  margin-bottom: 0;
+}
+
+.progress-share-field {
+  width: 100%;
+  max-width: 100%;
   margin-bottom: 10px;
+}
+
+.progress-share-field > .progress-share-url-input,
+.progress-share-field > .progress-share-field-input {
+  margin-bottom: 0;
 }
 
 .progress-share-actions {
@@ -1618,19 +1662,24 @@ select:disabled {
 }
 
 .progress-share-windows .form-row {
+  display: block;
+  width: 100%;
   margin-bottom: 4px;
-  gap: 10px;
 }
 
-.progress-share-windows .field-small {
-  flex: 1 1 160px;
+.progress-share-windows .field-small,
+.progress-share-windows .progress-share-field {
+  flex: none;
+  width: 100%;
   min-width: 0;
 }
 
 .progress-share-windows input[type="datetime-local"],
 .progress-share-windows input[type="number"],
-.progress-share-windows select {
+.progress-share-windows select,
+.progress-share-windows .progress-share-field-input {
   width: 100%;
+  max-width: 100%;
   box-sizing: border-box;
 }
 
@@ -2043,53 +2092,92 @@ html.layout-mobile .admin-student-filter-select {
   table-layout: fixed;
 }
 
+#progress-scores-table.progress-scores-table--rubric {
+  table-layout: auto;
+}
+
 #progress-scores-table th,
 #progress-scores-table td {
   vertical-align: middle;
 }
 
+#progress-scores-table .progress-rubric-cat-th {
+  font-size: 0.78rem;
+  line-height: 1.2;
+  white-space: normal;
+  min-width: 72px;
+}
+
+#progress-scores-table .progress-rubric-cat-input {
+  width: 64px;
+  max-width: 100%;
+  padding: 4px 6px;
+  font: inherit;
+  border: 1px solid var(--border-maroon, #c4a484);
+  border-radius: 8px;
+}
+
+#progress-scores-table .progress-rubric-cat-input.progress-rubric-over,
+#progress-scores-table td.progress-rubric-over-cell {
+  color: #b71c1c;
+}
+
+#progress-scores-table .progress-rubric-cat-input.progress-rubric-over {
+  border-color: #b71c1c;
+  background: #fdecea;
+}
+
+#progress-scores-table td.progress-rubric-over-cell {
+  font-weight: 600;
+}
+
+#progress-scores-table .progress-score-input[readonly] {
+  background: #f7f2ec;
+  color: var(--text-dark, #3d0a0a);
+}
+
 /* View scores: name gets most of the row */
-#progress-scores-table:not(.progress-scores-table--edit) th:nth-child(1),
-#progress-scores-table:not(.progress-scores-table--edit) td:nth-child(1) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(1),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(1) {
   width: 70%;
 }
 
-#progress-scores-table:not(.progress-scores-table--edit) th:nth-child(2),
-#progress-scores-table:not(.progress-scores-table--edit) td:nth-child(2) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(2),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(2) {
   width: 15%;
 }
 
-#progress-scores-table:not(.progress-scores-table--edit) th:nth-child(3),
-#progress-scores-table:not(.progress-scores-table--edit) td:nth-child(3) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(3),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(3) {
   width: 15%;
   text-align: center;
 }
 
 /* Edit scores: widen Student, tighten Access gaps */
-#progress-scores-table.progress-scores-table--edit th:nth-child(1),
-#progress-scores-table.progress-scores-table--edit td:nth-child(1) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(1),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(1) {
   width: 40%;
 }
 
-#progress-scores-table.progress-scores-table--edit th:nth-child(2),
-#progress-scores-table.progress-scores-table--edit td:nth-child(2) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(2),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(2) {
   width: 12%;
 }
 
-#progress-scores-table.progress-scores-table--edit th:nth-child(3),
-#progress-scores-table.progress-scores-table--edit td:nth-child(3) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(3),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(3) {
   width: 8%;
   text-align: center;
 }
 
-#progress-scores-table.progress-scores-table--edit th:nth-child(4),
-#progress-scores-table.progress-scores-table--edit td:nth-child(4) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(4),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(4) {
   width: 14%;
   text-align: center;
 }
 
-#progress-scores-table.progress-scores-table--edit th:nth-child(5),
-#progress-scores-table.progress-scores-table--edit td:nth-child(5) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(5),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(5) {
   width: 26%;
   text-align: center;
 }
@@ -2128,6 +2216,24 @@ html.layout-mobile .admin-student-filter-select {
   font-size: 0.78rem;
   font-weight: 600;
   color: #1b5e20;
+}
+
+.progress-work-item {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.progress-work-item:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.progress-activity-work {
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  margin: 0 0 10px;
 }
 
 .ai-count-chips {
@@ -2292,6 +2398,50 @@ html.layout-mobile .admin-student-filter-select {
   font-size: 0.85rem;
 }
 
+.qb-rubric-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qb-rubric-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.qb-rubric-category {
+  padding: 10px 12px;
+  border: 1px solid var(--border-maroon);
+  border-radius: 10px;
+  background: var(--white);
+}
+
+.qb-rubric-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qb-rubric-preview {
+  margin-top: 6px;
+}
+
+.qb-rubric-preview-block {
+  margin-top: 6px;
+}
+
+.qb-rubric-sum-ok {
+  color: #1b5e20;
+}
+
+.qb-rubric-sum-warn {
+  color: #b71c1c;
+}
+
 .attendance-week-bar {
   display: flex;
   align-items: center;
@@ -2350,7 +2500,9 @@ html.layout-mobile .admin-student-filter-select {
 }
 
 #qb-list[hidden],
-#qb-set-detail[hidden] {
+#qb-set-detail[hidden],
+#lp-subjects-list[hidden],
+#lp-subject-detail[hidden] {
   display: none !important;
 }
 
@@ -2372,11 +2524,82 @@ html.layout-mobile .admin-student-filter-select {
   flex: 1 1 auto;
 }
 
+.qb-choices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.qb-choice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.qb-choice-letter {
+  flex: 0 0 1.4rem;
+  margin-top: 8px;
+  font-weight: 700;
+  color: var(--maroon-deep);
+}
+
+.qb-choice-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  max-height: 160px;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border: 1px solid var(--border-maroon, #c4a484);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.qb-choice-remove {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
 .qb-set-groups {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 0 16px 16px;
+}
+
+.lp-subject-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.lp-subject-body .admin-section-title {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.lp-drafts-heading {
+  margin-top: 12px;
+}
+
+.lp-drafts-heading .page-subheading {
+  margin-bottom: 0;
+}
+
+.lp-subject-body .empty-state {
+  min-height: 0;
+  padding: 12px 4px;
 }
 
 .qb-type-section {
@@ -3090,7 +3313,7 @@ tbody tr:nth-child(even) {
 .admin-panel-sub {
   font-size: 0.82rem;
   color: var(--text-muted);
-  margin: 6px 0 14px;
+  margin: 4px 0 14px;
 }
 
 .admin-log-table thead {
@@ -3157,14 +3380,23 @@ tbody tr:nth-child(even) {
   gap: 12px;
 }
 
+.admin-form .form-row[hidden],
+.admin-edit-form .form-row[hidden] {
+  display: none !important;
+}
+
 .admin-section-title {
   margin-top: 18px;
   margin-bottom: 12px;
   color: var(--maroon-deep);
 }
 
+.admin-section-title:has(+ .page-subheading) {
+  margin-bottom: 0;
+}
+
 .admin-section-title + .page-subheading {
-  margin-top: 0;
+  margin-top: 4px;
   margin-bottom: 12px;
 }
 
@@ -3490,6 +3722,7 @@ textarea {
   }
 
   .progress-share-url-input,
+  .progress-share-field-input,
   .progress-detail-row input,
   .progress-detail-row select,
   select,
@@ -3742,6 +3975,7 @@ html.layout-mobile .field-small textarea {
 html.layout-mobile .dash-search-input,
 html.layout-mobile .dash-search-wrap,
 html.layout-mobile .progress-share-url-input,
+html.layout-mobile .progress-share-field-input,
 html.layout-mobile .field-small,
 html.layout-mobile input,
 html.layout-mobile select,
@@ -4606,6 +4840,7 @@ html.layout-mobile .attendance-matrix-table col.att-col-name {
 .announcement-list > .lesson-plan-card,
 .inbox-list > .lesson-plan-card,
 #qb-list > .lesson-plan-card,
+#lp-subjects-list > .lesson-plan-card,
 #lesson-plans-list > .lesson-plan-card,
 #progress-list > .lesson-plan-card,
 #ai-recommendations-list > .lesson-plan-card {
@@ -4624,12 +4859,35 @@ html.layout-mobile .attendance-matrix-table col.att-col-name {
   color: var(--text-muted);
 }
 
+.progress-card-top .row-menu-wrap {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .lesson-plan-card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
   align-items: center;
+}
+
+.lesson-plan-card-actions .row-menu-wrap {
+  margin-left: auto;
+}
+
+.ai-rec-fold-summary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.row-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(128, 0, 0, 0.12);
 }
 
 .ai-rec-header {
