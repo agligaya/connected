@@ -1030,6 +1030,18 @@ body[data-view="admin"] .page-shell {
   margin: 4px 0 0;
 }
 
+.parent-insight-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.85rem;
+  color: var(--text-dark);
+  line-height: 1.6;
+}
+
+.parent-insight-list li + li {
+  margin-top: 4px;
+}
+
 .page-heading + .page-subheading,
 .font-heading + .page-subheading,
 .admin-section-title + .page-subheading,

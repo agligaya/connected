@@ -100,10 +100,10 @@ exports.getSections = async (req, res) => {
     }
 
     const [sections] = await db.query(query, params);
-    res.json(sections.map(s => s.section));
+    res.json(sections.map(s => s.section).filter(Boolean));
   } catch (error) {
     console.error('Get sections error:', error);
-    res.status(500).json({ error: 'Server error fetching sections' });
+    res.json([]);
   }
 };
 

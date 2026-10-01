@@ -11,6 +11,48 @@ const { logActivity } = require('../utils/activityLog');
 const { ensureAttendanceSchema, manilaISODate } = require('../utils/attendanceSchema');
 const { buildParentInsight } = require('../utils/parentInsights');
 
+async function loadChildAttendanceWindow(studentId, monthAgo) {
+  const [[totalDays]] = await db.query(
+    `SELECT COUNT(DISTINCT \`DATE\`) as count FROM attendance WHERE student_id = ? AND \`DATE\` >= ?`,
+    [studentId, monthAgo]
+  );
+  const [rows] = await db.query(
+    `SELECT session, \`STATUS\` as status, COUNT(*) as count
+     FROM attendance
+     WHERE student_id = ? AND \`DATE\` >= ?
+     GROUP BY session, \`STATUS\``,
+    [studentId, monthAgo]
+  );
+
+  const by = {
+    morning: { Present: 0, Absent: 0, Late: 0 },
+    afternoon: { Present: 0, Absent: 0, Late: 0 }
+  };
+  let present = 0;
+  let absent = 0;
+  let late = 0;
+  for (const r of rows) {
+    const period = String(r.session || 'AM').toUpperCase() === 'PM' ? 'afternoon' : 'morning';
+    const st = r.status;
+    const n = Number(r.count) || 0;
+    if (by[period] && (st === 'Present' || st === 'Absent' || st === 'Late')) {
+      by[period][st] += n;
+    }
+    if (st === 'Present') present += n;
+    else if (st === 'Absent') absent += n;
+    else if (st === 'Late') late += n;
+  }
+  const totalMarks = present + absent + late;
+  return {
+    totalDays: Number(totalDays.count) || 0,
+    present,
+    absent,
+    late,
+    attendanceRate: totalMarks > 0 ? Math.round((present / totalMarks) * 100) : 0,
+    bySession: by
+  };
+}
+
 // GET /api/parent/children
 exports.getChildren = async (req, res) => {
   try {
@@ -86,26 +128,7 @@ exports.getChildStats = async (req, res) => {
     await ensureAttendanceSchema();
     const today = manilaISODate();
     const monthAgo = manilaISODate(new Date(Date.now() - 30 * 86400000));
-
-    const [[totalDays]] = await db.query(
-      `SELECT COUNT(DISTINCT \`DATE\`) as count FROM attendance WHERE student_id = ? AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-
-    const [[present]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Present' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-
-    const [[absent]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Absent' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-
-    const [[late]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Late' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
+    const windowStats = await loadChildAttendanceWindow(studentId, monthAgo);
 
     const [todayRecords] = await db.query(
       `SELECT \`STATUS\` as status, session, subject_id FROM attendance WHERE student_id = ? AND \`DATE\` = ?`,
@@ -120,11 +143,11 @@ exports.getChildStats = async (req, res) => {
     }
 
     res.json({
-      totalDays: totalDays.count,
-      present: present.count,
-      absent: absent.count,
-      late: late.count,
-      attendanceRate: totalDays.count > 0 ? Math.round((present.count / totalDays.count) * 100) : 0,
+      totalDays: windowStats.totalDays,
+      present: windowStats.present,
+      absent: windowStats.absent,
+      late: windowStats.late,
+      attendanceRate: windowStats.attendanceRate,
       todayStatus
     });
 
@@ -203,23 +226,7 @@ exports.getChildInsights = async (req, res) => {
 
     await ensureAttendanceSchema();
     const monthAgo = manilaISODate(new Date(Date.now() - 30 * 86400000));
-
-    const [[totalDays]] = await db.query(
-      `SELECT COUNT(DISTINCT \`DATE\`) as count FROM attendance WHERE student_id = ? AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-    const [[present]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Present' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-    const [[absent]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Absent' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
-    const [[late]] = await db.query(
-      `SELECT COUNT(*) as count FROM attendance WHERE student_id = ? AND \`STATUS\` = 'Late' AND \`DATE\` >= ?`,
-      [studentId, monthAgo]
-    );
+    const stats = await loadChildAttendanceWindow(studentId, monthAgo);
 
     const [records] = await db.query(
       `SELECT a.title, a.TYPE as type, a.max_score, a.created_at, s.NAME as subject_name, sc.score
@@ -244,16 +251,6 @@ exports.getChildInsights = async (req, res) => {
     const average = withPct.length
       ? Math.round(withPct.reduce((sum, r) => sum + r.percent, 0) / withPct.length)
       : 0;
-
-    const stats = {
-      totalDays: Number(totalDays.count) || 0,
-      present: Number(present.count) || 0,
-      absent: Number(absent.count) || 0,
-      late: Number(late.count) || 0,
-      attendanceRate: (Number(totalDays.count) || 0) > 0
-        ? Math.round((Number(present.count) / Number(totalDays.count)) * 100)
-        : 0
-    };
 
     const insight = buildParentInsight({
       firstName: child?.first_name,

@@ -7,7 +7,7 @@ let lastStudentsData = [];
 let currentAccountRoleFilter = 'all';
 let currentAccountStatusFilter = 'active';
 let currentAccountSearch = '';
-let currentAccountSort = 'az'; // az | recent
+let currentAccountSort = 'az'; 
 let accountSortMenuApi = null;
 
 function normalizeQuarterClient(value) {
@@ -10922,10 +10922,10 @@ async function renderParentOverview(student) {
       </div>
 
       <div class="chart-card" style="background:var(--peach-soft);border-color:rgba(243,156,18,0.35);">
-        <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:8px;">🤖 AI Progress Summary</h3>
-        <p class="page-subheading" id="parent-ai-summary" style="margin:0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
+        <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:8px;">Progress Summary</h3>
+        <div class="page-subheading" id="parent-ai-summary" style="margin:0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
           Loading summary…
-        </p>
+        </div>
       </div>
     </div>
   `;
@@ -10944,7 +10944,12 @@ async function loadParentAiSummary(studentId) {
     const res = await fetch(`${API_URL}/parent/child/${studentId}/insights`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load summary');
-    el.textContent = data.text || 'Insights will appear here once attendance or scores are recorded.';
+    const bullets = Array.isArray(data.bullets) ? data.bullets.filter(Boolean) : [];
+    if (bullets.length) {
+      el.innerHTML = `<ul class="parent-insight-list">${bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`;
+    } else {
+      el.textContent = data.text || 'Insights will appear here once attendance or scores are recorded.';
+    }
   } catch {
     el.textContent = 'Could not load the progress summary right now.';
   }
