@@ -116,17 +116,19 @@ function manilaISODate(d = new Date()) {
 
 /** Normalize MySQL DATE / JS Date to YYYY-MM-DD without UTC day-shift (Asia/Manila). */
 function sqlDateToISO(value) {
-  if (value == null) return '';
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  if (value == null || value === '') return '';
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return manilaISODate(value);
   }
-  const s = String(value);
+  const s = String(value).trim();
+  if (!s) return '';
+  if (/[zZ]|[+-]\d{2}:\d{2}/.test(s)) {
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) return manilaISODate(parsed);
+  }
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const parsed = new Date(s);
-  if (!Number.isNaN(parsed.getTime())) {
-    return manilaISODate(parsed);
-  }
+  if (!Number.isNaN(parsed.getTime())) return manilaISODate(parsed);
   return s.slice(0, 10);
 }
 
@@ -161,6 +163,16 @@ function isSubjectGrade(grade) {
   return Number(grade) >= 4;
 }
 
+function currentManilaSession(d = new Date()) {
+  const hourStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    hour: 'numeric',
+    hourCycle: 'h23'
+  }).format(d);
+  const hour = Number(String(hourStr).replace(/\D/g, ''));
+  return hour < 12 ? 'AM' : 'PM';
+}
+
 function normalizeSession(session, { subjectMode = false } = {}) {
   const s = String(session || '').toUpperCase();
   if (subjectMode) return 'AM'; // one slot per subject/day
@@ -186,5 +198,6 @@ module.exports = {
   addDaysISO,
   isSubjectGrade,
   normalizeSession,
+  currentManilaSession,
   statusLetter
 };

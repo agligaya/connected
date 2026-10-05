@@ -10,6 +10,7 @@ router.get('/child/:id/stats', verifyToken, requireRole('parent'), parentControl
 router.get('/child/:id/progress', verifyToken, requireRole('parent'), parentController.getChildProgress);
 router.get('/child/:id/insights', verifyToken, requireRole('parent'), parentController.getChildInsights);
 router.get('/inbox', verifyToken, requireRole('parent'), parentController.getParentInbox);
+router.post('/messages/mark-all-read', verifyToken, requireRole('parent'), parentController.markAllMessagesRead);
 router.post('/messages/:id/read', verifyToken, requireRole('parent'), parentController.markMessageRead);
 router.delete('/messages/:id/read', verifyToken, requireRole('parent'), parentController.markMessageRead);
 router.get('/child/:id/teachers', verifyToken, requireRole('parent'), parentController.getChildTeachers);

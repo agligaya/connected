@@ -184,7 +184,14 @@ exports.getClassAdviser = async (req, res) => {
 exports.getActivityLog = async (req, res) => {
   try {
     const logs = await getRecentActivity();
-    res.json(logs);
+    const safe = (Array.isArray(logs) ? logs : []).map((log) => {
+      const action = String(log.action || '');
+      const isConcern = log.target_type === 'concern'
+        || /concern/i.test(action);
+      if (!isConcern) return log;
+      return { ...log, target_name: null, details: null };
+    });
+    res.json(safe);
   } catch (error) {
     console.error('Get activity log error:', error);
     res.status(500).json({ error: 'Server error fetching activity log', details: error.message });
@@ -212,26 +219,6 @@ exports.getAdminInbox = async (req, res) => {
     );
 
     let concerns = [];
-    try {
-      const [rows] = await db.query(
-        `SELECT c.id, c.parent_id, c.teacher_id, c.student_id,
-                c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
-                c.created_at, c.updated_at, c.teacher_reply, c.replied_at,
-                CONCAT(p.first_name, ' ', p.last_name) as parent_name,
-                CONCAT(t.first_name, ' ', t.last_name) as teacher_name,
-                CONCAT(s.first_name, ' ', s.last_name) as student_name,
-                s.grade_level, s.section
-         FROM concerns c
-         LEFT JOIN users p ON c.parent_id = p.id
-         LEFT JOIN users t ON c.teacher_id = t.id
-         LEFT JOIN students s ON c.student_id = s.id
-         ORDER BY c.created_at DESC`
-      );
-      concerns = await attachConcernReadState(await attachReplies(rows), adminId);
-    } catch (e) {
-      console.error('[Admin Inbox] concerns error:', e.message);
-    }
-
     res.json({ concerns, announcements });
   } catch (error) {
     console.error('Get admin inbox error:', error);
@@ -240,17 +227,16 @@ exports.getAdminInbox = async (req, res) => {
 };
 
 exports.markConcernRead = async (req, res) => {
-  try {
-    const adminId = req.user?.id || req.user?.userId;
-    const { id } = req.params;
-    const [any] = await db.query('SELECT id FROM concerns WHERE id = ?', [id]);
-    if (!any.length) return res.status(404).json({ error: 'Concern not found' });
-    await markConcernRead(id, adminId);
-    res.json({ message: 'Marked as read' });
-  } catch (error) {
-    console.error('Admin mark concern read error:', error);
-    res.status(500).json({ error: 'Server error marking concern read', details: error.message });
-  }
+  return res.status(403).json({ error: 'Parent and teacher concerns are private.' });
+};
+
+// PATCH /api/admin/concerns/:id/resolve
+exports.resolveConcern = async (req, res) => {
+  return res.status(403).json({ error: 'Parent and teacher concerns are private.' });
+};
+
+exports.replyToConcern = async (req, res) => {
+  return res.status(403).json({ error: 'Parent and teacher concerns are private.' });
 };
 
 // POST /api/admin/announcements
@@ -284,50 +270,6 @@ exports.createAnnouncement = async (req, res) => {
     const status = error.status || 500;
     res.status(status).json({
       error: error.status ? error.message : 'Server error creating announcement',
-      details: error.message
-    });
-  }
-};
-
-// PATCH /api/admin/concerns/:id/resolve
-exports.resolveConcern = async (req, res) => {
-  try {
-    const adminId = req.user?.id || req.user?.userId;
-    const { id } = req.params;
-    await db.query("UPDATE concerns SET STATUS = 'resolved' WHERE id = ?", [id]);
-    try {
-      await markConcernReadForParticipants(id, adminId);
-    } catch (e) {
-      console.error('[concern_reads] mark on resolve:', e.message);
-    }
-    res.json({ message: 'Concern marked as resolved' });
-  } catch (error) {
-    console.error('Resolve concern error:', error);
-    res.status(500).json({ error: 'Server error resolving concern' });
-  }
-};
-
-exports.replyToConcern = async (req, res) => {
-  try {
-    const adminId = req.user?.id || req.user?.userId;
-    const { id } = req.params;
-    const { message } = req.body;
-
-    const [any] = await db.query('SELECT id FROM concerns WHERE id = ?', [id]);
-    if (!any.length) return res.status(404).json({ error: 'Concern not found' });
-
-    const result = await addConcernReply({
-      concernId: id,
-      senderId: adminId,
-      senderRole: 'admin',
-      message
-    });
-    res.json({ id: result.id, message: 'Reply sent to the parent' });
-  } catch (error) {
-    console.error('Admin reply concern error:', error);
-    const status = error.status || 500;
-    res.status(status).json({
-      error: error.status ? error.message : 'Server error sending reply',
       details: error.message
     });
   }

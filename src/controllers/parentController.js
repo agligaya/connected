@@ -11,6 +11,13 @@ const { logActivity } = require('../utils/activityLog');
 const { ensureAttendanceSchema, manilaISODate } = require('../utils/attendanceSchema');
 const { buildParentInsight } = require('../utils/parentInsights');
 
+function cappedPercent(score, maxScore) {
+  const max = Number(maxScore) || 100;
+  const n = Number(score);
+  if (!Number.isFinite(n) || max <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((n / max) * 100)));
+}
+
 async function loadChildAttendanceWindow(studentId, monthAgo) {
   const [[totalDays]] = await db.query(
     `SELECT COUNT(DISTINCT \`DATE\`) as count FROM attendance WHERE student_id = ? AND \`DATE\` >= ?`,
@@ -188,7 +195,7 @@ exports.getChildProgress = async (req, res) => {
       const score = Number(r.score);
       return {
         ...r,
-        percent: max > 0 ? Math.round((score / max) * 100) : 0
+        percent: cappedPercent(score, max)
       };
     });
 
@@ -245,7 +252,7 @@ exports.getChildInsights = async (req, res) => {
         title: r.title,
         type: r.type,
         subject_name: r.subject_name,
-        percent: max > 0 ? Math.round((score / max) * 100) : 0
+        percent: cappedPercent(score, max)
       };
     });
     const average = withPct.length
@@ -356,6 +363,25 @@ exports.getParentInbox = async (req, res) => {
   } catch (error) {
     console.error('Get parent inbox error:', error);
     res.status(500).json({ error: 'Server error fetching inbox' });
+  }
+};
+
+exports.markAllMessagesRead = async (req, res) => {
+  try {
+    const parentId = req.user?.id || req.user?.userId;
+    const ids = (Array.isArray(req.body?.message_ids) ? req.body.message_ids : [])
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return res.json({ message: 'Nothing to mark' });
+    const placeholders = ids.map(() => '?').join(', ');
+    await db.query(
+      `UPDATE messages SET is_read = 1 WHERE receiver_id = ? AND id IN (${placeholders})`,
+      [parentId, ...ids]
+    );
+    res.json({ message: 'All marked as read' });
+  } catch (error) {
+    console.error('Mark all messages read error:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 };
 
@@ -470,21 +496,7 @@ exports.createConcern = async (req, res) => {
       [parentId, teacher_id, student_id, subject || 'General', String(message).trim()]
     );
 
-    const [[student]] = await db.query(
-      'SELECT first_name, last_name FROM students WHERE id = ?',
-      [student_id]
-    );
-    const studentLabel = student
-      ? `${student.first_name} ${student.last_name}`
-      : `Student #${student_id}`;
-    await logActivity(
-      db,
-      parentId,
-      'Sent concern',
-      'concern',
-      subject || 'General',
-      studentLabel
-    );
+    await logActivity(db, parentId, 'Sent concern', 'concern', null, null);
 
     res.status(201).json({ id: result.insertId, message: 'Concern sent to the teacher' });
   } catch (error) {
@@ -569,16 +581,12 @@ exports.replyToConcern = async (req, res) => {
       message
     });
 
-    const [[concern]] = await db.query(
-      'SELECT SUBJECT as subject FROM concerns WHERE id = ?',
-      [id]
-    );
     await logActivity(
       db,
       parentId,
       'Replied to concern',
       'concern',
-      concern?.subject || `Concern #${id}`,
+      null,
       null
     );
 

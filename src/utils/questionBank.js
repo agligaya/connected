@@ -262,6 +262,12 @@ function normalizeRubric(raw, fallbackMax = 20) {
   return { categories };
 }
 
+function rubricPointsTotal(raw, fallbackMax = 20) {
+  const n = normalizeRubric(raw, fallbackMax);
+  if (!n?.categories?.length) return 0;
+  return n.categories.reduce((s, c) => s + Math.max(0, Number(c.max_points) || 0), 0);
+}
+
 function emptyRubricTemplate(totalPoints = 20) {
   const total = Math.max(3, Number(totalPoints) || 20);
   const shares = splitTotalPoints(total, 3);
@@ -609,6 +615,7 @@ module.exports = {
   normalizeChoices,
   parseChoicesColumn,
   normalizeRubric,
+  rubricPointsTotal,
   emptyRubricTemplate,
   redistributeRubricToTotal,
   splitTotalPoints,

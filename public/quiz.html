@@ -141,6 +141,32 @@
         return String(value || '').replace(/\D/g, '').slice(0, 12);
       }
 
+      function parseQuizDeadline(raw) {
+        if (raw == null || raw === '') return null;
+        var s = String(raw).trim();
+        if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:\d{2}$/.test(s)) {
+          var t = s.replace(' ', 'T').replace(/\.\d+$/, '');
+          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t)) t += ':00';
+          else t = t.slice(0, 19);
+          var manila = new Date(t + '+08:00');
+          return isNaN(manila.getTime()) ? null : manila;
+        }
+        var d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+      }
+
+      function isLiveOpen() {
+        var d = parseQuizDeadline(quizData && quizData.quiz_closes_at);
+        if (!d) return true;
+        return Date.now() <= d.getTime();
+      }
+
+      function closesAtLabel() {
+        var d = parseQuizDeadline(quizData && quizData.quiz_closes_at);
+        if (!d) return '';
+        return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      }
+
       function renderQuestions() {
         qBox.innerHTML = (quizData.questions || []).map(function (q, i) {
           const isMcq = q.item_type === 'mcq' || (q.choices && q.choices.length);
@@ -193,10 +219,14 @@
           statusEl.hidden = true;
           formWrap.hidden = false;
           document.getElementById('quiz-title').textContent = data.title || 'Classwork';
-          document.getElementById('quiz-meta').textContent =
-            'Grade ' + data.grade_level + '-' + data.section +
+          var metaBits = 'Grade ' + data.grade_level + '-' + data.section +
             (data.subject_name ? ' · ' + data.subject_name : '') +
             ' · Total Score: ' + data.max_score;
+          var closeLabel = closesAtLabel();
+          if (closeLabel) {
+            metaBits += isLiveOpen() ? (' · Closes at ' + closeLabel) : (' · Closed at ' + closeLabel);
+          }
+          document.getElementById('quiz-meta').textContent = metaBits;
           if (lrnInput) lrnInput.value = '';
           resetIdentity();
         } catch (e) {
@@ -297,6 +327,7 @@
         if (document.visibilityState === 'visible') recheckEligibility();
       });
       window.addEventListener('focus', recheckEligibility);
+      setInterval(recheckEligibility, 15000);
 
       document.getElementById('quiz-submit').addEventListener('click', async function () {
         errEl.hidden = true;

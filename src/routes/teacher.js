@@ -36,6 +36,7 @@ const {
   getOpenAiBaseUrl,
   getOpenAiModel
 } = require('../utils/aiRecommendations');
+const { createJob, getJobForTeacher, finishJob, publicJob, runExclusive } = require('../utils/aiJobs');
 const {
   ensureQuestionBankSchema,
   saveDraftPartsToBank,
@@ -43,6 +44,7 @@ const {
   normalizeChoices,
   parseChoicesColumn,
   normalizeRubric,
+  rubricPointsTotal,
   groupItemsByType,
   groupItemsByCategory,
   migrateOrphanBankItems,
@@ -1383,13 +1385,18 @@ router.post('/ai/generate-rubric', verifyToken, async (req, res) => {
 router.get('/ai/recommendations', verifyToken, async (req, res) => {
   try {
     await ensureAiRecommendationsSchema();
+    await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
     const status = req.query.status ? String(req.query.status) : null;
 
     let sql = `SELECT r.id, r.lesson_plan_id, r.subject_id, r.grade_level, r.status, r.provider,
                       r.source_excerpt, r.content, r.assessment_id, r.approved_type,
                       r.created_at, r.updated_at,
-                      lp.title as lesson_title, s.NAME as subject_name
+                      lp.title as lesson_title, s.NAME as subject_name,
+                      (SELECT qs.id FROM quiz_sets qs
+                       WHERE qs.ai_recommendation_id = r.id AND qs.teacher_id = r.teacher_id
+                         AND qs.status = 'active'
+                       LIMIT 1) as classwork_set_id
                FROM ai_recommendations r
                LEFT JOIN lesson_plans lp ON lp.id = r.lesson_plan_id
                LEFT JOIN subjects s ON s.id = r.subject_id
@@ -1435,6 +1442,13 @@ router.get('/ai/recommendations/:id', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/ai/jobs/:jobId', verifyToken, (req, res) => {
+  const teacherId = req.user?.id || req.user?.userId;
+  const job = getJobForTeacher(req.params.jobId, teacherId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(publicJob(job));
+});
+
 router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
   try {
     await ensureAiRecommendationsSchema();
@@ -1451,46 +1465,61 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
     );
     if (!plan) return res.status(404).json({ error: 'Lesson plan not found' });
 
-    const generated = await generateRecommendationsForLesson({
-      lessonPlan: plan,
-      subjectName: plan.subject_name,
-      quizItemCount: req.body?.quiz_item_count,
-      quizItemTypes: req.body?.quiz_item_types
-    });
+    const quizItemCount = req.body?.quiz_item_count;
+    const quizItemTypes = req.body?.quiz_item_types;
+    const jobKey = `gen:${teacherId}:${plan.id}`;
+    const { id: jobId, reused } = createJob(teacherId, jobKey);
+    res.status(202).json({ jobId, status: 'running' });
+    if (reused) return;
 
-    const [result] = await db.query(
-      `INSERT INTO ai_recommendations
-        (lesson_plan_id, teacher_id, subject_id, grade_level, status, provider, source_excerpt, content)
-       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      [
-        plan.id,
-        teacherId,
-        plan.subject_id || null,
-        plan.grade_level,
-        generated.provider,
-        generated.sourceExcerpt,
-        JSON.stringify(generated.content)
-      ]
-    );
-
-    await logActivity(
-      db,
-      teacherId,
-      'Generated AI lesson resources',
-      'lesson_plan',
-      plan.title,
-      `provider=${generated.provider}`
-    );
-
-    res.status(201).json({
-      id: result.insertId,
-      provider: generated.provider,
-      mode: generated.provider,
-      message:
-        generated.provider === 'mock'
-          ? 'Mock AI draft created (set OPENAI_API_KEY and AI_DRY_RUN=false for live generation).'
-          : 'AI draft created. Review quiz/activity, save to Classwork, or approve into Progress.',
-      content: generated.content
+    setImmediate(async () => {
+      try {
+        const generated = await runExclusive(() => generateRecommendationsForLesson({
+          lessonPlan: plan,
+          subjectName: plan.subject_name,
+          quizItemCount,
+          quizItemTypes
+        }));
+        const [result] = await db.query(
+          `INSERT INTO ai_recommendations
+            (lesson_plan_id, teacher_id, subject_id, grade_level, status, provider, source_excerpt, content)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+          [
+            plan.id,
+            teacherId,
+            plan.subject_id || null,
+            plan.grade_level,
+            generated.provider,
+            generated.sourceExcerpt,
+            JSON.stringify(generated.content)
+          ]
+        );
+        await logActivity(
+          db,
+          teacherId,
+          'Generated AI lesson resources',
+          'lesson_plan',
+          plan.title,
+          `provider=${generated.provider}`
+        );
+        finishJob(jobId, {
+          status: 'done',
+          result: {
+            id: result.insertId,
+            provider: generated.provider,
+            message:
+              generated.provider === 'mock'
+                ? 'Mock AI draft created (set OPENAI_API_KEY and AI_DRY_RUN=false for live generation).'
+                : 'AI draft created. Review, then save to Classwork. Create a Quiz or Activity from Classwork for Records.'
+          }
+        });
+      } catch (error) {
+        console.error('Generate AI resources error:', error);
+        finishJob(jobId, {
+          status: 'error',
+          error: error.status ? error.message : (error.message || 'Server error generating AI resources')
+        });
+      }
     });
   } catch (error) {
     console.error('Generate AI resources error:', error);
@@ -1592,49 +1621,66 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
       return res.status(400).json({ error: 'Only pending drafts can be regenerated' });
     }
 
-    const generated = await generateRecommendationsForLesson({
-      lessonPlan: {
-        title: row.title,
-        objectives: row.objectives,
-        file_path: row.file_path,
-        grade_level: row.grade_level,
-        subject_id: row.plan_subject_id || row.subject_id
-      },
-      subjectName: row.subject_name,
-      quizItemCount: req.body?.quiz_item_count,
-      quizItemTypes: req.body?.quiz_item_types
-    });
+    const quizItemCount = req.body?.quiz_item_count;
+    const quizItemTypes = req.body?.quiz_item_types;
+    const recId = Number(req.params.id);
+    const jobKey = `regen:${teacherId}:${recId}`;
+    const { id: jobId, reused } = createJob(teacherId, jobKey);
+    res.status(202).json({ jobId, status: 'running' });
+    if (reused) return;
 
-    await db.query(
-      `UPDATE ai_recommendations
-       SET provider = ?, source_excerpt = ?, content = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND teacher_id = ?`,
-      [
-        generated.provider,
-        generated.sourceExcerpt,
-        JSON.stringify(generated.content),
-        req.params.id,
-        teacherId
-      ]
-    );
-
-    await logActivity(
-      db,
-      teacherId,
-      'Regenerated AI lesson resources',
-      'lesson_plan',
-      row.title,
-      `provider=${generated.provider}`
-    );
-
-    res.json({
-      id: Number(req.params.id),
-      provider: generated.provider,
-      message:
-        generated.provider === 'mock'
-          ? 'Draft regenerated (mock). Set OPENAI_API_KEY and AI_DRY_RUN=false for live AI.'
-          : 'Draft regenerated. Review, then save to Classwork or Approve.',
-      content: generated.content
+    setImmediate(async () => {
+      try {
+        const generated = await runExclusive(() => generateRecommendationsForLesson({
+          lessonPlan: {
+            title: row.title,
+            objectives: row.objectives,
+            file_path: row.file_path,
+            grade_level: row.grade_level,
+            subject_id: row.plan_subject_id || row.subject_id
+          },
+          subjectName: row.subject_name,
+          quizItemCount,
+          quizItemTypes
+        }));
+        await db.query(
+          `UPDATE ai_recommendations
+           SET provider = ?, source_excerpt = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND teacher_id = ?`,
+          [
+            generated.provider,
+            generated.sourceExcerpt,
+            JSON.stringify(generated.content),
+            recId,
+            teacherId
+          ]
+        );
+        await logActivity(
+          db,
+          teacherId,
+          'Regenerated AI lesson resources',
+          'lesson_plan',
+          row.title,
+          `provider=${generated.provider}`
+        );
+        finishJob(jobId, {
+          status: 'done',
+          result: {
+            id: recId,
+            provider: generated.provider,
+            message:
+              generated.provider === 'mock'
+                ? 'Draft regenerated (mock). Set OPENAI_API_KEY and AI_DRY_RUN=false for live AI.'
+                : 'Draft regenerated. Review, then save to Classwork. Create a Quiz or Activity from Classwork for Records.'
+          }
+        });
+      } catch (error) {
+        console.error('Regenerate AI recommendation error:', error);
+        finishJob(jobId, {
+          status: 'error',
+          error: error.status ? error.message : (error.message || 'Server error regenerating AI draft')
+        });
+      }
     });
   } catch (error) {
     console.error('Regenerate AI recommendation error:', error);
@@ -2465,7 +2511,23 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
     }
 
     const pointsSum = ordered.reduce((sum, it) => sum + (pointsByItemId.get(it.id) || 1), 0);
-    const maxScore = Math.max(1, Number(max_score) || Math.round(pointsSum * 100) / 100 || ordered.length);
+    let maxScore = Math.max(1, Number(max_score) || Math.round(pointsSum * 100) / 100 || ordered.length);
+    if (type === 'activity') {
+      let rubricSum = 0;
+      let hasRubric = false;
+      for (const it of ordered) {
+        const cap = rubricPointsTotal(it.rubric, it.points);
+        if (cap > 0) {
+          hasRubric = true;
+          rubricSum += cap;
+        } else {
+          rubricSum += pointsByItemId.get(it.id) || Number(it.points) || 1;
+        }
+      }
+      if (hasRubric && rubricSum > 0) {
+        maxScore = Math.max(1, Math.round(rubricSum * 100) / 100);
+      }
+    }
     const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
     if (!isQuarterUnlocked(qtr, current)) {
@@ -2522,6 +2584,10 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       const rubricObj = isActivityType(itemType)
         ? normalizeRubric(it.rubric, it.points)
         : null;
+      const rubricCap = rubricObj ? rubricPointsTotal(rubricObj, it.points) : 0;
+      const itemPoints = rubricCap > 0
+        ? rubricCap
+        : (pointsByItemId.has(it.id) ? pointsByItemId.get(it.id) : (Number(it.points) || 1));
       await db.query(
         `INSERT INTO assessment_questions
           (assessment_id, question_bank_id, sort_order, item_type, question, choices, answer, points, rubric)
@@ -2538,7 +2604,7 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
               : JSON.stringify(normalizeChoices(it.choices) || it.choices)
             : null,
           it.answer,
-          pointsByItemId.has(it.id) ? pointsByItemId.get(it.id) : (Number(it.points) || 1),
+          itemPoints,
           rubricObj ? JSON.stringify(rubricObj) : null
         ]
       );
@@ -2997,7 +3063,12 @@ router.get('/assessments', verifyToken, async (req, res) => {
 
     try {
       const [rows] = await db.query(sql, params);
-      return res.json(rows);
+      return res.json(rows.map((r) => ({
+        ...r,
+        quiz_attendance_date: r.quiz_attendance_date != null && r.quiz_attendance_date !== ''
+          ? sqlDateToISO(r.quiz_attendance_date)
+          : r.quiz_attendance_date
+      })));
     } catch (inner) {
       const [rows] = await db.query(
         `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
@@ -3194,6 +3265,9 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       assessment = row;
     }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (assessment.quiz_attendance_date != null && assessment.quiz_attendance_date !== '') {
+      assessment.quiz_attendance_date = sqlDateToISO(assessment.quiz_attendance_date) || null;
+    }
 
     await ensureQuizAttendanceSchema();
     let attendance_meta = null;
@@ -3288,7 +3362,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
     }
 
     try {
-      const { ensureQuizShareSchema, activityWorkFromSubmission } = require('../utils/quizShare');
+      const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission } = require('../utils/quizShare');
       await ensureQuizShareSchema();
       const [subs] = await db.query(
         `SELECT student_id, answers FROM quiz_submissions WHERE assessment_id = ?`,
@@ -3297,9 +3371,13 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       const workByStudent = new Map(
         subs.map((row) => [Number(row.student_id), activityWorkFromSubmission(row.answers, questions)])
       );
+      const quizByStudent = new Map(
+        subs.map((row) => [Number(row.student_id), quizTakenFromSubmission(row.answers, questions)])
+      );
       students = students.map((s) => ({
         ...s,
-        activity_work: workByStudent.get(Number(s.id)) || []
+        activity_work: workByStudent.get(Number(s.id)) || [],
+        quiz_taken: quizByStudent.get(Number(s.id)) || []
       }));
     } catch (workErr) {
       console.warn('[assessment] activity work:', workErr.message);
@@ -3322,12 +3400,34 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
     }
 
     const [[assessment]] = await db.query(
-      'SELECT id, title, max_score FROM assessments WHERE id = ?',
+      `SELECT id, title, max_score, share_enabled, grade_level, section, subject_id,
+              quiz_attendance_date, quiz_attendance_session, quiz_subject_id
+       FROM assessments WHERE id = ?`,
       [id]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
 
     const maxScore = Number(assessment.max_score) || 100;
+
+    let blockedIds = new Set();
+    if (Number(assessment.share_enabled) === 1) {
+      try {
+        await ensureQuizAttendanceSchema();
+        const slot = attendanceSlotForAssessment(assessment);
+        const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
+        const submittedSet = await getSubmittedStudentIds(assessment.id);
+        blockedIds = new Set(
+          roster
+            .filter((s) => {
+              const st = String(s.attendance_status || '');
+              return (st === 'Absent' || st === 'Excused') && !submittedSet.has(Number(s.id));
+            })
+            .map((s) => Number(s.id))
+        );
+      } catch (gateErr) {
+        console.warn('[scores] attendance gate:', gateErr.message);
+      }
+    }
 
     for (const row of scores) {
       if (!row.student_id) continue;
@@ -3339,6 +3439,11 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       const hasRubric = rubricObj && Object.keys(rubricObj).length > 0;
 
       if (!hasScore && !hasRubric) continue;
+      if (blockedIds.has(Number(row.student_id))) {
+        return res.status(400).json({
+          error: 'Cannot score a student who is absent or excused until they submit.'
+        });
+      }
 
       let score = hasScore ? Number(row.score) : null;
       if (hasScore && (Number.isNaN(score) || score < 0 || score > maxScore)) {
@@ -3454,16 +3559,12 @@ router.post('/concerns/:id/reply', verifyToken, async (req, res) => {
       message
     });
 
-    const [[concern]] = await db.query(
-      'SELECT SUBJECT as subject FROM concerns WHERE id = ?',
-      [id]
-    );
     await logActivity(
       db,
       teacherId,
       'Replied to concern',
       'concern',
-      concern?.subject || `Concern #${id}`,
+      null,
       null
     );
 
@@ -3488,24 +3589,13 @@ router.patch('/concerns/:id/resolve', verifyToken, async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Concern not found' });
 
-    const [[concern]] = await db.query(
-      'SELECT SUBJECT as subject FROM concerns WHERE id = ?',
-      [id]
-    );
     await db.query("UPDATE concerns SET STATUS = 'resolved' WHERE id = ?", [id]);
     try {
       await markConcernReadForParticipants(id, teacherId);
     } catch (e) {
       console.error('[concern_reads] mark on resolve:', e.message);
     }
-    await logActivity(
-      db,
-      teacherId,
-      'Resolved concern',
-      'concern',
-      concern?.subject || `Concern #${id}`,
-      null
-    );
+    await logActivity(db, teacherId, 'Resolved concern', 'concern', null, null);
     res.json({ message: 'Concern marked as resolved' });
   } catch (error) {
     console.error('Teacher resolve concern error:', error);

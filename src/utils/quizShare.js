@@ -148,6 +148,26 @@ function activityWorkFromSubmission(answersPayload, questions) {
     .filter((w) => w.text || w.file);
 }
 
+function normalizeTypedAnswer(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[.,;:!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function typedAnswersMatch(given, expected) {
+  const a = normalizeTypedAnswer(given);
+  const b = normalizeTypedAnswer(expected);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const parts = (s) => s.split(/\s*(?:,|;|\/|\band\b)\s*/).map((p) => p.trim()).filter(Boolean).sort();
+  const left = parts(a);
+  const right = parts(b);
+  if (right.length < 2 || left.length !== right.length) return false;
+  return left.every((p, i) => p === right[i]);
+}
+
 function scoreSubmission(questions, answersInput) {
   const answerMap = new Map();
   const bag = answersBagFromPayload(answersInput);
@@ -166,22 +186,50 @@ function scoreSubmission(questions, answersInput) {
     maxScore += pts;
     const given = answerMap.has(Number(q.id)) ? answerMap.get(Number(q.id)) : '';
     let correct = false;
-    const isMcq = q.item_type === 'mcq' || (Array.isArray(q.choices) && q.choices.length);
-    if (isMcq) {
+    let autoScored = false;
+    const type = String(q.item_type || '').toLowerCase();
+    const isMcq = type === 'mcq' || type === 'multiple_choice';
+    const isTyped = type === 'identification' || type === 'enumeration' || type === 'short_answer';
+    if (isTyped) {
+      autoScored = true;
+      correct = typedAnswersMatch(given, q.answer);
+    } else if (isMcq || (Array.isArray(q.choices) && q.choices.length && !isActivityItemType(type))) {
+      autoScored = true;
       correct = mcqAnswersMatch(given, q.answer, q.choices);
-      if (correct) earned += pts;
-    } else if (isActivityItemType(q.item_type)) {
+    } else if (isActivityItemType(type)) {
       // not auto-scored
     }
+    if (autoScored && correct) earned += pts;
     detail.push({
       question_id: q.id,
       given,
-      correct: isMcq ? correct : null,
+      correct: autoScored ? correct : null,
       points: pts
     });
   }
 
   return { earned, maxScore, detail };
+}
+
+function quizTakenFromSubmission(answersPayload, questions) {
+  const quizQs = (questions || []).filter((q) => !isActivityItemType(q.item_type));
+  if (!quizQs.length) return [];
+  const { detail } = scoreSubmission(quizQs, answersPayload);
+  const byId = new Map(detail.map((d) => [Number(d.question_id), d]));
+  return quizQs.map((q, i) => {
+    const d = byId.get(Number(q.id)) || {};
+    return {
+      question_id: q.id,
+      n: i + 1,
+      item_type: q.item_type || 'mcq',
+      question: q.question || '',
+      choices: Array.isArray(q.choices) ? q.choices : [],
+      expected: q.answer != null ? String(q.answer) : '',
+      given: d.given || '',
+      correct: d.correct === true ? true : d.correct === false ? false : null,
+      points: Number(q.points) || 1
+    };
+  });
 }
 
 function mcqLetterAt(index) {
@@ -247,5 +295,6 @@ module.exports = {
   scoreSubmission,
   isActivityItemType,
   activityWorkFromSubmission,
+  quizTakenFromSubmission,
   answersBagFromPayload
 };

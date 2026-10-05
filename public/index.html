@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260920c32" />
+  <link rel="stylesheet" href="/css/styles.css?v=20260920c54" />
 
 </head>
 <body data-view="login">
@@ -67,6 +67,11 @@
                     <button class="btn-maroon" id="login-signin-btn" type="button">Log In</button>
                   </div>
                   <p id="login-message" class="inline-message login-msg"></p>
+                  <p class="login-legal-links">
+                    <button type="button" data-legal-open="privacy">Privacy Policy</button>
+                    <button type="button" data-legal-open="terms">Terms</button>
+                    <button type="button" data-legal-open="help">Help</button>
+                  </p>
                 </div>
               </div>
             </div>
@@ -113,9 +118,9 @@
             <div class="portal-sidebar-footer-links">
               <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
               <div class="footer-links-row">
-                <a href="#">Privacy Policy</a>
-                <a href="#">Terms</a>
-                <a href="#">Help</a>
+                <button type="button" data-legal-open="privacy">Privacy Policy</button>
+                <button type="button" data-legal-open="terms">Terms</button>
+                <button type="button" data-legal-open="help">Help</button>
               </div>
             </div>
           </aside>
@@ -469,7 +474,7 @@
                     <div class="qb-header-actions">
                       <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-quiz-btn">+ Add Classwork</button>
                       <button type="button" class="btn-toolbar btn-toolbar--outline" id="qb-create-exam-btn">+ Create Exam</button>
-                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Next: Create Quiz</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Next</button>
                     </div>
                   </div>
 
@@ -562,9 +567,9 @@
             <div class="portal-sidebar-footer-links">
               <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
               <div class="footer-links-row">
-                <a href="#">Privacy Policy</a>
-                <a href="#">Terms</a>
-                <a href="#">Help</a>
+                <button type="button" data-legal-open="privacy">Privacy Policy</button>
+                <button type="button" data-legal-open="terms">Terms</button>
+                <button type="button" data-legal-open="help">Help</button>
               </div>
             </div>
           </aside>
@@ -623,15 +628,14 @@
               <button class="sidebar-item" data-admin-tab="accounts"><span class="nav-ico">👥</span> Manage Accounts</button>
               <button class="sidebar-item" data-admin-tab="students"><span class="nav-ico">🎓</span> Manage Students</button>
               <button class="sidebar-item" data-admin-tab="subjects"><span class="nav-ico">📚</span> Subjects</button>
-              <button class="sidebar-item" data-admin-tab="inbox"><span class="nav-ico">✉</span> Inbox</button>
               <button class="sidebar-item" data-admin-tab="announcements"><span class="nav-ico">📣</span> Announcements</button>
             </nav>
             <div class="portal-sidebar-footer-links">
               <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
               <div class="footer-links-row">
-                <a href="#">Privacy Policy</a>
-                <a href="#">Terms</a>
-                <a href="#">Help</a>
+                <button type="button" data-legal-open="privacy">Privacy Policy</button>
+                <button type="button" data-legal-open="terms">Terms</button>
+                <button type="button" data-legal-open="help">Help</button>
               </div>
             </div>
           </aside>
@@ -775,10 +779,17 @@
                           </div>
                         </div>
                       </div>
+                      <div id="admin-accounts-bulk-bar" class="admin-bulk-bar" hidden>
+                        <span id="admin-accounts-bulk-count" class="page-subheading" style="margin:0;">0 selected</span>
+                        <button type="button" class="chip-ghost chip-danger" id="admin-accounts-bulk-status">Deactivate Selected</button>
+                      </div>
                       <div class="records-table-wrapper admin-table-wrap">
                       <table id="admin-accounts-table">
                         <thead>
-                          <tr><th>Name</th><th>Email</th><th>Role</th><th>Details</th><th>Status</th></tr>
+                          <tr>
+                            <th class="col-check"><input type="checkbox" id="admin-accounts-select-all" aria-label="Select all accounts" /></th>
+                            <th>Name</th><th>Email</th><th>Role</th><th>Details</th><th>Status</th>
+                          </tr>
                         </thead>
                         <tbody></tbody>
                       </table>
@@ -876,25 +887,6 @@
                           <!-- Populated dynamically -->
                         </tbody>
                       </table>
-                    </div>
-
-                    <!-- TAB: Inbox (parent concerns) -->
-                    <div id="admin-tab-inbox" class="admin-tab" hidden>
-                      <div class="admin-tab-header">
-                        <div>
-                          <h2>Inbox</h2>
-                          <p class="admin-subtitle">Parent concerns across the school. Open a thread to reply or resolve.</p>
-                        </div>
-                      </div>
-                      <div class="inbox-filters">
-                        <button type="button" class="active" data-admin-inbox-filter="unresolved">Unresolved</button>
-                        <button type="button" data-admin-inbox-filter="resolved">Resolved</button>
-                      </div>
-                      <div class="inbox-search-bar">
-                        <input type="search" id="admin-inbox-search" class="inbox-search-input" placeholder="Search messages…" autocomplete="off" />
-                        <button type="button" class="inbox-search-clear" id="admin-inbox-search-clear" title="Clear search" hidden>×</button>
-                      </div>
-                      <ul id="admin-inbox-list" class="inbox-list"></ul>
                     </div>
 
                     <!-- TAB: Announcements -->
@@ -1100,8 +1092,8 @@
         <button type="button" class="chip-ghost ai-count-chip" data-count="30">30</button>
       </div>
       <div class="field-small" style="margin-top:12px;">
-        <label for="ai-generate-count-custom">Or custom (5–50)</label>
-        <input type="number" id="ai-generate-count-custom" min="5" max="50" placeholder="e.g. 15" />
+        <label for="ai-generate-count-custom">Or custom (5–30)</label>
+        <input type="number" id="ai-generate-count-custom" min="5" max="30" placeholder="e.g. 15" />
       </div>
       <div class="field-small" style="margin-top:14px;">
         <span class="page-subheading" style="display:block;margin:0 0 8px;">Quiz item types (pick one or more)</span>
@@ -1130,44 +1122,10 @@
   <div id="ai-generating-modal" class="modal-overlay modal-overlay--blocking" hidden aria-live="polite" aria-busy="true">
     <div class="modal-card ai-generating-card" role="status">
       <div class="ai-generating-spinner" aria-hidden="true"></div>
-      <h3 class="font-heading" id="ai-generating-title">Generating AI Draft…</h3>
+      <h3 class="font-heading" id="ai-generating-title">Generating AI Draft</h3>
       <p class="page-subheading" id="ai-generating-message">
-        Please wait. Local AI can take 1–3 minutes. This window stays open until generation finishes.
+        Please wait...
       </p>
-    </div>
-  </div>
-
-  <div id="ai-approve-modal" class="modal-overlay" hidden>
-    <div class="modal-card" style="max-width:440px;">
-      <h3 class="font-heading">Approve AI Draft</h3>
-      <p class="page-subheading">Saves items to Classwork and creates a Quiz or Activity in Records.</p>
-      <input type="hidden" id="ai-approve-id" />
-      <input type="hidden" id="ai-approve-grade" />
-      <div class="field-small">
-        <label for="ai-approve-type">Resource type</label>
-        <select id="ai-approve-type">
-          <option value="quiz">Quiz</option>
-          <option value="activity">Activity</option>
-        </select>
-      </div>
-      <div class="field-small">
-        <label for="ai-approve-class">Class (assigned only)</label>
-        <select id="ai-approve-class">
-          <option value="">-- Select your class --</option>
-        </select>
-      </div>
-      <div class="field-small">
-        <label for="ai-approve-quarter">Quarter</label>
-        <select id="ai-approve-quarter"></select>
-      </div>
-      <div class="field-small">
-        <label for="ai-approve-quiz-link">Shared Link (optional)</label>
-        <input type="url" id="ai-approve-quiz-link" placeholder="https://forms.gle/… (optional)" />
-      </div>
-      <div class="modal-form-actions">
-        <button type="button" class="btn-outline" id="ai-approve-cancel">Cancel</button>
-        <button type="button" class="btn-solid" id="ai-approve-confirm">Approve &amp; Create</button>
-      </div>
     </div>
   </div>
 
@@ -1340,6 +1298,7 @@
       <p class="page-subheading" id="qb-exam-preview" style="margin:12px 0 0;">Select a classwork set or material.</p>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="qb-exam-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-outline" id="qb-exam-print">Print</button>
         <button type="button" class="btn-solid" id="qb-exam-confirm" disabled>Create Exam</button>
       </div>
     </div>
@@ -1378,6 +1337,7 @@
       </div>
       <div class="modal-form-actions">
         <button type="button" class="btn-outline" id="qb-create-cancel">Cancel</button>
+        <button type="button" class="btn-outline" id="qb-create-print">Print</button>
         <button type="button" class="btn-solid" id="qb-create-confirm">Create Quiz</button>
       </div>
     </div>
@@ -1515,7 +1475,7 @@
   <div id="progress-activity-work-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:640px;">
       <h3 class="font-heading" id="progress-activity-work-title">Student work</h3>
-      <p class="page-subheading" style="margin:0 0 12px;">Submitted from the live activity link.</p>
+      <p class="page-subheading" id="progress-activity-work-sub" style="margin:0 0 12px;">Submitted from the live activity link.</p>
       <div id="progress-activity-work-body"></div>
       <div class="modal-form-actions">
         <button type="button" class="btn-solid" data-modal-cancel>Close</button>
@@ -1644,7 +1604,7 @@
 </div>
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
-  <script src="/js/app.js?v=20260920c32" type="module"></script>
+  <script src="/js/app.js?v=20260920c63" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -2174,6 +2134,116 @@
         <button type="submit" class="btn-solid">Save Changes</button>
       </div>
     </form>
+  </div>
+</div>
+
+<div id="legal-modal" class="modal-overlay" hidden>
+  <div class="modal-card modal-card--wide legal-modal-card">
+    <nav class="legal-tabs" aria-label="Legal pages">
+      <button type="button" class="legal-tab is-active" data-legal-tab="privacy">Privacy Policy</button>
+      <button type="button" class="legal-tab" data-legal-tab="terms">Terms</button>
+      <button type="button" class="legal-tab" data-legal-tab="help">Help</button>
+    </nav>
+    <p class="page-subheading legal-updated">Last updated: 2 October 2026</p>
+
+    <section class="legal-panel" id="legal-panel-privacy">
+      <h3 class="font-heading legal-heading">Privacy Policy</h3>
+      <p>ConnectED is a school portal for elementary teachers, parents, and administrators. This policy describes personal data the system stores and how it is used. It is information about the product, not legal advice. A school that deploys ConnectED for live records should review this text with its Data Protection Officer under the Data Privacy Act of 2012 (Republic Act No. 10173).</p>
+      <h2>Who this covers</h2>
+      <p>Admin, teacher, and parent accounts. Learners in Grades 1–6 do not log in, but the school stores their academic records in ConnectED.</p>
+      <h2>Data we process</h2>
+      <ul>
+        <li><strong>Accounts:</strong> name, school email, hashed password, role, status, optional avatar, parent mobile number.</li>
+        <li><strong>Students:</strong> name, LRN, grade, section, date of birth, gender, enrollment status, linked parent.</li>
+        <li><strong>Learning records:</strong> attendance (including AM/PM sessions), scores and rubric category points, lesson files, classwork, quizzes, and AI drafts.</li>
+        <li><strong>Messages:</strong> parent–teacher concerns stay between those two accounts. Admins send school announcements, not private threads.</li>
+        <li><strong>SMS queue:</strong> parent phone, message text, send status (when SMS is configured).</li>
+        <li><strong>Technical:</strong> sign-in session (browser token), activity logs, uploaded files.</li>
+      </ul>
+      <h2>Why we use it</h2>
+      <p>To run classes, show a parent their own child’s progress, send notices and optional SMS alerts, and support school administration. ConnectED does not sell personal data.</p>
+      <h2>Who can see what</h2>
+      <ul>
+        <li><strong>Admin:</strong> school users, students, subjects, and school announcements. Parent–teacher concerns stay private.</li>
+        <li><strong>Teacher:</strong> assigned classes, records they encode, materials, and notices they send.</li>
+        <li><strong>Parent:</strong> only children linked to their account (overview, progress, attendance, inbox for the selected child).</li>
+      </ul>
+      <h2>SMS</h2>
+      <p>If the school enables SMS, a parent’s Philippine mobile number and the alert text are sent through the configured provider (for example Semaphore). Delivery depends on that provider and a valid <code>09XXXXXXXXX</code> number.</p>
+      <h2>AI drafts</h2>
+      <p>Generate AI Draft sends lesson title, objectives, and an excerpt of the lesson file to the school’s configured model (local Ollama or a cloud API). Student names and LRNs are not included in that prompt. Drafts stay in the teacher account until reviewed and saved to Classwork. Teachers must check AI output before learners use it. Quiz and activity Records are created from Classwork, not from the draft itself.</p>
+      <h2>Shared quiz links</h2>
+      <p>A classwork share link can be opened without a ConnectED login. Anyone who has the link can open that quiz. Treat the URL like a password.</p>
+      <h2>Browser storage</h2>
+      <p>ConnectED stores a sign-in token and related preferences in the browser so you stay logged in. It does not use advertising trackers.</p>
+      <h2>Retention, access, and security</h2>
+      <p>Records are kept while the school uses ConnectED (typically the school year and any period the school requires). Ask an administrator to correct account or student details. Passwords are stored hashed. Access is limited by role. No system is perfectly secure; the school is responsible for backups and who is given an account.</p>
+      <h2>Contact</h2>
+      <p>For privacy questions or to update your details, contact your school administrator through ConnectED Inbox or the school office.</p>
+    </section>
+
+    <section class="legal-panel" id="legal-panel-terms" hidden>
+      <h3 class="font-heading legal-heading">Terms of Use</h3>
+      <p>By using a ConnectED account you agree to these terms. The school that operates this portal remains responsible for official grades, enrollment, and school policies.</p>
+      <h2>The service</h2>
+      <p>ConnectED is an information system for teachers, parents, and admins. It is not a public social network. Progress Summary is generated from stored scores and attendance (template wording), not a counseling or psychological assessment. If a screen conflicts with official school records, the school’s official record prevails.</p>
+      <h2>Accounts</h2>
+      <p>Accounts are issued by an administrator. Keep your password private. Do not share a login. You may be required to change a temporary password on first sign-in. The school may disable an account if it is misused.</p>
+      <h2>Acceptable use</h2>
+      <ul>
+        <li><strong>Teachers</strong> encode attendance and scores in good faith, review AI drafts before Classwork or Records, and send notices only to appropriate classes.</li>
+        <li><strong>Parents</strong> use the portal only for children linked to them and must not copy or publish other pupils’ data.</li>
+        <li><strong>Admins</strong> manage users, enrollment, and subjects for school operations.</li>
+      </ul>
+      <p>Do not put extra sensitive personal data in notices or AI prompts beyond what teaching requires.</p>
+      <h2>AI, SMS, and quiz links</h2>
+      <p>AI output can be wrong. The teacher is responsible for what is saved and given to learners. SMS alerts are best-effort and are not a substitute for the portal. Shared quiz URLs must not be posted publicly if the assessment should stay in class.</p>
+      <h2>Uploads and availability</h2>
+      <p>Lesson files must be school-appropriate and must not infringe copyright. The portal may be unavailable during maintenance, local server issues, or a slow AI model. There is no guaranteed uptime unless the school states otherwise.</p>
+      <h2>Governing note</h2>
+      <p>These terms are intended for use in the Philippines. For a live school deployment, the school may attach additional policies. This text is not a substitute for legal counsel.</p>
+    </section>
+
+    <section class="legal-panel" id="legal-panel-help" hidden>
+      <h3 class="font-heading legal-heading">Help</h3>
+      <p>Short guides for this portal. For account problems, ask your school administrator—there is no self-serve password reset by email.</p>
+      <h2>All users</h2>
+      <ul>
+        <li>Sign in with your school email and password. Use Change Password in the profile menu after you log in.</li>
+        <li>After a system update, refresh the page (<kbd>Ctrl</kbd>+<kbd>F5</kbd>) if buttons look old.</li>
+        <li>On a phone, use the menu button (☰) to open Classroom, Inbox, and the rest of the sidebar.</li>
+      </ul>
+      <h2>Admin</h2>
+      <ul>
+        <li>Create teacher and parent accounts. Parents need a valid mobile number if the school sends SMS.</li>
+        <li>Enroll students (LRN, grade, section) and link them to a parent.</li>
+        <li>Manage subjects and who teaches which class. Send school announcements from Announcements.</li>
+      </ul>
+      <h2>Teacher</h2>
+      <ul>
+        <li>Pick a class under My Classes, then use Attendance Sheet, Records, Materials, and Classwork.</li>
+        <li>Materials → Generate AI Draft. Keep the tab open until <strong>Generating AI Draft</strong> finishes (first run can take a few minutes). Review, then <strong>Save to Classwork</strong>. In Classwork, create a Quiz or Activity to add it to Records and enable a student link.</li>
+        <li>Class notices go to parents of that class. Inbox is for concerns and replies.</li>
+        <li>A shared quiz link works without login. Copy it only to the intended group.</li>
+      </ul>
+      <h2>Parent</h2>
+      <ul>
+        <li>If you have more than one child, switch child in the sidebar first. Overview, Progress, Attendance, and Inbox follow the selected child.</li>
+        <li>Progress Summary lists subject notes from recent scores and attendance. It is not an AI chat.</li>
+        <li>SMS may repeat an important notice; the portal has the full message.</li>
+      </ul>
+      <h2>Common questions</h2>
+      <ul>
+        <li><strong>Inbox shows another child.</strong> Select the correct child, then open Inbox again.</li>
+        <li><strong>Generate showed an error but a draft appeared.</strong> Refresh Materials. Wait for one job to finish before clicking Generate again.</li>
+        <li><strong>Enroll has no sections.</strong> Choose the grade first. Sections come from assigned classes and enrolled students.</li>
+        <li><strong>SMS did not arrive.</strong> Check the parent number is <code>09XXXXXXXXX</code> and that the school’s SMS service is on.</li>
+      </ul>
+    </section>
+
+    <div class="modal-form-actions">
+      <button type="button" class="btn-outline" id="legal-modal-close">Close</button>
+    </div>
   </div>
 </div>
 

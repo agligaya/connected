@@ -4,7 +4,8 @@ const {
   manilaISODate,
   sqlDateToISO,
   isSubjectGrade,
-  normalizeSession
+  normalizeSession,
+  currentManilaSession
 } = require('./attendanceSchema');
 
 const VALID_STATUSES = ['Present', 'Absent', 'Late', 'Excused'];
@@ -79,7 +80,7 @@ function attendanceSlotForAssessment(assessment, overrides = {}) {
   const date = coerceAttendanceDate(rawDate);
   const session = subjectMode
     ? 'AM'
-    : normalizeSession(overrides.session || assessment.quiz_attendance_session || 'AM', { subjectMode: false });
+    : currentManilaSession();
   const subjectId = subjectMode
     ? (overrides.subject_id != null ? Number(overrides.subject_id) : Number(assessment.quiz_subject_id || assessment.subject_id))
     : null;
@@ -160,6 +161,10 @@ function normalizeSqlDatetime(value) {
   }
   const s = String(value).trim();
   if (!s) return null;
+  if (/[zZ]|[+-]\d{2}:\d{2}$/.test(s) || /T\d{2}:\d{2}:\d{2}\.\d+Z$/.test(s)) {
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) return formatManilaSqlDatetime(parsed);
+  }
   if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s)) {
     const cleaned = s.replace('T', ' ').replace(/\.\d+Z?$/, '').slice(0, 19);
     if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(cleaned)) return `${cleaned}:00`;
@@ -308,6 +313,7 @@ module.exports = {
   ensureExcusedStatus,
   parseMakeupIds,
   attendanceSlotForAssessment,
+  currentManilaSession,
   loadAttendanceRoster,
   getAttendanceCompletion,
   normalizeStatus,

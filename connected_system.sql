@@ -59,7 +59,8 @@ CREATE TABLE `subjects` (
   `description` text DEFAULT NULL,
   `applicable_grades` varchar(20) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `CODE` (`CODE`)
+  UNIQUE KEY `CODE` (`CODE`),
+  UNIQUE KEY `uq_subjects_name` (`NAME`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `students` (

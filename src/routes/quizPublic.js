@@ -20,7 +20,8 @@ const {
   loadAttendanceRoster,
   isStudentEligibleForQuiz,
   quizBlockReason,
-  getSubmittedStudentIds
+  getSubmittedStudentIds,
+  isAtOrBeforeManila
 } = require('../utils/quizAttendance');
 
 function normalizeLrn(value) {
@@ -67,6 +68,7 @@ router.get('/:token', async (req, res) => {
     }
 
     const makeupIds = parseMakeupIds(assessment.quiz_makeup_student_ids);
+    const liveOpen = isAtOrBeforeManila(assessment.quiz_closes_at);
 
     res.json({
       title: assessment.title,
@@ -80,7 +82,8 @@ router.get('/:token', async (req, res) => {
       identity_verification: 'lrn_first',
       live_statuses: ['Present', 'Late'],
       quiz_closes_at: assessment.quiz_closes_at || null,
-      quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null
+      quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null,
+      live_open: liveOpen
     });
   } catch (error) {
     console.error('Public quiz get error:', error);

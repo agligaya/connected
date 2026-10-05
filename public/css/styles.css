@@ -971,6 +971,10 @@ body[data-view="admin"] .page-shell {
   color: var(--maroon-deep);
 }
 
+#parent-print-btn[hidden] {
+  display: none !important;
+}
+
 .btn-orange-outline {
   border-radius: 10px;
   border: 2px solid var(--orange);
@@ -2053,33 +2057,41 @@ html.layout-mobile .admin-student-filter-select {
   box-sizing: border-box;
 }
 
-#admin-accounts-table th:nth-child(1),
-#admin-accounts-table td:nth-child(1) {
-  width: 18%;
+#admin-accounts-table th.col-check,
+#admin-accounts-table td.col-check {
+  width: 36px;
+  text-align: center;
+  padding-left: 8px;
+  padding-right: 4px;
 }
 
 #admin-accounts-table th:nth-child(2),
 #admin-accounts-table td:nth-child(2) {
+  width: 18%;
+}
+
+#admin-accounts-table th:nth-child(3),
+#admin-accounts-table td:nth-child(3) {
   width: 24%;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-#admin-accounts-table th:nth-child(3),
-#admin-accounts-table td:nth-child(3) {
+#admin-accounts-table th:nth-child(4),
+#admin-accounts-table td:nth-child(4) {
   width: 12%;
 }
 
-#admin-accounts-table th:nth-child(4),
-#admin-accounts-table td:nth-child(4) {
+#admin-accounts-table th:nth-child(5),
+#admin-accounts-table td:nth-child(5) {
   width: 30%;
   word-break: break-word;
   overflow-wrap: anywhere;
   white-space: normal;
 }
 
-#admin-accounts-table th:nth-child(5),
-#admin-accounts-table td:nth-child(5) {
+#admin-accounts-table th:nth-child(6),
+#admin-accounts-table td:nth-child(6) {
   width: 16%;
 }
 
@@ -2143,54 +2155,111 @@ html.layout-mobile .admin-student-filter-select {
   font-weight: 600;
 }
 
-#progress-scores-table .progress-score-input[readonly] {
+#progress-scores-table .progress-score-input[readonly],
+#progress-scores-table .progress-score-input:disabled,
+#progress-scores-table .progress-rubric-cat-input:disabled {
   background: #f7f2ec;
-  color: var(--text-dark, #3d0a0a);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 /* View scores: name gets most of the row */
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(1),
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(1) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(1),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(1) {
   width: 70%;
 }
 
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(2),
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(2) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(2),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(2) {
   width: 15%;
 }
 
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) th:nth-child(3),
-#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric) td:nth-child(3) {
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(3),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(3) {
   width: 15%;
+  text-align: center;
+}
+
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(1),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(1) {
+  width: 46%;
+}
+
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(2),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(2) {
+  width: 22%;
+}
+
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(3),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(3) {
+  width: 16%;
+}
+
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(4),
+#progress-scores-table:not(.progress-scores-table--edit):not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(4) {
+  width: 16%;
   text-align: center;
 }
 
 /* Edit scores: widen Student, tighten Access gaps */
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(1),
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(1) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(1),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(1) {
   width: 40%;
 }
 
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(2),
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(2) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(2),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(2) {
   width: 12%;
 }
 
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(3),
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(3) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(3),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(3) {
   width: 8%;
   text-align: center;
 }
 
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(4),
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(4) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(4),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(4) {
   width: 14%;
   text-align: center;
 }
 
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) th:nth-child(5),
-#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric) td:nth-child(5) {
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) th:nth-child(5),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric):not(.progress-scores-table--work) td:nth-child(5) {
   width: 26%;
+  text-align: center;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(1),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(1) {
+  width: 28%;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(2),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(2) {
+  width: 16%;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(3),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(3) {
+  width: 12%;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(4),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(4) {
+  width: 8%;
+  text-align: center;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(5),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(5) {
+  width: 12%;
+  text-align: center;
+}
+
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work th:nth-child(6),
+#progress-scores-table.progress-scores-table--edit:not(.progress-scores-table--rubric).progress-scores-table--work td:nth-child(6) {
+  width: 24%;
   text-align: center;
 }
 
@@ -2246,6 +2315,25 @@ html.layout-mobile .admin-student-filter-select {
   white-space: pre-wrap;
   font-size: 0.9rem;
   margin: 0 0 10px;
+}
+
+.progress-work-cell {
+  white-space: normal;
+}
+
+.progress-work-cell .chip-ghost {
+  margin: 0;
+}
+
+.progress-quiz-choices {
+  list-style: none;
+  margin: 0 0 10px;
+  padding-left: 0;
+  font-size: 0.86rem;
+}
+
+.progress-quiz-choices li {
+  margin: 2px 0;
 }
 
 .ai-count-chips {
@@ -3053,20 +3141,20 @@ tbody tr:nth-child(even) {
   box-shadow: var(--shadow-card);
 }
 
-.kpi-card:nth-child(even) {
+.parent-kpis > .kpi-card:nth-child(odd) {
   background: linear-gradient(145deg, var(--maroon) 0%, var(--maroon-deep) 100%);
   color: var(--white);
 }
 
-.kpi-card:nth-child(even) .kpi-title {
+.parent-kpis > .kpi-card:nth-child(odd) .kpi-title {
   color: rgba(255, 255, 255, 0.75);
 }
 
-.kpi-card:nth-child(even) .kpi-value span:first-child {
+.parent-kpis > .kpi-card:nth-child(odd) .kpi-value span:first-child {
   color: var(--orange);
 }
 
-.kpi-card:nth-child(even) .kpi-sub {
+.parent-kpis > .kpi-card:nth-child(odd) .kpi-sub {
   color: rgba(255, 255, 255, 0.85);
 }
 
@@ -4109,10 +4197,10 @@ html.layout-mobile .admin-list-toolbar {
   align-items: stretch !important;
 }
 
-html.layout-mobile #admin-accounts-table th:nth-child(2),
-html.layout-mobile #admin-accounts-table td:nth-child(2),
-html.layout-mobile #admin-accounts-table th:nth-child(4),
-html.layout-mobile #admin-accounts-table td:nth-child(4) {
+html.layout-mobile #admin-accounts-table th:nth-child(3),
+html.layout-mobile #admin-accounts-table td:nth-child(3),
+html.layout-mobile #admin-accounts-table th:nth-child(5),
+html.layout-mobile #admin-accounts-table td:nth-child(5) {
   display: none;
 }
 
@@ -5779,4 +5867,88 @@ html.layout-mobile button.topbar-avatar-btn {
 html.layout-mobile .admin-students-table-wrap,
 html.layout-mobile #admin-tab-students .records-table-wrapper {
   overflow: visible !important;
+}
+
+.login-legal-links {
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 0.75rem;
+}
+
+.login-legal-links button {
+  color: var(--maroon-deep);
+  margin: 0 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.legal-modal-card {
+  max-height: 85vh;
+}
+
+.legal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.legal-tab {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-maroon);
+  background: var(--white);
+  color: var(--maroon-deep);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.legal-tab.is-active {
+  background: var(--maroon);
+  border-color: var(--maroon);
+  color: var(--white);
+}
+
+.legal-updated {
+  margin-bottom: 16px;
+}
+
+.legal-heading {
+  font-size: 1.2rem;
+  color: var(--maroon-deep);
+  margin: 0 0 12px;
+}
+
+.legal-panel h2 {
+  font-size: 1rem;
+  color: var(--maroon-deep);
+  margin: 18px 0 8px;
+}
+
+.legal-panel p,
+.legal-panel li {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text-dark);
+}
+
+.legal-panel ul {
+  margin: 0 0 8px;
+  padding-left: 1.2rem;
+}
+
+.legal-panel kbd {
+  font-size: 0.8em;
+  padding: 1px 5px;
+  border: 1px solid var(--border-maroon);
+  border-radius: 4px;
+  background: var(--peach-soft);
 }

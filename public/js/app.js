@@ -3,6 +3,7 @@ let SCHOOL_YEAR = '2025-2026';
 let CURRENT_QUARTER = 'Q1';
 let UNLOCKED_QUARTERS = ['Q1'];
 let lastAccountsData = [];
+const selectedAccountIds = new Set();
 let lastStudentsData = [];
 let currentAccountRoleFilter = 'all';
 let currentAccountStatusFilter = 'active';
@@ -32,7 +33,6 @@ function fillUnlockedQuarterSelect(selectEl, preferred) {
 function refreshUnlockedQuarterSelects() {
   fillUnlockedQuarterSelect(document.getElementById('qb-exam-quarter'));
   fillUnlockedQuarterSelect(document.getElementById('qb-create-quarter'));
-  fillUnlockedQuarterSelect(document.getElementById('ai-approve-quarter'));
 }
 
 function applyQuarterUnlockUI() {
@@ -335,6 +335,47 @@ document.getElementById('forgot-password-close')?.addEventListener('click', () =
 });
 forgotModal?.addEventListener('click', (e) => {
   if (e.target.id === 'forgot-password-modal') forgotModal.setAttribute('hidden', '');
+});
+
+const LEGAL_PAGES = ['privacy', 'terms', 'help'];
+
+function showLegalTab(page) {
+  const id = LEGAL_PAGES.includes(page) ? page : 'privacy';
+  LEGAL_PAGES.forEach((name) => {
+    const panel = document.getElementById(`legal-panel-${name}`);
+    if (panel) panel.hidden = name !== id;
+  });
+  document.querySelectorAll('#legal-modal [data-legal-tab]').forEach((el) => {
+    el.classList.toggle('is-active', el.getAttribute('data-legal-tab') === id);
+  });
+}
+
+function openLegalModal(page) {
+  showLegalTab(page);
+  document.getElementById('legal-modal')?.removeAttribute('hidden');
+}
+
+function closeLegalModal() {
+  document.getElementById('legal-modal')?.setAttribute('hidden', '');
+}
+
+document.querySelectorAll('[data-legal-open]').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.preventDefault();
+    openLegalModal(el.getAttribute('data-legal-open'));
+  });
+});
+document.querySelectorAll('#legal-modal [data-legal-tab]').forEach((el) => {
+  el.addEventListener('click', () => showLegalTab(el.getAttribute('data-legal-tab')));
+});
+document.getElementById('legal-modal-close')?.addEventListener('click', closeLegalModal);
+document.getElementById('legal-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'legal-modal') closeLegalModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('legal-modal');
+  if (modal && !modal.hasAttribute('hidden')) closeLegalModal();
 });
 
 // ========== ON LOAD: Restore previous session ==========
@@ -969,7 +1010,7 @@ async function loadAccountsTable() {
 
   } catch (err) {
     console.error('Load accounts error:', err);
-    tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">Failed to load accounts</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Failed to load accounts</td></tr>`;
   }
 }
 
@@ -1027,14 +1068,24 @@ function applyAccountFilters() {
   }
 
   if (!filtered.length) {
+    selectedAccountIds.clear();
+    updateAccountsBulkBar();
     const statusLabel = currentAccountStatusFilter === 'active' ? 'active ' : currentAccountStatusFilter === 'inactive' ? 'inactive ' : '';
     const roleLabel = currentAccountRoleFilter === 'all' ? 'accounts' : currentAccountRoleFilter + 's';
-    tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">No ${statusLabel}${roleLabel} found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">No ${statusLabel}${roleLabel} found</td></tr>`;
     return;
   }
 
+  const visibleIds = new Set(filtered.map((u) => Number(u.id)));
+  [...selectedAccountIds].forEach((id) => {
+    if (!visibleIds.has(id)) selectedAccountIds.delete(id);
+  });
+
   tbody.innerHTML = filtered.map(u => `
-    <tr style="${u.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
+    <tr data-account-id="${u.id}" style="${u.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
+      <td class="col-check">
+        <input type="checkbox" class="admin-account-check" data-account-id="${u.id}" ${selectedAccountIds.has(Number(u.id)) ? 'checked' : ''} aria-label="Select account" />
+      </td>
       <td>${u.role === 'teacher' 
         ? `<span class="clickable-name" onclick="openTeacherDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${u.first_name} ${u.last_name}</span>`
         : u.role === 'parent'
@@ -1066,7 +1117,110 @@ function applyAccountFilters() {
       <td>${statusBadgeHtml(u.status)}</td>
     </tr>
   `).join('');
+  updateAccountsBulkBar();
 }
+
+function updateAccountsBulkBar() {
+  const bar = document.getElementById('admin-accounts-bulk-bar');
+  const countEl = document.getElementById('admin-accounts-bulk-count');
+  const actionBtn = document.getElementById('admin-accounts-bulk-status');
+  const selectAll = document.getElementById('admin-accounts-select-all');
+  const n = selectedAccountIds.size;
+  if (countEl) countEl.textContent = `${n} selected`;
+  if (bar) {
+    if (n === 0) bar.setAttribute('hidden', '');
+    else bar.removeAttribute('hidden');
+  }
+  if (actionBtn) {
+    const activating = currentAccountStatusFilter === 'inactive';
+    actionBtn.textContent = activating ? 'Activate Selected' : 'Deactivate Selected';
+    actionBtn.classList.toggle('chip-danger', !activating);
+    actionBtn.classList.toggle('primary', activating);
+  }
+  const checks = [...document.querySelectorAll('#admin-accounts-table .admin-account-check')];
+  if (selectAll) {
+    const anyChecked = checks.some((c) => c.checked);
+    const allChecked = checks.length > 0 && checks.every((c) => c.checked);
+    selectAll.indeterminate = false;
+    selectAll.checked = allChecked;
+    selectAll.indeterminate = anyChecked && !allChecked;
+    selectAll.disabled = checks.length === 0;
+  }
+}
+
+(function setupAccountTableSelection() {
+  const tbody = document.querySelector('#admin-accounts-table tbody');
+  tbody?.addEventListener('change', (e) => {
+    const check = e.target.closest('.admin-account-check');
+    if (!check) return;
+    const id = Number(check.dataset.accountId);
+    if (!id) return;
+    if (check.checked) selectedAccountIds.add(id);
+    else selectedAccountIds.delete(id);
+    updateAccountsBulkBar();
+  });
+
+  const selectAll = document.getElementById('admin-accounts-select-all');
+  if (!selectAll) return;
+  let wasIndeterminate = false;
+  const captureState = () => {
+    wasIndeterminate = !!selectAll.indeterminate;
+  };
+  selectAll.addEventListener('pointerdown', captureState);
+  selectAll.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') captureState();
+  });
+  selectAll.addEventListener('click', () => {
+    const checks = [...document.querySelectorAll('#admin-accounts-table .admin-account-check')];
+    const shouldSelectAll = !wasIndeterminate && selectAll.checked;
+    checks.forEach((cb) => {
+      cb.checked = shouldSelectAll;
+      const id = Number(cb.dataset.accountId);
+      if (!id) return;
+      if (shouldSelectAll) selectedAccountIds.add(id);
+      else selectedAccountIds.delete(id);
+    });
+    if (!shouldSelectAll) selectedAccountIds.clear();
+    selectAll.indeterminate = false;
+    selectAll.checked = shouldSelectAll;
+    wasIndeterminate = false;
+    updateAccountsBulkBar();
+  });
+})();
+
+document.getElementById('admin-accounts-bulk-status')?.addEventListener('click', async () => {
+  const ids = [...selectedAccountIds];
+  if (!ids.length) return;
+  const newStatus = currentAccountStatusFilter === 'inactive' ? 'active' : 'inactive';
+  const verb = newStatus === 'inactive' ? 'Deactivate' : 'Activate';
+  const detail = newStatus === 'inactive'
+    ? 'They will no longer be able to log in.'
+    : 'They will be able to log in again.';
+  if (!confirm(`${verb} ${ids.length} selected account(s)? ${detail}`)) return;
+
+  const selfId = Number(getAuthUser()?.id || getAuthUser()?.userId);
+  try {
+    for (const id of ids) {
+      if (selfId && Number(id) === selfId) continue;
+      const account = lastAccountsData.find((u) => Number(u.id) === Number(id));
+      if (!account || account.role === 'admin' || account.status === newStatus) continue;
+      const res = await fetch(`${API_URL}/admin/accounts/${id}/status`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ status: newStatus })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to update account #${id}`);
+      account.status = newStatus;
+    }
+    selectedAccountIds.clear();
+    showToast(newStatus === 'inactive' ? 'Selected accounts deactivated.' : 'Selected accounts activated.');
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
+  } catch (err) {
+    alert(err.message);
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
+  }
+});
 
 
 // FIX #5: Add confirmation before deactivating/activating
@@ -3126,16 +3280,21 @@ async function loadActivityLog() {
     tbody.innerHTML = recent.map(log => {
       const roleLabel = formatActivityRole(log.user_role);
       const roleHtml = roleLabel ? `<span class="log-role">${roleLabel}</span>` : '';
-      const detail = log.details
-        ? ` <span style="color:var(--text-muted);font-size:0.78rem;">· ${log.details}</span>`
+      const concernLog = log.target_type === 'concern'
+        || /concern/i.test(String(log.action || ''));
+      const detail = !concernLog && log.details
+        ? ` <span style="color:var(--text-muted);font-size:0.78rem;">· ${escapeHtml(log.details)}</span>`
+        : '';
+      const target = !concernLog && log.target_name
+        ? ` — <em>${escapeHtml(log.target_name)}</em>`
         : '';
       return `
       <tr>
         <td>
-          <span class="log-user">${log.user_name || 'System'}</span>
+          <span class="log-user">${escapeHtml(log.user_name || 'System')}</span>
           ${roleHtml}
         </td>
-        <td><span class="log-action">${log.action}</span>${log.target_name ? ` — <em>${log.target_name}</em>` : ''}${detail}</td>
+        <td><span class="log-action">${escapeHtml(log.action || '')}</span>${target}${detail}</td>
         <td class="log-time">${new Date(log.created_at).toLocaleString()}</td>
       </tr>
     `;
@@ -3322,10 +3481,27 @@ function paintAdminAnnouncementsList() {
   }).join('');
 }
 
-window.toggleAdminAnnouncement = function(id) {
+window.toggleAdminAnnouncement = async function(id) {
   const announcementId = Number(id);
   if (!announcementId) return;
-  adminExpandedAnnouncementId = Number(adminExpandedAnnouncementId) === announcementId ? null : announcementId;
+  if (Number(adminExpandedAnnouncementId) === announcementId) {
+    adminExpandedAnnouncementId = null;
+    paintAdminAnnouncementsList();
+    return;
+  }
+  adminExpandedAnnouncementId = announcementId;
+  const cached = (adminInboxCache.announcements || []).find((a) => Number(a.id) === announcementId);
+  if (cached && isUnread(cached)) {
+    try {
+      await fetch(`${API_URL}/admin/announcements/${announcementId}/read`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      cached.is_read = 1;
+    } catch (err) {
+      console.error('Mark announcement read error:', err);
+    }
+  }
   paintAdminAnnouncementsList();
 };
 
@@ -4070,27 +4246,31 @@ function showToast(message, type = 'success') {
   }, 3000);
 }
 
+function unreadAnnouncementIds(list) {
+  return (list || [])
+    .filter((a) => a && isUnread(a))
+    .map((a) => Number(a.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
+
 async function markAllAnnouncementsRead() {
-  // Scope to the currently visible list only
-  let container = null;
-
   const activeAdminTab = document.querySelector('[data-admin-tab].active')?.dataset.adminTab;
-  if (activeAdminTab === 'announcements') container = document.getElementById('admin-announcement-list');
-
   const activeTeacherPanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
-  if (activeTeacherPanel === 'inbox') container = document.getElementById('teacher-inbox-list');
-
   const activeParentTab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab;
-  if (activeParentTab === 'inbox') {
-    container = document.querySelector('#parent-content .inbox-list');
+  const parentViewOpen = document.getElementById('view-parent') && !document.getElementById('view-parent').hidden;
+
+  if (parentViewOpen && activeParentTab === 'inbox') {
+    await markParentInboxRead();
+    return;
   }
 
-  const unreadBtns = container
-    ? container.querySelectorAll('.announcement-read-btn[data-unread="true"]')
-    : [];
-
-  const ids = Array.from(unreadBtns).map(btn => parseInt(btn.dataset.id));
-  if (ids.length === 0) return;
+  let ids = [];
+  if (activeTeacherPanel === 'inbox') {
+    ids = unreadAnnouncementIds(teacherInboxCache.announcements);
+  } else if (activeAdminTab === 'announcements') {
+    ids = unreadAnnouncementIds(adminInboxCache.announcements);
+  }
+  if (!ids.length) return;
 
   if (!confirm(`Mark all ${ids.length} announcement${ids.length > 1 ? 's' : ''} as read?`)) return;
 
@@ -4100,17 +4280,63 @@ async function markAllAnnouncementsRead() {
       headers: getAuthHeaders(),
       body: JSON.stringify({ announcement_ids: ids })
     });
-    if (!res.ok) throw new Error('Failed');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not mark announcements as read');
 
-    // Refresh the currently visible list
     if (activeAdminTab === 'announcements') loadAdminAnnouncements();
-    if (activeTeacherPanel === 'inbox') loadTeacherInbox();
-    if (activeParentTab === 'inbox') renderParentInbox();
-
-    // Always refresh inbox badge counts
-    loadTeacherInbox();
+    else if (activeTeacherPanel === 'inbox') loadTeacherInbox();
   } catch (err) {
     console.error('Mark all read error:', err);
+    showToast(err.message || 'Could not mark announcements as read.', 'error');
+  }
+}
+
+async function markParentInboxRead() {
+  const announcements = (parentInboxCache.announcements || []).filter(announcementBelongsToSelectedChild);
+  const isAdminAnnouncement = (a) => String(a.sender_role || 'admin') !== 'teacher';
+  const filter = parentInboxFilter || 'unresolved';
+  let announcementIds = [];
+  let messageIds = [];
+
+  if (filter === 'admin') {
+    announcementIds = unreadAnnouncementIds(announcements.filter(isAdminAnnouncement));
+  } else if (filter === 'teacher') {
+    announcementIds = unreadAnnouncementIds(announcements.filter((a) => !isAdminAnnouncement(a)));
+    messageIds = (parentInboxCache.messages || [])
+      .filter(noticeBelongsToSelectedChild)
+      .filter((m) => m.is_read === 0 || m.is_read === false)
+      .map((m) => Number(m.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+  }
+
+  const total = announcementIds.length + messageIds.length;
+  if (!total) return;
+  if (!confirm(`Mark all ${total} item${total > 1 ? 's' : ''} as read?`)) return;
+
+  try {
+    if (announcementIds.length) {
+      const res = await fetch(`${API_URL}/admin/announcements/mark-all-read`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ announcement_ids: announcementIds })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not mark announcements as read');
+    }
+    if (messageIds.length) {
+      const res = await fetch(`${API_URL}/parent/messages/mark-all-read`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ message_ids: messageIds })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not mark notices as read');
+    }
+    await renderParentInbox();
+    if (typeof refreshParentInboxBadge === 'function') refreshParentInboxBadge();
+  } catch (err) {
+    console.error('Parent mark all read error:', err);
+    showToast(err.message || 'Could not mark items as read.', 'error');
   }
 }
 
@@ -4534,8 +4760,12 @@ function paintParentInboxList() {
     }).join('');
   }
 
-  const markAllBtn = filter === 'admin' && unreadAnn > 0 && !String(q || '').trim()
-    ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All Announcements Read (${unreadAnn})</button></div>`
+  const unreadAdmin = announcements.filter((a) => isAdminAnnouncement(a) && isUnread(a)).length;
+  const unreadTeacher = notices.filter((m) => m.is_read === 0 || m.is_read === false).length
+    + announcements.filter((a) => !isAdminAnnouncement(a) && isUnread(a)).length;
+  const markCount = filter === 'admin' ? unreadAdmin : filter === 'teacher' ? unreadTeacher : 0;
+  const markAllBtn = markCount > 0 && !String(q || '').trim()
+    ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All as Read (${markCount})</button></div>`
     : '';
 
   const listHost = contentEl.querySelector('#parent-inbox-list');
@@ -4864,6 +5094,16 @@ let attendanceSheetData = [];
 let attendanceSheetWeekStart = '';
 let attendanceCurrentSession = 'AM';
 
+function currentManilaSessionClient() {
+  const hourStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    hour: 'numeric',
+    hourCycle: 'h23'
+  }).format(new Date());
+  const hour = Number(String(hourStr).replace(/\D/g, ''));
+  return hour < 12 ? 'AM' : 'PM';
+}
+
 function isSubjectAttendanceGrade(grade) {
   return Number(grade) >= 4;
 }
@@ -4944,6 +5184,34 @@ let progressEditorMax = 100;
 let progressTypeFilter = 'all';
 let progressSubjectFilter = null; // subject name string or null for all
 
+function scorePercentDisplay(score, max = progressEditorMax) {
+  const m = Number(max);
+  const n = Number(score);
+  if (!Number.isFinite(n) || !Number.isFinite(m) || m <= 0) return '—';
+  return `${Math.min(100, Math.max(0, Math.round((n / m) * 100)))}%`;
+}
+
+function clampProgressTotalInput(input) {
+  if (!input || input.readOnly || input.value === '') return;
+  const n = Number(input.value);
+  if (!Number.isFinite(n)) return;
+  const max = Number(progressEditorMax);
+  let next = n;
+  if (n < 0) next = 0;
+  if (Number.isFinite(max) && n > max) {
+    next = max;
+    if (input.dataset.overToast !== '1') {
+      input.dataset.overToast = '1';
+      showToast(`Score can't exceed ${max}.`, 'error');
+    }
+  } else {
+    input.dataset.overToast = '';
+  }
+  if (String(next) !== String(input.value)) input.value = String(next);
+  const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
+  if (cell) cell.textContent = scorePercentDisplay(next, max);
+}
+
 function typeLabel(type) {
   if (type === 'quiz') return 'Quiz';
   if (type === 'activity') return 'Activity';
@@ -5017,6 +5285,29 @@ function formatMcqAnswerDisplay(answer, choices) {
   );
   if (idxFromText >= 0) return mcqLetterAt(idxFromText);
   return raw.toUpperCase();
+}
+
+function quizTakenChoiceIndex(raw, choices) {
+  const text = String(raw || '').trim();
+  const list = Array.isArray(choices) ? choices : [];
+  if (!text || !list.length) return -1;
+  const idxFromToken = mcqIndexFromToken(text);
+  if (idxFromToken >= 0 && idxFromToken < list.length) return idxFromToken;
+  return list.findIndex((c) => {
+    const want = text.toLowerCase();
+    return stripMcqChoicePrefix(c).trim().toLowerCase() === want
+      || String(c).trim().toLowerCase() === want;
+  });
+}
+
+function formatQuizTakenAnswer(raw, choices) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const list = Array.isArray(choices) ? choices : [];
+  const idx = quizTakenChoiceIndex(text, list);
+  if (idx < 0) return text;
+  const body = stripMcqChoicePrefix(list[idx]) || String(list[idx] || '');
+  return `${mcqLetterAt(idx)}. ${body}`;
 }
 
 function rubricCategoriesOf(rubric) {
@@ -6242,11 +6533,7 @@ function renderProgressCards(records) {
           </div>
         </div>
       </div>
-      <p>${escapeHtml(r.subject_name || 'No subject')} · Total score ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}${
-        shareActive && r.quiz_attendance_date
-          ? ` · ${String(r.quiz_attendance_date).slice(0, 10)}${r.quiz_attendance_session && Number(r.grade_level) < 4 ? ' ' + r.quiz_attendance_session : ''}`
-          : ''
-      }</p>
+      <p>${escapeHtml(r.subject_name || 'No subject')} · Total score ${r.max_score} · ${r.scored_count || 0} scored · ${new Date(r.created_at).toLocaleDateString()}</p>
       <div class="lesson-plan-card-actions">
         <button type="button" class="chip-ghost primary" onclick="openProgressEditor(${r.id}, 'edit')">Scores</button>
       </div>
@@ -6382,7 +6669,7 @@ window.openProgressEditor = async function(id, mode = 'edit') {
 
   try {
     const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
-    const sessionQ = subjectMode ? '' : `?session=${encodeURIComponent(attendanceCurrentSession || 'AM')}`;
+    const sessionQ = subjectMode ? '' : `?session=${encodeURIComponent(currentManilaSessionClient())}`;
     const res = await fetch(`${API_URL}/teacher/assessments/${id}${sessionQ}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
@@ -6397,6 +6684,16 @@ window.openProgressEditor = async function(id, mode = 'edit') {
     const questions = Array.isArray(data.questions) ? data.questions : [];
     window._progressEditorQuestions = questions;
     window._progressRubricColumns = buildProgressRubricColumns(questions);
+    const rubricCap = rubricCapFromProgressColumns();
+    progressEditorMax = rubricCap > 0 ? rubricCap : (Number(a.max_score) || 100);
+    if (rubricCap > 0 && Number(a.max_score) !== rubricCap) {
+      a.max_score = rubricCap;
+      fetch(`${API_URL}/teacher/assessments/${id}`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ max_score: rubricCap })
+      }).catch(() => {});
+    }
     const hasQuestions = questions.length > 0;
     if (editor) editor.dataset.hasQuestions = hasQuestions ? '1' : '0';
 
@@ -6533,6 +6830,25 @@ function buildProgressRubricColumns(questions) {
   return cols;
 }
 
+function rubricCapFromProgressColumns(cols = window._progressRubricColumns) {
+  const list = Array.isArray(cols) ? cols : [];
+  const sum = list.reduce((s, c) => s + Math.max(0, Number(c.max_points) || 0), 0);
+  return sum > 0 ? Math.round(sum * 100) / 100 : 0;
+}
+
+function rubricCapFromBankItems(items) {
+  let sum = 0;
+  let any = false;
+  for (const it of items || []) {
+    if (!isActivityItemType(it.item_type)) continue;
+    const cats = rubricCategoriesOf(normalizeRubricClient(it.rubric) || it.rubric);
+    if (!cats.length) continue;
+    any = true;
+    sum += cats.reduce((s, c) => s + Math.max(1, Number(c.max_points) || 1), 0);
+  }
+  return any ? Math.round(sum * 100) / 100 : 0;
+}
+
 function syncProgressRowRubricTotal(tr) {
   if (!tr) return;
   const totalInput = tr.querySelector('.progress-score-input');
@@ -6548,7 +6864,7 @@ function syncProgressRowRubricTotal(tr) {
   const sum = values.reduce((s, v) => s + (Number(v) || 0), 0);
   totalInput.value = String(Math.round(sum * 100) / 100);
   if (pctCell) {
-    pctCell.textContent = `${Math.round((sum / progressEditorMax) * 100)}%`;
+    pctCell.textContent = scorePercentDisplay(sum, progressEditorMax);
   }
 }
 
@@ -6606,6 +6922,7 @@ function markRubricCategoryOverMax(input) {
 function progressRubricHasOverMax(scope = document.getElementById('progress-scores-table')) {
   if (!scope) return false;
   return [...scope.querySelectorAll('.progress-rubric-cat-input')].some((inp) => {
+    if (inp.disabled) return false;
     const max = Number(inp.dataset.maxPoints);
     return inp.value !== '' && Number.isFinite(max) && Number(inp.value) > max;
   });
@@ -6623,12 +6940,20 @@ function renderProgressScoresTable(mode, assessment, students) {
   const editMode = mode === 'edit';
   const rubricCols = Array.isArray(window._progressRubricColumns) ? window._progressRubricColumns : [];
   const hasRubric = rubricCols.length > 0;
-  const showWorkCol = (window._progressEditorQuestions || []).some((q) => isActivityItemType(q.item_type));
+  const editorQs = window._progressEditorQuestions || [];
+  const hasActivityQs = editorQs.some((q) => isActivityItemType(q.item_type));
+  const hasQuizQs = editorQs.some((q) => !isActivityItemType(q.item_type));
+  const anySubmittedWork = sortedStudents.some((row) =>
+    (Array.isArray(row.activity_work) && row.activity_work.length)
+    || (Array.isArray(row.quiz_taken) && row.quiz_taken.length)
+  );
+  const showWorkCol = anySubmittedWork || ((hasActivityQs || hasQuizQs) && shareOn);
   const workHead = showWorkCol ? '<th>Work</th>' : '';
 
   if (table) {
     table.classList.toggle('progress-scores-table--edit', editMode);
     table.classList.toggle('progress-scores-table--rubric', hasRubric);
+    table.classList.toggle('progress-scores-table--work', showWorkCol);
   }
 
   if (theadRow) {
@@ -6649,14 +6974,27 @@ function renderProgressScoresTable(mode, assessment, students) {
   let makeupEligible = 0;
   tbody.innerHTML = sortedStudents.map((s) => {
     const score = s.score === null || s.score === undefined ? '' : s.score;
-    const pct = score === '' ? '—' : `${Math.round((Number(score) / progressEditorMax) * 100)}%`;
+    const pct = score === '' ? '—' : scorePercentDisplay(score, progressEditorMax);
     const nameCell = `<td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>`;
     const savedRubric = parseRubricScoresClient(s.rubric_scores) || {};
+    const stEarly = String(s.attendance_status || '');
+    const scoreLocked = !!(shareOn && !s.submitted && (stEarly === 'Absent' || stEarly === 'Excused'));
+    const lockAttr = scoreLocked ? 'disabled' : '';
+    const lockTitle = scoreLocked
+      ? 'title="Absent or excused students can be scored after they submit."'
+      : '';
     const workList = Array.isArray(s.activity_work) ? s.activity_work : [];
+    const quizTaken = Array.isArray(s.quiz_taken) ? s.quiz_taken : [];
+    const workBtns = [];
+    if (quizTaken.length) {
+      const quizLabel = workList.length ? 'View quiz' : 'View work';
+      workBtns.push(`<button type="button" class="chip-ghost" onclick="viewProgressQuizTaken(${Number(s.id)})">${quizLabel}</button>`);
+    }
+    if (workList.length) {
+      workBtns.push(`<button type="button" class="chip-ghost" onclick="viewProgressActivityWork(${Number(s.id)})">View work</button>`);
+    }
     const workCell = showWorkCol
-      ? (workList.length
-        ? `<td><button type="button" class="chip-ghost" onclick="viewProgressActivityWork(${Number(s.id)})">View work</button></td>`
-        : '<td>—</td>')
+      ? `<td class="progress-work-cell">${workBtns.length ? workBtns.join('') : '—'}</td>`
       : '';
 
     const catCellsView = hasRubric
@@ -6679,7 +7017,7 @@ function renderProgressScoresTable(mode, assessment, students) {
             <input type="number" class="progress-rubric-cat-input${over ? ' progress-rubric-over' : ''}" min="0" step="0.5"
               value="${escapeHtml(String(val))}" data-student-id="${s.id}" data-rubric-key="${escapeHtml(c.key)}"
               data-max-points="${c.max_points}" data-rubric-label="${escapeHtml(c.shortLabel || c.label)}"
-              title="${escapeHtml(c.label)} (max ${c.max_points} pts)" />
+              title="${escapeHtml(c.label)} (max ${c.max_points} pts)" ${lockAttr} ${lockTitle} />
           </td>`;
         }).join('')
       : '';
@@ -6703,17 +7041,20 @@ function renderProgressScoresTable(mode, assessment, students) {
         }
       }
 
-      const totalReadonly = hasRubric ? 'readonly' : '';
-      const totalTitle = hasRubric ? 'title="Sum of rubric categories"' : '';
+      const totalReadonly = hasRubric || scoreLocked ? 'readonly' : '';
+      const totalDisabled = scoreLocked ? 'disabled' : '';
+      const totalTitle = scoreLocked
+        ? 'title="Absent or excused students can be scored after they submit."'
+        : (hasRubric ? 'title="Sum of rubric categories"' : '');
 
       return `
-        <tr data-student-id="${s.id}">
+        <tr data-student-id="${s.id}" ${scoreLocked ? 'data-score-locked="1"' : ''}>
           ${nameCell}
           ${workCell}
           ${catCellsEdit}
           <td>
             <input type="number" class="progress-score-input" min="0" max="${progressEditorMax}" step="0.01"
-                   value="${score}" data-student-id="${s.id}" style="width:90px;" ${totalReadonly} ${totalTitle} />
+                   value="${score}" data-student-id="${s.id}" style="width:90px;" ${totalReadonly} ${totalDisabled} ${totalTitle} />
           </td>
           <td class="progress-pct-cell">${pct}</td>
           <td class="progress-att-cell">${attHtml}</td>
@@ -6741,20 +7082,17 @@ function renderProgressScoresTable(mode, assessment, students) {
   if (editMode) {
     bindProgressScoreCellKeys(tbody);
     tbody.querySelectorAll('.progress-rubric-cat-input').forEach((input) => {
+      if (input.disabled) return;
       input.addEventListener('input', () => {
         markRubricCategoryOverMax(input);
         syncProgressRowRubricTotal(input.closest('tr'));
       });
     });
     tbody.querySelectorAll('.progress-score-input').forEach((input) => {
-      if (input.readOnly) return;
-      input.addEventListener('input', () => {
-        const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
-        if (!cell) return;
-        if (input.value === '') { cell.textContent = '—'; return; }
-        const n = Number(input.value);
-        cell.textContent = Number.isNaN(n) ? '—' : `${Math.round((n / progressEditorMax) * 100)}%`;
-      });
+      if (input.readOnly || input.disabled) return;
+      clampProgressTotalInput(input);
+      input.addEventListener('input', () => clampProgressTotalInput(input));
+      input.addEventListener('change', () => clampProgressTotalInput(input));
     });
   }
 }
@@ -6764,7 +7102,7 @@ function bindProgressScoreCellKeys(tbody) {
   tbody.dataset.scoreKeysBound = '1';
 
   const isScoreInput = (el) =>
-    el?.matches?.('.progress-score-input, .progress-rubric-cat-input');
+    el?.matches?.('.progress-score-input, .progress-rubric-cat-input') && !el.disabled;
 
   const refreshAfterValueChange = (input) => {
     if (input.classList.contains('progress-rubric-cat-input')) {
@@ -6773,11 +7111,12 @@ function bindProgressScoreCellKeys(tbody) {
       return;
     }
     if (input.readOnly) return;
-    const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
-    if (!cell) return;
-    if (input.value === '') { cell.textContent = '—'; return; }
-    const n = Number(input.value);
-    cell.textContent = Number.isNaN(n) ? '—' : `${Math.round((n / progressEditorMax) * 100)}%`;
+    if (input.value === '') {
+      const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
+      if (cell) cell.textContent = '—';
+      return;
+    }
+    clampProgressTotalInput(input);
   };
 
   tbody.addEventListener('focusin', (e) => {
@@ -6802,17 +7141,36 @@ function bindProgressScoreCellKeys(tbody) {
 }
 
 window.viewProgressActivityWork = function (studentId) {
+  openProgressTakenModal(studentId, 'activity');
+};
+
+window.viewProgressQuizTaken = function (studentId) {
+  openProgressTakenModal(studentId, 'quiz');
+};
+
+function openProgressTakenModal(studentId, kind) {
   const students = window._progressEditorStudents || [];
   const s = students.find((row) => Number(row.id) === Number(studentId));
-  const work = Array.isArray(s?.activity_work) ? s.activity_work : [];
+  const isQuiz = kind === 'quiz';
+  const work = isQuiz
+    ? (Array.isArray(s?.quiz_taken) ? s.quiz_taken : [])
+    : (Array.isArray(s?.activity_work) ? s.activity_work : []);
   const titleEl = document.getElementById('progress-activity-work-title');
+  const subEl = document.getElementById('progress-activity-work-sub');
   const bodyEl = document.getElementById('progress-activity-work-body');
   if (titleEl) {
-    titleEl.textContent = s ? `${s.last_name || ''}, ${s.first_name || ''}`.replace(/^,\s*/, '') : 'Student work';
+    titleEl.textContent = s ? `${s.last_name || ''}, ${s.first_name || ''}`.replace(/^,\s*/, '') : (isQuiz ? 'Quiz taken' : 'Student work');
+  }
+  if (subEl) {
+    subEl.textContent = isQuiz
+      ? 'Submitted from the live quiz link.'
+      : 'Submitted from the live activity link.';
   }
   if (bodyEl) {
     if (!work.length) {
-      bodyEl.innerHTML = '<p class="page-subheading">No submitted work.</p>';
+      bodyEl.innerHTML = `<p class="page-subheading">${isQuiz ? 'No quiz submission.' : 'No submitted work.'}</p>`;
+    } else if (isQuiz) {
+      bodyEl.innerHTML = work.map((item) => renderProgressQuizTakenItem(item)).join('');
     } else {
       bodyEl.innerHTML = work.map((item, i) => {
         const url = String(item.file?.url || '');
@@ -6831,7 +7189,30 @@ window.viewProgressActivityWork = function (studentId) {
     }
   }
   openAdminModal('progress-activity-work-modal');
-};
+}
+
+function renderProgressQuizTakenItem(item) {
+  const n = Number(item.n) || 1;
+  const choices = Array.isArray(item.choices) ? item.choices : [];
+  const given = formatQuizTakenAnswer(item.given, choices);
+  const expected = formatQuizTakenAnswer(item.expected, choices);
+  const mark = item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
+  const markHtml = mark ? ` <span class="page-subheading">${escapeHtml(mark)}</span>` : '';
+  const choiceHtml = choices.length
+    ? `<p class="page-subheading" style="margin:0 0 4px;"><strong>Choices:</strong></p>
+       <ul class="progress-quiz-choices">${choices.map((c, i) => {
+         const body = stripMcqChoicePrefix(c) || String(c || '');
+         return `<li>${escapeHtml(mcqLetterAt(i))}. ${escapeHtml(body)}</li>`;
+       }).join('')}</ul>`
+    : '';
+  return `<div class="progress-work-item">
+    <p class="page-subheading" style="margin:0 0 8px;"><strong>Item ${n}</strong>${markHtml}</p>
+    <p style="margin:0 0 8px;font-size:0.86rem;"><strong>Question:</strong> ${escapeHtml(item.question || '')}</p>
+    ${choiceHtml}
+    <p class="progress-activity-work"><strong>Student answer:</strong> ${given ? escapeHtml(given) : '—'}</p>
+    <p class="progress-activity-work" style="margin-bottom:0;"><strong>Answer key:</strong> ${expected ? escapeHtml(expected) : '—'}</p>
+  </div>`;
+}
 
 function setProgressEditorMode(mode, hasQuestions = true) {
   const normalized = mode === 'link' ? 'link' : 'edit';
@@ -6908,9 +7289,10 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
   let body = `<div class="q-text">${escapeHtml(q.question || '')}</div>`;
 
   if (type === 'mcq' && Array.isArray(q.choices) && q.choices.length) {
-    body += `<ol class="choices" type="A">${q.choices.map((c) =>
-      `<li>${escapeHtml(c)}</li>`
-    ).join('')}</ol>`;
+    body += `<ol class="choices" type="A">${q.choices.map((c) => {
+      const bodyText = stripMcqChoicePrefix(c) || String(c || '');
+      return `<li>${escapeHtml(bodyText)}</li>`;
+    }).join('')}</ol>`;
   } else if (isActivityItemType(type)) {
     body += '<div class="write-lines"><em>Performance / activity space — score using the rubric below.</em></div>';
   } else {
@@ -6920,7 +7302,7 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
 
   let answerBlock = '';
   if (includeAnswers && q.answer) {
-    answerBlock = `<div class="answer-key"><strong>Answer:</strong> ${escapeHtml(formatMcqAnswerDisplay(q.answer, q.choices) || String(q.answer))}</div>`;
+    answerBlock = `<div class="answer-key"><strong>Answer:</strong> ${escapeHtml(formatQuizTakenAnswer(q.answer, q.choices) || String(q.answer))}</div>`;
   }
 
   let rubricBlock = '';
@@ -6945,24 +7327,34 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
     </div>`;
 }
 
-function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
-  const a = window._progressEditorAssessment;
-  const questions = Array.isArray(window._progressEditorQuestions) ? window._progressEditorQuestions : [];
-  if (!a || !questions.length) {
-    showToast('No attached items to print.', 'error');
+function printAssessmentItemsPaper({
+  questions,
+  title,
+  type,
+  subject_name,
+  grade_level,
+  section,
+  quarter,
+  max_score,
+  includeAnswers = false,
+  reviewCopy = false
+} = {}) {
+  const items = Array.isArray(questions) ? questions : [];
+  if (!items.length) {
+    showToast('No items to print.', 'error');
     return;
   }
 
-  const maxScore = Number(a.max_score) || questions.reduce((s, q) => s + (Number(q.points) || 1), 0);
+  const maxScore = Number(max_score) || items.reduce((s, q) => s + (Number(q.points) || 1), 0);
   const heading = includeAnswers
-    ? `${escapeHtml(a.title || 'Assessment')} — ANSWER KEY (Teacher only)`
-    : escapeHtml(a.title || 'Assessment');
+    ? `${escapeHtml(title || 'Assessment')} — ${reviewCopy ? 'Principal review' : 'ANSWER KEY (Teacher only)'}`
+    : escapeHtml(title || 'Assessment');
   const meta = [
-    typeLabel(a.type),
-    a.subject_name || null,
-    a.grade_level != null ? `Grade ${a.grade_level}${a.section ? `-${a.section}` : ''}` : null,
-    a.quarter || null,
-    `${questions.length} item(s)`,
+    type ? typeLabel(type) : null,
+    subject_name || null,
+    grade_level != null && grade_level !== '' ? `Grade ${grade_level}${section ? `-${section}` : ''}` : null,
+    quarter || null,
+    `${items.length} item(s)`,
     `Total score ${Math.round(maxScore * 100) / 100}`
   ].filter(Boolean).join(' · ');
 
@@ -6970,7 +7362,7 @@ function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
     ? ''
     : `<div class="name-row"><span>Name: _______________________________</span><span>Score: ______ / ${Math.round(maxScore * 100) / 100}</span></div>`;
 
-  const groups = groupBankItemsByType(questions);
+  const groups = groupBankItemsByType(items);
   const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
   let qIndex = 0;
   const bodyParts = groups.map((g, gi) => {
@@ -6985,15 +7377,21 @@ function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
     return `${sectionHead}${itemsHtml}`;
   });
 
+  const notice = includeAnswers
+    ? (reviewCopy
+      ? '<p class="meta"><strong>For principal review — not for students.</strong></p>'
+      : '<p class="meta"><strong>Do not distribute to students.</strong></p>')
+    : '';
+
   const bodyHtml = `
     <h1>${heading}</h1>
     <p class="meta">${escapeHtml(meta)}</p>
     ${nameBlock}
-    ${includeAnswers ? '<p class="meta"><strong>Do not distribute to students.</strong></p>' : ''}
+    ${notice}
     ${bodyParts.join('')}
   `;
 
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${includeAnswers ? 'Answer Key' : '\u00A0'}</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${includeAnswers ? (reviewCopy ? 'Principal review' : 'Answer Key') : '\u00A0'}</title>
     <style>
       body { font-family: Arial, sans-serif; color: #222; padding: 20px; font-size: 12px; line-height: 1.45; }
       h1 { font-size: 16px; margin: 0 0 6px; color: #3d0a0a; }
@@ -7022,7 +7420,31 @@ function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
   </head><body>${bodyHtml}</body></html>`;
 
   printHtmlInHiddenFrame(html);
-  showToast(includeAnswers ? 'Opening answer key print dialog…' : 'Opening exam paper print dialog (Save as PDF).');
+  showToast(reviewCopy
+    ? 'Opening print dialog for principal review…'
+    : (includeAnswers ? 'Opening answer key print dialog…' : 'Opening exam paper print dialog (Save as PDF).'));
+}
+
+function exportAssessmentPaperPdf({ includeAnswers = false } = {}) {
+  const a = window._progressEditorAssessment;
+  const questions = Array.isArray(window._progressEditorQuestions) ? window._progressEditorQuestions : [];
+  if (!a || !questions.length) {
+    showToast('No attached items to print.', 'error');
+    return;
+  }
+
+  const maxScore = rubricCapFromProgressColumns() || Number(a.max_score) || questions.reduce((s, q) => s + (Number(q.points) || 1), 0);
+  printAssessmentItemsPaper({
+    questions,
+    title: a.title,
+    type: a.type,
+    subject_name: a.subject_name,
+    grade_level: a.grade_level,
+    section: a.section,
+    quarter: a.quarter,
+    max_score: maxScore,
+    includeAnswers
+  });
 }
 
 document.getElementById('progress-print-paper')?.addEventListener('click', () => {
@@ -7104,7 +7526,7 @@ function exportRubricScoreSheet() {
 </style></head><body>
   <h1>${escapeHtml(a.title || 'Activity')} — Rubric Score Sheet</h1>
   <p class="meta">${escapeHtml(typeLabel(a.type))} · Grade ${escapeHtml(String(a.grade_level || ''))}-${escapeHtml(String(a.section || ''))}
-    · ${escapeHtml(a.subject_name || 'No subject')} · Total ${Math.round((Number(a.max_score) || progressEditorMax) * 100) / 100} pts
+    · ${escapeHtml(a.subject_name || 'No subject')} · Total ${Math.round(Number(progressEditorMax) * 100) / 100} pts
     · ${new Date().toLocaleDateString()}</p>
   <table class="roster">
     <thead><tr><th>#</th><th>Student</th>${headCats}<th>Total</th></tr></thead>
@@ -7237,12 +7659,13 @@ function sharedQuizAbsoluteUrl(token) {
 /** Format a Date or SQL datetime as datetime-local value (Asia/Manila wall clock). */
 function toDatetimeLocalValue(value) {
   if (value == null || value === '') return '';
-  let y; let m; let d; let hh; let mm;
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
-    const cleaned = value.replace('T', ' ').slice(0, 16);
+  const s = typeof value === 'string' ? value.trim() : '';
+  const hasZone = !!s && (/[zZ]\s*$/.test(s) || /[+-]\d{2}:\d{2}\s*$/.test(s));
+  if (s && /^\d{4}-\d{2}-\d{2}/.test(s) && !hasZone) {
+    const cleaned = s.replace('T', ' ').slice(0, 16);
     const [datePart, timePart = '00:00'] = cleaned.split(' ');
-    [y, m, d] = datePart.split('-');
-    [hh, mm] = timePart.split(':');
+    const [y, m, d] = datePart.split('-');
+    const [hh, mm] = timePart.split(':');
     return `${y}-${m}-${d}T${hh}:${mm}`;
   }
   const date = value instanceof Date ? value : new Date(value);
@@ -7258,6 +7681,38 @@ function toDatetimeLocalValue(value) {
   }).formatToParts(date);
   const get = (type) => parts.find((p) => p.type === type)?.value || '00';
   return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+}
+
+function formatAttendanceUsedLabel(assessment) {
+  const raw = assessment?.quiz_attendance_date;
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  let iso = '';
+  if (/[zZ]|[+-]\d{2}:\d{2}/.test(s) || /T\d{2}:/.test(s)) {
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime())) {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Manila',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).formatToParts(parsed);
+      const get = (type) => parts.find((p) => p.type === type)?.value || '';
+      iso = `${get('year')}-${get('month')}-${get('day')}`;
+    }
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    iso = s.slice(0, 10);
+  }
+  if (!iso) return '';
+  const d = new Date(`${iso}T12:00:00+08:00`);
+  const dateText = Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'Asia/Manila' });
+  const session = String(assessment.quiz_attendance_session || '').toUpperCase();
+  if (Number(assessment.grade_level) < 4 && (session === 'AM' || session === 'PM')) {
+    return `Attendance: ${dateText}, ${session} session`;
+  }
+  return `Attendance: ${dateText}`;
 }
 
 function formatSharePreviewLocal(localValue) {
@@ -7278,12 +7733,31 @@ function estimateLiveClosesLocal() {
 
 function syncProgressShareWindowModeUi() {
   const livePreview = document.getElementById('progress-share-live-preview');
-  const liveEst = estimateLiveClosesLocal();
-  if (livePreview) {
-    livePreview.textContent = liveEst
-      ? `Link closes at: ${formatSharePreviewLocal(liveEst)}`
-      : 'Enter minutes open to see when the link closes.';
+  if (!livePreview) return;
+  const draft = estimateLiveClosesLocal();
+  const saved = window._progressShareClosesLocal || '';
+  const active = !!window._progressShareActive;
+  const savedDate = saved ? new Date(saved) : null;
+  const savedOk = savedDate && !Number.isNaN(savedDate.getTime());
+  const draftDate = draft ? new Date(draft) : null;
+  const draftDiffers = !!(savedOk && draftDate && !Number.isNaN(draftDate.getTime())
+    && Math.abs(draftDate.getTime() - savedDate.getTime()) > 60 * 1000);
+
+  if (active && savedOk) {
+    const pretty = formatSharePreviewLocal(saved);
+    const closed = savedDate.getTime() < Date.now();
+    const verb = closed ? 'Closed at' : 'Closes at';
+    if (draftDiffers && draft) {
+      livePreview.textContent = `${verb} ${pretty}. Save Deadline to change to ${formatSharePreviewLocal(draft)}.`;
+    } else {
+      livePreview.textContent = `${verb} ${pretty}.`;
+    }
+    return;
   }
+
+  livePreview.textContent = draft
+    ? `Closes at ${formatSharePreviewLocal(draft)}.`
+    : 'Enter minutes open to see when the link closes.';
 }
 
 function fillProgressShareWindowDefaults(_assessment) {
@@ -7320,6 +7794,10 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   const noteEl = document.getElementById('progress-share-attendance-note');
   const active = assessment && Number(assessment.share_enabled) === 1 && assessment.share_token;
   const hasQuestions = Number(questionCount) > 0;
+  window._progressShareActive = !!active;
+  window._progressShareClosesLocal = assessment?.quiz_closes_at
+    ? toDatetimeLocalValue(assessment.quiz_closes_at)
+    : '';
   fillProgressShareWindowDefaults(assessment);
   if (urlInput) {
     urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token) : '';
@@ -7352,14 +7830,8 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
       return `${meta.date}${sess}`;
     };
     const windowNote = (() => {
-      if (!assessment?.quiz_closes_at && !assessment?.quiz_makeup_closes_at) return '';
-      const live = assessment.quiz_closes_at
-        ? `Link until ${toDatetimeLocalValue(assessment.quiz_closes_at).replace('T', ' ')}`
-        : '';
-      const makeup = assessment.quiz_makeup_closes_at
-        ? `Make-up until ${toDatetimeLocalValue(assessment.quiz_makeup_closes_at).replace('T', ' ')}`
-        : '';
-      return [live, makeup].filter(Boolean).join(' · ');
+      if (!assessment?.quiz_makeup_closes_at) return '';
+      return `Make-up until ${formatSharePreviewLocal(toDatetimeLocalValue(assessment.quiz_makeup_closes_at))}`;
     })();
     const showNote = (text, color) => {
       noteEl.hidden = false;
@@ -7375,7 +7847,9 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
     if (!hasQuestions && !active) {
       showNote('No Classwork items attached. In Classwork, select items then Next: Create Quiz or Create Activity. Enable Link here after that. + New Record is for manual scores only.', '#b71c1c');
     } else if (active) {
-      if (windowNote) showNote(windowNote.endsWith('.') ? windowNote : `${windowNote}.`, 'var(--text-muted)');
+      const attNote = formatAttendanceUsedLabel(assessment);
+      const bits = [attNote, windowNote].filter(Boolean);
+      if (bits.length) showNote(`${bits.join('. ')}.`, 'var(--text-muted)');
       else hideNote();
     } else if (attendanceMeta) {
       const gate = gateLabel(attendanceMeta);
@@ -7571,7 +8045,7 @@ window.assignSharedQuizLink = async function(id) {
     const windowBody = collectProgressShareWindowBody();
     const body = subjectMode
       ? { ...windowBody }
-      : { session: attendanceCurrentSession || 'AM', ...windowBody };
+      : { session: currentManilaSessionClient(), ...windowBody };
     const res = await fetch(`${API_URL}/teacher/assessments/${id}/assign-link`, {
       method: 'POST',
       headers: getAuthHeaders(),
@@ -7704,7 +8178,17 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     return;
   }
 
-  const scores = Array.from(rows).map((tr) => {
+  const overMax = [...rows].some((tr) => {
+    const inp = tr.querySelector('.progress-score-input');
+    if (!inp || inp.readOnly || inp.value === '') return false;
+    return Number(inp.value) > Number(progressEditorMax);
+  });
+  if (overMax) {
+    showToast(`Score can't exceed ${progressEditorMax}.`, 'error');
+    return;
+  }
+
+  const scores = Array.from(rows).filter((tr) => tr.dataset.scoreLocked !== '1').map((tr) => {
     const studentId = Number(tr.dataset.studentId);
     const totalInput = tr.querySelector('.progress-score-input');
     const rubric_scores = {};
@@ -7722,7 +8206,9 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     if (rubricCols.length && hasAnyCat) syncProgressRowRubricTotal(tr);
     return {
       student_id: studentId,
-      score: totalInput?.value === '' ? '' : Number(totalInput.value),
+      score: totalInput?.value === ''
+        ? ''
+        : Math.min(Number(progressEditorMax), Math.max(0, Number(totalInput.value))),
       rubric_scores: hasAnyCat ? rubric_scores : null
     };
   }).filter((row) => row.score !== '' || (row.rubric_scores && Object.keys(row.rubric_scores).length));
@@ -7962,8 +8448,13 @@ function materialCardHtml(p) {
 
 function aiDraftCardHtml(r, expandId) {
   const c = r.content || {};
-  const statusClass = r.status === 'pending' ? 'ai-status-pending'
-    : r.status === 'approved' ? 'ai-status-approved' : 'ai-status-rejected';
+  const inClasswork = !!r.classwork_set_id;
+  const statusClass = r.status === 'rejected' ? 'ai-status-rejected'
+    : inClasswork || r.status === 'approved' ? 'ai-status-approved' : 'ai-status-pending';
+  const statusLabel = r.status === 'rejected' ? 'REJECTED'
+    : inClasswork ? 'IN CLASSWORK'
+      : r.status === 'approved' ? 'IN RECORDS'
+        : 'PENDING';
   const isOpen = expandId != null && Number(r.id) === expandId;
   const meta = `Grade ${r.grade_level}${r.subject_name ? ' · ' + escapeHtml(r.subject_name) : ''} · ${new Date(r.created_at).toLocaleDateString()}`;
   return `
@@ -7976,12 +8467,11 @@ function aiDraftCardHtml(r, expandId) {
                 <p class="ai-rec-fold-meta">${meta}</p>
               </div>
               <div class="ai-rec-fold-summary-right">
-                <span class="ai-status-badge ${statusClass}">${escapeHtml(r.status)} · ${escapeHtml(r.provider)}</span>
+                <span class="ai-status-badge ${statusClass}">${statusLabel} · ${escapeHtml(r.provider)}</span>
                 <div class="row-menu-wrap">
                   <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
                   <div class="row-menu" hidden>
                     ${r.status === 'pending' ? `
-                      <button type="button" class="row-menu-item" data-action="save-draft-classwork" data-rec-id="${r.id}">Save to Classwork</button>
                       <button type="button" class="row-menu-item" data-action="regenerate-draft" data-rec-id="${r.id}">Regenerate</button>
                       <div class="row-menu-divider" role="separator"></div>
                     ` : ''}
@@ -8000,10 +8490,10 @@ function aiDraftCardHtml(r, expandId) {
               <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
               ${formatAiItemsPreview(c.activity, 'activity')}
             </details>
-            ${r.status === 'pending' ? `
+            ${r.status === 'pending' && !inClasswork ? `
             <div class="lesson-plan-card-actions">
-              <button type="button" class="chip-ghost primary" data-action="approve-draft" data-rec-id="${r.id}">Approve</button>
-            </div>` : r.assessment_id ? `<p class="page-subheading" style="margin-top:10px;">Saved to Records${r.approved_type ? ` as ${escapeHtml(typeLabel(r.approved_type))}` : ''}</p>` : ''}
+              <button type="button" class="chip-ghost primary" data-action="save-draft-classwork" data-rec-id="${r.id}">Save to Classwork</button>
+            </div>` : inClasswork ? `<p class="page-subheading" style="margin-top:10px;">Saved to Classwork. Create a Quiz or Activity from Classwork to add it to Records and enable a student link.</p>` : r.assessment_id ? `<p class="page-subheading" style="margin-top:10px;">Saved to Records${r.approved_type ? ` as ${escapeHtml(typeLabel(r.approved_type))}` : ''}</p>` : ''}
           </div>
         </details>
       </article>`;
@@ -8089,8 +8579,7 @@ async function loadMaterialsHub() {
     if (action === 'generate-ai' && planId) generateAiForLesson(planId);
     else if (action === 'open-file' && btn.dataset.filePath) {
       window.open(btn.dataset.filePath, '_blank', 'noopener');
-    } else if (action === 'delete-material' && planId) deleteLessonPlan(planId);
-    else if (action === 'approve-draft' && recId) openAiApproveModal(recId);
+    }     else if (action === 'delete-material' && planId) deleteLessonPlan(planId);
     else if (action === 'save-draft-classwork' && recId) saveAiDraftToBank(recId);
     else if (action === 'regenerate-draft' && recId) regenerateAiRecommendation(recId);
     else if (action === 'delete-draft' && recId) deleteAiRecommendation(recId);
@@ -8240,10 +8729,12 @@ function openAiGenerateOptionsModal({ mode = 'generate', lessonPlanId = null, re
   }
 }
 
-function showAiGeneratingModal(title = 'Generating AI Draft…') {
+function showAiGeneratingModal(title = 'Generating AI Draft') {
   const modal = document.getElementById('ai-generating-modal');
   const titleEl = document.getElementById('ai-generating-title');
+  const msgEl = document.getElementById('ai-generating-message');
   if (titleEl) titleEl.textContent = title;
+  if (msgEl) msgEl.textContent = 'Please wait...';
   if (modal) {
     modal.hidden = false;
     modal.removeAttribute('hidden');
@@ -8264,8 +8755,47 @@ function getSelectedAiGenerateTypes() {
     .filter((v) => ['mcq', 'identification', 'enumeration'].includes(v));
 }
 
+async function parseAiJsonResponse(res) {
+  const text = await res.text();
+  try {
+    return { ok: res.ok, data: text ? JSON.parse(text) : {}, parseError: false };
+  } catch {
+    return { ok: false, data: {}, parseError: true };
+  }
+}
+
+async function pollAiJob(jobId) {
+  const deadline = Date.now() + 20 * 60 * 1000;
+  let badResponses = 0;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    let res;
+    try {
+      res = await fetch(`${API_URL}/teacher/ai/jobs/${jobId}`, { headers: getAuthHeaders() });
+    } catch {
+      badResponses += 1;
+      if (badResponses >= 8) throw new Error('Lost connection while generating. Keep this tab open and try again.');
+      continue;
+    }
+    const { ok, data, parseError } = await parseAiJsonResponse(res);
+    if (parseError) {
+      badResponses += 1;
+      if (badResponses >= 8) throw new Error('Generation timed out. Keep this tab open and try again.');
+      continue;
+    }
+    badResponses = 0;
+    if (!ok) {
+      if (res.status === 404) continue;
+      throw new Error(data.error || 'Could not check generation status');
+    }
+    if (data.status === 'done') return data;
+    if (data.status === 'error') throw new Error(data.error || 'Generation failed');
+  }
+  throw new Error('Generation is taking too long. Check Ollama and try again.');
+}
+
 async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes) {
-  showAiGeneratingModal('Generating AI Draft…');
+  showAiGeneratingModal('Generating AI Draft');
   try {
     const res = await fetch(`${API_URL}/teacher/lesson-plans/${lessonPlanId}/generate`, {
       method: 'POST',
@@ -8275,22 +8805,25 @@ async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes
         quiz_item_types: quizItemTypes
       })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || data.details || 'Generation failed');
-    showToast(data.message || 'AI draft created.');
-    aiDraftExpandId = data.id;
+    const { ok, data, parseError } = await parseAiJsonResponse(res);
+    if (parseError) throw new Error('Could not start generation. Try again.');
+    if (!ok) throw new Error(data.error || data.details || 'Generation failed');
+    const done = data.jobId ? await pollAiJob(data.jobId) : data;
+    showToast(done.message || 'AI draft created.');
+    aiDraftExpandId = done.id;
     await loadAiRecommendations();
     const draftsHeading = document.getElementById('lp-ai-drafts-heading');
     if (draftsHeading) draftsHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     showToast(err.message, 'error');
+    await loadAiRecommendations();
   } finally {
     hideAiGeneratingModal();
   }
 }
 
 async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizItemTypes) {
-  showAiGeneratingModal('Regenerating AI Draft…');
+  showAiGeneratingModal('Regenerating AI Draft');
   try {
     const res = await fetch(`${API_URL}/teacher/ai/recommendations/${recommendationId}/regenerate`, {
       method: 'POST',
@@ -8300,13 +8833,16 @@ async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizI
         quiz_item_types: quizItemTypes
       })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || data.details || 'Regenerate failed');
-    showToast(data.message || 'Draft regenerated.');
-    aiDraftExpandId = recommendationId;
+    const { ok, data, parseError } = await parseAiJsonResponse(res);
+    if (parseError) throw new Error('Could not start regenerate. Try again.');
+    if (!ok) throw new Error(data.error || data.details || 'Regenerate failed');
+    const done = data.jobId ? await pollAiJob(data.jobId) : data;
+    showToast(done.message || 'Draft regenerated.');
+    aiDraftExpandId = done.id || recommendationId;
     await loadAiRecommendations();
   } catch (err) {
     showToast(err.message, 'error');
+    await loadAiRecommendations();
   } finally {
     hideAiGeneratingModal();
   }
@@ -8419,84 +8955,11 @@ window.saveAiDraftToBank = async function(id) {
     if (typeof loadQuestionBank === 'function') {
       await loadQuestionBank();
     }
+    await loadAiRecommendations();
   } catch (err) {
     showToast(err.message, 'error');
   }
 };
-
-window.openAiApproveModal = async function(id) {
-  const modal = document.getElementById('ai-approve-modal');
-  const idInput = document.getElementById('ai-approve-id');
-  const classSel = document.getElementById('ai-approve-class');
-  if (!modal || !idInput || !classSel) return;
-
-  idInput.value = String(id);
-  const linkInput = document.getElementById('ai-approve-quiz-link');
-  if (linkInput) linkInput.value = '';
-
-  await ensureTeacherAssignedClasses();
-
-  // Prefer grade from the draft card if available
-  let draftGrade = null;
-  const card = document.querySelector(`.ai-rec-card[data-rec-id="${id}"]`);
-  if (card?.dataset?.grade) draftGrade = Number(card.dataset.grade);
-  if (!draftGrade && card) {
-    const gradeMatch = (card.textContent || '').match(/Grade\s+(\d+)/i);
-    if (gradeMatch) draftGrade = Number(gradeMatch[1]);
-  }
-  const gradeInput = document.getElementById('ai-approve-grade');
-  if (gradeInput) gradeInput.value = draftGrade ? String(draftGrade) : '';
-
-  const pairs = getTeacherAssignedClassPairs().filter((p) =>
-    draftGrade ? Number(p.grade_level) === Number(draftGrade) : true
-  );
-  classSel.innerHTML = pairs.length
-    ? '<option value="">-- Select your class --</option>' +
-      pairs.map((p) =>
-        `<option value="${p.grade_level}|${escapeHtml(p.section)}">Grade ${p.grade_level} – ${escapeHtml(p.section)}</option>`
-      ).join('')
-    : '<option value="">No assigned class for this grade</option>';
-
-  fillUnlockedQuarterSelect(document.getElementById('ai-approve-quarter'), teacherCurrentQuarter);
-
-  modal.hidden = false;
-};
-
-document.getElementById('ai-approve-cancel')?.addEventListener('click', () => {
-  const modal = document.getElementById('ai-approve-modal');
-  if (modal) modal.hidden = true;
-});
-
-document.getElementById('ai-approve-confirm')?.addEventListener('click', async () => {
-  const id = document.getElementById('ai-approve-id')?.value;
-  const type = document.getElementById('ai-approve-type')?.value;
-  const classVal = document.getElementById('ai-approve-class')?.value || '';
-  const quarter = document.getElementById('ai-approve-quarter')?.value || 'Q1';
-  const quizLink = document.getElementById('ai-approve-quiz-link')?.value.trim() || '';
-
-  if (!id) return;
-  const [gradePart, ...sectionParts] = classVal.split('|');
-  const section = sectionParts.join('|').trim();
-  if (!gradePart || !section) {
-    showToast('Select one of your assigned classes.', 'error');
-    return;
-  }
-
-  try {
-    const res = await fetch(`${API_URL}/teacher/ai/recommendations/${id}/approve`, {
-      method: 'POST',
-      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, section, quarter, quiz_link: quizLink || null })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-    document.getElementById('ai-approve-modal').hidden = true;
-    showToast(data.message || 'Approved.');
-    loadAiRecommendations();
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-});
 
 document.getElementById('progress-copy-questions')?.addEventListener('click', async () => {
   const questions = window._progressEditorQuestions || [];
@@ -8725,9 +9188,9 @@ function updateQuizBankSelectionMeta() {
   }
   if (nextBtn) {
     nextBtn.disabled = n === 0;
-    nextBtn.textContent = `Next: Create ${classworkCreateKindLabel()}`;
+    nextBtn.textContent = 'Next';
   }
-  if (headerBtn) headerBtn.textContent = `Next: Create ${classworkCreateKindLabel()}`;
+  if (headerBtn) headerBtn.textContent = 'Next';
   if (nextMeta) {
     nextMeta.textContent = n
       ? `${n} item(s) selected`
@@ -9320,12 +9783,13 @@ function renderQuizBankCategoryFolders() {
 function renderQuizBankItemRow(item) {
   const checked = questionBankSelected.has(item.id) ? 'checked' : '';
   const choices = Array.isArray(item.choices) && item.choices.length
-    ? `<p class="page-subheading">${item.choices.map((c, i) =>
-        `${String.fromCharCode(65 + i)}. ${escapeHtml(c)}`
-      ).join(' · ')}</p>`
+    ? `<ul class="progress-quiz-choices">${item.choices.map((c, i) => {
+        const body = stripMcqChoicePrefix(c) || String(c || '');
+        return `<li><strong>${escapeHtml(mcqLetterAt(i))}.</strong> ${escapeHtml(body)}</li>`;
+      }).join('')}</ul>`
     : '';
   const ans = item.answer
-    ? `<p class="page-subheading">Answer: ${escapeHtml(formatMcqAnswerDisplay(item.answer, item.choices) || item.answer)}</p>`
+    ? `<p class="page-subheading">Answer: ${escapeHtml(formatQuizTakenAnswer(item.answer, item.choices) || String(item.answer))}</p>`
     : '';
   const rubricCount = rubricCategoriesOf(item.rubric).length;
   const rubricNote = rubricCount
@@ -9840,6 +10304,11 @@ async function openCreateProgressFromBank() {
     typeSel.value = questionBankCurrentCategory === 'activity' ? 'activity' : 'quiz';
   }
   syncClassworkCreateModalLabels();
+  const rubricCap = rubricCapFromBankItems(selectedItems);
+  if ((typeSel?.value === 'activity' || questionBankCurrentCategory === 'activity') && rubricCap > 0) {
+    const maxInput = document.getElementById('qb-create-max');
+    if (maxInput) maxInput.value = String(rubricCap);
+  }
 
   const qtrSel = document.getElementById('qb-create-quarter');
   fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter);
@@ -10241,6 +10710,27 @@ document.getElementById('qb-exam-cancel')?.addEventListener('click', () => {
   if (modal) modal.hidden = true;
 });
 
+document.getElementById('qb-exam-print')?.addEventListener('click', () => {
+  const items = getExamComposerFilteredItems();
+  const { grade_level, section } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  const subjSel = document.getElementById('qb-exam-subject');
+  const subjLabel = String(subjSel?.selectedOptions?.[0]?.textContent || '').trim();
+  printAssessmentItemsPaper({
+    questions: items,
+    title: document.getElementById('qb-exam-title')?.value?.trim() || 'Exam',
+    type: 'exam',
+    subject_name: subjLabel && subjLabel !== 'All subjects'
+      ? subjLabel
+      : (items.find((i) => i.subject_name)?.subject_name || null),
+    grade_level: grade_level || null,
+    section: section || null,
+    quarter: document.getElementById('qb-exam-quarter')?.value,
+    max_score: Number(document.getElementById('qb-exam-max')?.value),
+    includeAnswers: true,
+    reviewCopy: true
+  });
+});
+
 document.getElementById('qb-exam-source-tabs')?.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-exam-source]');
   if (!btn) return;
@@ -10391,7 +10881,33 @@ document.getElementById('qb-create-cancel')?.addEventListener('click', () => {
   if (modal) modal.hidden = true;
 });
 
-document.getElementById('qb-create-type')?.addEventListener('change', syncClassworkCreateModalLabels);
+document.getElementById('qb-create-print')?.addEventListener('click', () => {
+  const items = questionBankItems.filter((i) => questionBankSelected.has(i.id));
+  const classVal = document.getElementById('qb-create-class')?.value || '';
+  const [gradePart, ...sectionParts] = classVal.split('|');
+  printAssessmentItemsPaper({
+    questions: items,
+    title: document.getElementById('qb-create-title')?.value?.trim() || 'Classwork',
+    type: document.getElementById('qb-create-type')?.value || 'quiz',
+    subject_name: items.find((i) => i.subject_name)?.subject_name || null,
+    grade_level: Number(gradePart) || null,
+    section: sectionParts.join('|').trim() || null,
+    quarter: document.getElementById('qb-create-quarter')?.value,
+    max_score: Number(document.getElementById('qb-create-max')?.value),
+    includeAnswers: true,
+    reviewCopy: true
+  });
+});
+
+document.getElementById('qb-create-type')?.addEventListener('change', () => {
+  syncClassworkCreateModalLabels();
+  const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
+  const cap = rubricCapFromBankItems(selectedItems);
+  const maxInput = document.getElementById('qb-create-max');
+  if (document.getElementById('qb-create-type')?.value === 'activity' && cap > 0 && maxInput) {
+    maxInput.value = String(cap);
+  }
+});
 
 document.getElementById('qb-create-confirm')?.addEventListener('click', async () => {
   const title = document.getElementById('qb-create-title')?.value?.trim();
@@ -10421,7 +10937,11 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
   const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
   const subject_id = selectedItems.find((i) => i.subject_id)?.subject_id || null;
   const section_totals = collectSectionTotalsFromWrap(document.getElementById('qb-create-sections'));
-  const max_score = Number(document.getElementById('qb-create-max')?.value) || sumSectionTotals(section_totals) || selectedItems.length;
+  let max_score = Number(document.getElementById('qb-create-max')?.value) || sumSectionTotals(section_totals) || selectedItems.length;
+  if (type === 'activity') {
+    const cap = rubricCapFromBankItems(selectedItems);
+    if (cap > 0) max_score = cap;
+  }
 
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/from-bank`, {
@@ -11081,10 +11601,20 @@ async function loadParentAttendanceTable(studentId) {
   }
 }
 
+function syncParentPrintButton(tabId) {
+  const btn = document.getElementById('parent-print-btn');
+  if (!btn) return;
+  const hide = tabId === 'inbox' || tabId === 'contact';
+  btn.hidden = hide;
+  if (hide) btn.setAttribute('hidden', '');
+  else btn.removeAttribute('hidden');
+}
+
 document.querySelectorAll('[data-parent-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
     const currentTab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab;
     const tabId = btn.dataset.parentTab;
+    syncParentPrintButton(tabId);
 
     if (!isParentNavigatingBack && currentTab && currentTab !== tabId) {
       resetParentTabState(currentTab);
@@ -12368,14 +12898,15 @@ window.openTeacherDetailModal = async function(teacherId) {
     const adviserSubjects = data.adviser_subjects || [];
     if (adviserSubjects.length > 0) {
       html += `<h4 style="color:var(--maroon-deep);font-size:0.95rem;margin:16px 0 8px;">Subjects Taught as Class Adviser</h4>`;
-      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;">
+      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
         <thead style="background:var(--maroon-header);color:#fff;">
           <tr><th style="padding:6px;text-align:left;">Subject</th><th style="padding:6px;text-align:left;">Class</th></tr>
         </thead>
         <tbody>`;
       adviserSubjects.forEach(a => {
         html += `<tr style="border-bottom:1px solid #e5e7eb;">
-          <td style="padding:6px;">${a.subject_name || a.subject_code || 'Subject ID ' + a.subject_id}</td>
+          <td style="padding:6px;overflow-wrap:anywhere;">${a.subject_name || a.subject_code || 'Subject ID ' + a.subject_id}</td>
           <td style="padding:6px;">Grade ${a.grade_level} – ${a.section}</td>
         </tr>`;
       });
@@ -12384,14 +12915,15 @@ window.openTeacherDetailModal = async function(teacherId) {
 
     if (data.subject_assignments && data.subject_assignments.length > 0) {
       html += `<h4 style="color:var(--maroon-deep);font-size:0.95rem;margin:16px 0 8px;">Subject Teacher Assignments (Grades 4–6)</h4>`;
-      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;">
+      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
         <thead style="background:var(--maroon-header);color:#fff;">
           <tr><th style="padding:6px;text-align:left;">Subject</th><th style="padding:6px;text-align:left;">Class</th></tr>
         </thead>
         <tbody>`;
       data.subject_assignments.forEach(a => {
         html += `<tr style="border-bottom:1px solid #e5e7eb;">
-          <td style="padding:6px;">${a.subject_name || a.subject_code || 'Subject ID ' + a.subject_id}</td>
+          <td style="padding:6px;overflow-wrap:anywhere;">${a.subject_name || a.subject_code || 'Subject ID ' + a.subject_id}</td>
           <td style="padding:6px;">Grade ${a.grade_level} – ${a.section}</td>
         </tr>`;
       });
