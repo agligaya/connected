@@ -1,5 +1,6 @@
 const db = require('../../db');
 const { schoolYear } = require('../config');
+const { plainText } = require('../utils/plainText');
 
 // POST /api/admin/students
 exports.createStudent = async (req, res) => {
@@ -10,7 +11,10 @@ exports.createStudent = async (req, res) => {
     } = req.body;
     const dobValue = dob || date_of_birth || null;
 
-    if (!first_name || !last_name || !grade_level || !section) {
+    const firstName = plainText(first_name);
+    const middleName = plainText(middle_name);
+    const lastName = plainText(last_name);
+    if (!firstName || !lastName || !grade_level || !section) {
       return res.status(400).json({ error: 'First name, last name, grade, and section are required' });
     }
 
@@ -30,7 +34,7 @@ exports.createStudent = async (req, res) => {
     const [result] = await db.query(
       `INSERT INTO students (lrn, first_name, middle_name, last_name, grade_level, section, dob, gender, STATUS) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [lrn || null, first_name, middle_name || null, last_name, grade_level, section, dobValue || null, gender || null]
+      [lrn || null, firstName, middleName || null, lastName, grade_level, section, dobValue || null, gender || null]
     );
     const studentId = result.insertId;
 
@@ -107,7 +111,10 @@ exports.updateStudent = async (req, res) => {
     const sectionNorm = section != null ? String(section).trim() : null;
     const isReenroll = grade_level != null && sectionNorm;
 
-    if (!first_name || !last_name) {
+    const firstName = plainText(first_name);
+    const middleName = plainText(middle_name);
+    const lastName = plainText(last_name);
+    if (!firstName || !lastName) {
       return res.status(400).json({ error: 'First name and last name are required' });
     }
 
@@ -135,9 +142,9 @@ exports.updateStudent = async (req, res) => {
          WHERE id = ?`,
         [
           lrn || null,
-          first_name,
-          middle_name || null,
-          last_name,
+          firstName,
+          middleName || null,
+          lastName,
           grade_level,
           sectionNorm,
           dobValue || null,
@@ -167,7 +174,7 @@ exports.updateStudent = async (req, res) => {
       await db.query(
         `UPDATE students SET lrn = ?, first_name = ?, middle_name = ?, last_name = ?, STATUS = ?
          WHERE id = ?`,
-        [lrn || null, first_name, middle_name || null, last_name, status || 'active', id]
+        [lrn || null, firstName, middleName || null, lastName, status || 'active', id]
       );
     }
 

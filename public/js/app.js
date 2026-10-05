@@ -1087,11 +1087,11 @@ function applyAccountFilters() {
         <input type="checkbox" class="admin-account-check" data-account-id="${u.id}" ${selectedAccountIds.has(Number(u.id)) ? 'checked' : ''} aria-label="Select account" />
       </td>
       <td>${u.role === 'teacher' 
-        ? `<span class="clickable-name" onclick="openTeacherDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${u.first_name} ${u.last_name}</span>`
+        ? `<span class="clickable-name" onclick="openTeacherDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</span>`
         : u.role === 'parent'
-        ? `<span class="clickable-name" onclick="openParentDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${u.first_name} ${u.last_name}</span>`
-        : `${u.first_name} ${u.last_name}`}</td>
-      <td>${u.email}</td>
+        ? `<span class="clickable-name" onclick="openParentDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</span>`
+        : `${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}`}</td>
+      <td>${escapeHtml(u.email)}</td>
       <td>${formatActivityRole(u.role)}</td>
       <td>
         ${u.role === 'teacher' 
@@ -1679,7 +1679,7 @@ async function loadDropdowns() {
     const parents = await parentsRes.json();
 
     parentSelect.innerHTML = '<option value="">-- Select Parent --</option>' +
-      parents.map(p => `<option value="${p.id}">${p.last_name}, ${p.first_name} (${p.email})</option>`).join('');
+      parents.map(p => `<option value="${p.id}">${escapeHtml(p.last_name)}, ${escapeHtml(p.first_name)} (${escapeHtml(p.email)})</option>`).join('');
 
   } catch (err) {
     console.error('Load dropdowns error:', err);
@@ -2812,7 +2812,7 @@ async function loadReenrollParents(selectedParentId) {
     if (!res.ok) throw new Error(parents.error);
 
     parentSelect.innerHTML = '<option value="">-- Select Parent --</option>' +
-      parents.map(p => `<option value="${p.id}" ${selectedParentId == p.id ? 'selected' : ''}>${p.last_name}, ${p.first_name} (${p.email})</option>`).join('');
+      parents.map(p => `<option value="${p.id}" ${selectedParentId == p.id ? 'selected' : ''}>${escapeHtml(p.last_name)}, ${escapeHtml(p.first_name)} (${escapeHtml(p.email)})</option>`).join('');
   } catch (err) {
     console.error('Load reenroll parents error:', err);
     parentSelect.innerHTML = '<option value="">Failed to load</option>';
@@ -11424,7 +11424,7 @@ async function renderParentOverview(student) {
       <div class="chart-card">
         <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:12px;">Student Information</h3>
         <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:12px;font-size:0.85rem;">
-          <div><strong>Name:</strong> ${student.last_name}, ${student.first_name}</div>
+          <div><strong>Name:</strong> ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
           <div><strong>LRN:</strong> ${student.lrn || 'N/A'}</div>
           <div><strong>Grade & Section:</strong> Grade ${student.grade_level}-${student.section}</div>
           <div><strong>Gender:</strong> ${student.gender === 'M' ? 'Male' : student.gender === 'F' ? 'Female' : 'N/A'}</div>
@@ -12989,9 +12989,8 @@ window.openParentDetailModal = async function(parentId) {
         </thead>
         <tbody>`;
       data.linked_students.forEach(s => {
-        const middle = s.middle_name ? ' ' + s.middle_name : '';
         html += `<tr style="border-bottom:1px solid #e5e7eb;">
-          <td style="padding:6px;">${s.last_name}, ${s.first_name}${middle}</td>
+          <td style="padding:6px;">${escapeHtml(s.last_name)}, ${escapeHtml(s.first_name)}${s.middle_name ? ` ${escapeHtml(s.middle_name)}` : ''}</td>
           <td style="padding:6px;">${s.lrn || '-'}</td>
           <td style="padding:6px;">Grade ${s.grade_level}-${s.section}</td>
           <td style="padding:6px;">${s.gender === 'M' ? 'Male' : s.gender === 'F' ? 'Female' : '-'}</td>

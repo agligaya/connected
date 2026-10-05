@@ -1,6 +1,7 @@
 const db = require('../../db');
 const bcrypt = require('bcryptjs');
 const { schoolYear } = require('../config');
+const { plainText } = require('../utils/plainText');
 const {
   attachReplies,
   attachConcernReadState,
@@ -291,7 +292,9 @@ exports.createAccount = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!first_name || !last_name || !email || !password || !role) {
+    const firstName = plainText(first_name);
+    const lastName = plainText(last_name);
+    if (!firstName || !lastName || !email || !password || !role) {
       return res.status(400).json({ error: 'First name, last name, email, password, and role are required' });
     }
 
@@ -355,7 +358,7 @@ exports.createAccount = async (req, res) => {
     const [userResult] = await conn.query(
       `INSERT INTO users (first_name, last_name, email, password_hash, phone, role, status, must_change_password)
        VALUES (?, ?, ?, ?, ?, ?, 'active', 1)`,
-      [first_name, last_name, email, password_hash, normalizedPhone, role]
+      [firstName, lastName, email, password_hash, normalizedPhone, role]
     );
     const userId = userResult.insertId;
 
@@ -452,7 +455,7 @@ exports.createAccount = async (req, res) => {
       );
     }
 
-    await logActivity(conn, (req.user?.id || req.user?.userId), 'Created account', req.body.role, `${req.body.first_name} ${req.body.last_name}`, req.body.email);
+    await logActivity(conn, (req.user?.id || req.user?.userId), 'Created account', req.body.role, `${firstName} ${lastName}`, req.body.email);
 
     await conn.commit();
     res.status(201).json({ message: 'Account created successfully', userId });
@@ -532,7 +535,9 @@ exports.updateAccount = async (req, res) => {
     const { first_name, last_name, email, phone, address, emergency_contact } = req.body;
     const { isValidPhMobile, normalizePhMobile } = require('../utils/sms');
 
-    if (!first_name || !last_name || !email) {
+    const firstName = plainText(first_name);
+    const lastName = plainText(last_name);
+    if (!firstName || !lastName || !email) {
       return res.status(400).json({ error: 'First name, last name, and email are required' });
     }
 
@@ -588,8 +593,8 @@ exports.updateAccount = async (req, res) => {
        SET first_name = ?, last_name = ?, email = ?, phone = ?
        WHERE id = ?`,
       [
-        String(first_name).trim(),
-        String(last_name).trim(),
+        firstName,
+        lastName,
         emailTrim,
         normalizedPhone,
         id
@@ -630,7 +635,7 @@ exports.updateAccount = async (req, res) => {
       req.user?.id || req.user?.userId,
       'Updated account info',
       role,
-      `${String(first_name).trim()} ${String(last_name).trim()}`,
+      `${firstName} ${lastName}`,
       emailTrim
     );
 
@@ -638,8 +643,8 @@ exports.updateAccount = async (req, res) => {
       message: 'Account updated',
       user: {
         id: Number(id),
-        first_name: String(first_name).trim(),
-        last_name: String(last_name).trim(),
+        first_name: firstName,
+        last_name: lastName,
         email: emailTrim,
         phone: normalizedPhone,
         role,

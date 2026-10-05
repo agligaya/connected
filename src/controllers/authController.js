@@ -1,16 +1,57 @@
 const db = require('../../db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { plainText } = require('../utils/plainText');
 
-async function ensureAuthColumns() {
-  try {
-    await db.query(
+let authColumnsReady = null;
+function ensureAuthColumns() {
+  if (!authColumnsReady) {
+    authColumnsReady = db.query(
       'ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0'
-    );
-  } catch (e) { /* exists */ }
+    ).catch((e) => {
+      if (e && (e.code === 'ER_DUP_FIELDNAME' || e.errno === 1060)) return;
+      authColumnsReady = null;
+      throw e;
+    });
+  }
+  return authColumnsReady;
 }
 
 ensureAuthColumns().catch((e) => console.error('[auth] schema:', e.message));
+
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const loginAttempts = new Map();
+
+function loginKey(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function loginLockMinutes(email) {
+  const row = loginAttempts.get(loginKey(email));
+  if (!row?.lockedUntil) return 0;
+  if (row.lockedUntil <= Date.now()) {
+    loginAttempts.delete(loginKey(email));
+    return 0;
+  }
+  return Math.max(1, Math.ceil((row.lockedUntil - Date.now()) / 60000));
+}
+
+function recordLoginFailure(email) {
+  const key = loginKey(email);
+  if (!key) return;
+  const row = loginAttempts.get(key) || { fails: 0, lockedUntil: 0 };
+  row.fails += 1;
+  if (row.fails >= LOGIN_MAX_FAILS) {
+    row.lockedUntil = Date.now() + LOGIN_LOCK_MS;
+    row.fails = 0;
+  }
+  loginAttempts.set(key, row);
+}
+
+function clearLoginFailure(email) {
+  loginAttempts.delete(loginKey(email));
+}
 
 function formatUser(user) {
   const mustChange = !!(user.must_change_password === 1 || user.must_change_password === true);
@@ -38,6 +79,12 @@ exports.login = async (req, res) => {
   try {
     await ensureAuthColumns();
     const { email, password, remember } = req.body;
+    const lockedMinutes = loginLockMinutes(email);
+    if (lockedMinutes) {
+      return res.status(429).json({
+        error: `Too many attempts. Try again in ${lockedMinutes} minute${lockedMinutes === 1 ? '' : 's'}.`
+      });
+    }
 
     const [users] = await db.query(
       'SELECT * FROM users WHERE email = ?',
@@ -45,6 +92,7 @@ exports.login = async (req, res) => {
     );
 
     if (users.length === 0) {
+      recordLoginFailure(email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -59,8 +107,16 @@ exports.login = async (req, res) => {
 
     const validPassword = await verifyPassword(password, user.password_hash);
     if (!validPassword) {
+      recordLoginFailure(email);
+      const afterFail = loginLockMinutes(email);
+      if (afterFail) {
+        return res.status(429).json({
+          error: `Too many attempts. Try again in ${afterFail} minute${afterFail === 1 ? '' : 's'}.`
+        });
+      }
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+    clearLoginFailure(email);
 
     if (!String(user.password_hash).startsWith('$2')) {
       const hashed = await bcrypt.hash(password, 10);
@@ -148,7 +204,9 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user.id;
     const { first_name, last_name, email } = req.body;
 
-    if (!first_name || !last_name || !email) {
+    const firstName = plainText(first_name);
+    const lastName = plainText(last_name);
+    if (!firstName || !lastName || !email) {
       return res.status(400).json({ error: 'First name, last name, and email are required' });
     }
 
@@ -162,7 +220,7 @@ exports.updateProfile = async (req, res) => {
 
     await db.query(
       'UPDATE users SET first_name = ?, last_name = ?, email = ? WHERE id = ?',
-      [String(first_name).trim(), String(last_name).trim(), String(email).trim(), userId]
+      [firstName, lastName, String(email).trim(), userId]
     );
 
     const [users] = await db.query(
