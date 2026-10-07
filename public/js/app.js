@@ -6116,8 +6116,8 @@ function renderAttendanceSheet(students, sheetMeta) {
   const hint = document.getElementById('attendance-sheet-hint');
   if (hint) {
     hint.textContent = mode === 'subject'
-      ? `Weekly ${sheetMeta.subject_name || 'subject'} attendance (Grades 4–6). Marks are saved from Classroom before each subject starts.`
-      : 'Weekly class attendance with Morning (AM) and Afternoon (PM). Marks are saved from Classroom. Sheet renews each Monday–Friday week.';
+      ? `Weekly ${sheetMeta.subject_name || 'subject'} attendance (Grades 4–6). Marks are saved from Dashboard before each subject starts.`
+      : 'Weekly class attendance with Morning (AM) and Afternoon (PM). Marks are saved from Dashboard. Sheet renews each Monday–Friday week.';
   }
 
   if (!dates.length) {
@@ -7864,13 +7864,13 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
         const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
         showNote(
           gate
-            ? `Mark every student for ${gate} in Classroom before enabling (${n} unmarked). Switch AM/PM to match the class session.`
-            : `Mark attendance for every student in Classroom before enabling the link (${n} unmarked).`,
+            ? `Mark every student for ${gate} in Dashboard before enabling (${n} unmarked). Switch AM/PM to match the class session.`
+            : `Mark attendance for every student in Dashboard before enabling the link (${n} unmarked).`,
           '#b71c1c'
         );
       }
     } else {
-      showNote('Mark complete attendance in Classroom before enabling a shared link.', 'var(--text-muted)');
+      showNote('Mark complete attendance in Dashboard before enabling a shared link.', 'var(--text-muted)');
     }
   }
 }
