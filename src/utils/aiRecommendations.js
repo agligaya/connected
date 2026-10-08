@@ -288,17 +288,50 @@ function safeParseJsonContent(raw) {
   }
 }
 
+function canonicalQuizItemType(raw) {
+  const t = String(raw || '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (['mcq', 'multiple_choice', 'multiplechoice', 'choice'].includes(t)) return 'mcq';
+  if (['identification', 'identify', 'id'].includes(t)) return 'identification';
+  if (['enumeration', 'enumerate', 'enum'].includes(t)) return 'enumeration';
+  return '';
+}
+
+/** Keep only ticked types, and no more of each type than was requested. */
+function restrictQuizItems(items, mix) {
+  const limits = {
+    mcq: mix.mcqCount,
+    identification: mix.idCount,
+    enumeration: mix.enumCount
+  };
+  const kept = { mcq: 0, identification: 0, enumeration: 0 };
+  const out = [];
+  for (const item of items || []) {
+    if (!item || typeof item !== 'object') continue;
+    const type = canonicalQuizItemType(item.type);
+    if (!type || !limits[type] || kept[type] >= limits[type]) continue;
+    kept[type] += 1;
+    out.push({ ...item, type });
+  }
+  return out;
+}
+
 function normalizeGeneratedContent(parsed, fallbackMeta) {
   const base = mockGenerate(fallbackMeta);
+  const mix = resolveQuizItemMix(
+    fallbackMeta?.gradeLevel,
+    fallbackMeta?.quizItemCount,
+    fallbackMeta?.quizItemTypes
+  );
   if (!parsed || typeof parsed !== 'object') return base;
+
+  const restricted = restrictQuizItems(parsed.quiz?.items, mix);
+  const items = restricted.length ? restricted : base.quiz.items;
 
   return {
     quiz: {
       ...base.quiz,
       ...(parsed.quiz || {}),
-      items: Array.isArray(parsed.quiz?.items) && parsed.quiz.items.length
-        ? parsed.quiz.items
-        : base.quiz.items
+      items
     },
     activity: {
       ...base.activity,
@@ -320,10 +353,28 @@ async function callOpenAiGenerate({ title, gradeLevel, subjectName, sourceText, 
   const idItems = String(mix.idCount);
   const enumItems = String(mix.enumCount);
   const typeParts = [];
-  if (mix.mcqCount > 0) typeParts.push(`${mcqItems} mcq`);
-  if (mix.idCount > 0) typeParts.push(`${idItems} identification`);
-  if (mix.enumCount > 0) typeParts.push(`${enumItems} enumeration`);
+  const itemSchemas = [];
+  const typeRules = [];
+  const omitted = [];
+  if (mix.mcqCount > 0) {
+    typeParts.push(`${mcqItems} mcq`);
+    itemSchemas.push('{ type: "mcq", question, choices: [exactly 4 short strings], answer (must match one choice), points }');
+    typeRules.push('MCQ: one clear correct answer; distractors plausible but clearly wrong.');
+  } else omitted.push('multiple choice');
+  if (mix.idCount > 0) {
+    typeParts.push(`${idItems} identification`);
+    itemSchemas.push('{ type: "identification", question, answer (short expected word/phrase), points }');
+    typeRules.push('Identification: one short factual answer (term, name, number, or phrase).');
+  } else omitted.push('identification');
+  if (mix.enumCount > 0) {
+    typeParts.push(`${enumItems} enumeration`);
+    itemSchemas.push('{ type: "enumeration", question, answer (brief expected list tip for the teacher), points }');
+    typeRules.push('Enumeration: ask for a short list (2–4 items); put a scoring tip in answer.');
+  } else omitted.push('enumeration');
   const mixLine = typeParts.join(', ');
+  const omitLine = omitted.length
+    ? `Do NOT include these item types: ${omitted.join(', ')}.`
+    : '';
 
   const system = `You are an education assistant for a Philippine Montessori elementary school (Grades 1–6).
 Generate age-appropriate QUIZ and ACTIVITY drafts from ONE lesson plan only.
@@ -334,10 +385,7 @@ Return ONLY valid JSON with keys: quiz, activity.
     title,
     max_score (number),
     items: [
-      // Mix of types. Each item MUST include "type".
-      { type: "mcq", question, choices: [exactly 4 short strings], answer (must match one choice), points },
-      { type: "identification", question, answer (short expected word/phrase), points },
-      { type: "enumeration", question, answer (brief expected list tip for the teacher), points }
+      ${itemSchemas.join('\n      ')}
     ],
     notes (short teacher tip)
   }
@@ -365,10 +413,8 @@ Return ONLY valid JSON with keys: quiz, activity.
 Rules by grade level:
 - Grade ${grade}: use vocabulary and sentence length suitable for that grade.
 - Quiz MUST have exactly ${mix.total} items total: ${mixLine} — all aligned to THIS lesson's objectives.
-- Only include the item types listed above (do not invent other types).
-- MCQ: one clear correct answer; distractors plausible but clearly wrong.
-- Identification: one short factual answer (term, name, number, or phrase).
-- Enumeration: ask for a short list (2–4 items); put a scoring tip in answer.
+- Every quiz item type must be one of: ${mix.types.join(', ')}. ${omitLine}
+- ${typeRules.join('\n- ')}
 - Activity: short (10–25 min), concrete, Montessori-friendly (hands-on / collaborative when possible).
 - No student names, LRNs, or private data.
 - Language clear for elementary teachers and learners.
@@ -422,7 +468,14 @@ ${sourceText || '(title/objectives only)'}`;
     throw new Error('AI returned invalid JSON');
   }
 
-  return normalizeGeneratedContent(parsed, { title, gradeLevel, subjectName, sourceText, quizItemCount: mix.total });
+  return normalizeGeneratedContent(parsed, {
+    title,
+    gradeLevel,
+    subjectName,
+    sourceText,
+    quizItemCount: mix.total,
+    quizItemTypes: mix.types
+  });
 }
 
 /**

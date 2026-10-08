@@ -1,7 +1,3 @@
--- ConnectED live schema + seed (accounts/subjects from 17 Aug 2026 dump)
--- Import: create empty database `connected_system`, then Import this file in phpMyAdmin.
--- Start the Node server after import.
-
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 SET FOREIGN_KEY_CHECKS = 0;
 START TRANSACTION;
