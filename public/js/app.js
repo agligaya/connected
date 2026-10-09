@@ -1826,6 +1826,8 @@ function openTransferTeacherModal(teacherId, classes) {
   syncTransferNewTeacher();
   const submit = document.querySelector('#transfer-teacher-form button[type="submit"]');
   if (submit) submit.disabled = false;
+  document.getElementById('teacher-detail-modal')?.setAttribute('hidden', '');
+  document.getElementById('parent-detail-modal')?.setAttribute('hidden', '');
   openAdminModal('transfer-teacher-modal');
 }
 

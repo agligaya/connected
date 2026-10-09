@@ -1,9 +1,9 @@
-  -- phpMyAdmin SQL Dump
+-- phpMyAdmin SQL Dump
 -- version 5.2.1
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Oct 09, 2026 at 12:01 PM
+-- Generation Time: Oct 09, 2026 at 11:28 PM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -159,7 +159,9 @@ INSERT INTO `activity_log` (`id`, `user_id`, `user_name`, `user_role`, `ACTION`,
 (113, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Jobert Foll', 'bertofollero@gmail.com', '2026-10-09 05:44:34'),
 (114, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Cindy Beralde', 'cindyberalde@gmail.com', '2026-10-09 06:00:23'),
 (115, 1, 'System Admin', 'admin', 'Updated account info', 'parent', 'Jobert Foll', 'follero@gmail.com', '2026-10-09 06:03:00'),
-(116, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Joe Fol', 'bertofollero@gmail.com', '2026-10-09 06:03:22');
+(116, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Joe Fol', 'bertofollero@gmail.com', '2026-10-09 06:03:22'),
+(117, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Sunoo Quart', 'alexisbanana58@gmail.com', '2026-10-09 14:20:07'),
+(118, 1, 'System Admin', 'admin', 'Created account', 'parent', 'Jen Talagtag', 'jennylyntalagtag780@gmail.com', '2026-10-09 15:43:31');
 
 -- --------------------------------------------------------
 
@@ -665,13 +667,14 @@ INSERT INTO `parent_profiles` (`id`, `user_id`, `address`, `emergency_contact`) 
 (3, 11, 'Iriga City', '09181234567'),
 (4, 12, 'Naga City', '09181234568'),
 (5, 13, 'Pili', '09181234569'),
-(6, 21, NULL, NULL),
 (7, 22, NULL, NULL),
 (8, 23, NULL, NULL),
 (9, 24, NULL, NULL),
 (10, 25, NULL, NULL),
 (11, 26, NULL, NULL),
-(12, 27, NULL, NULL);
+(12, 27, NULL, NULL),
+(13, 28, 'Nabua', '09222555100'),
+(14, 29, 'Iriga', '09489321252');
 
 -- --------------------------------------------------------
 
@@ -1205,7 +1208,9 @@ INSERT INTO `sms_queue` (`id`, `parent_id`, `student_id`, `phone`, `body`, `stat
 (15, 3, 5, '09708668466', 'ConnectED: Cams Lasr scored 4/5 on Activity — Nouns.', 'sent', 1, NULL, '2026-10-09 01:31:31', '2026-10-09 01:31:32'),
 (16, 3, 5, '09708668466', 'ConnectED: New Announcement Posted!', 'sent', 1, NULL, '2026-10-09 01:33:43', '2026-10-09 01:33:44'),
 (17, 11, 7, '09171234567', 'ConnectED: New Announcement Posted!', 'sent', 1, NULL, '2026-10-09 01:33:44', '2026-10-09 01:33:44'),
-(18, 3, 5, '09708668466', 'ConnectED: Cams Lasr scored 3/34 on Q1 Periodical Exam.', 'sent', 1, NULL, '2026-10-09 01:38:08', '2026-10-09 01:38:08');
+(18, 3, 5, '09708668466', 'ConnectED: Cams Lasr scored 3/34 on Q1 Periodical Exam.', 'sent', 1, NULL, '2026-10-09 01:38:08', '2026-10-09 01:38:08'),
+(19, 28, NULL, '09301846142', 'ConnectED: Your temporary password is 9qaFWHSA6Q. Sign in with your email, then change it. Do not share this password.', 'sent', 1, NULL, '2026-10-09 14:20:12', '2026-10-09 14:20:13'),
+(20, 29, NULL, '09489321252', 'ConnectED: Your temporary password is W3dF9Eq2bn. Sign in with your email, then change it. Do not share this password.', 'sent', 1, NULL, '2026-10-09 15:43:35', '2026-10-09 15:43:35');
 
 -- --------------------------------------------------------
 
@@ -1262,11 +1267,20 @@ CREATE TABLE `subjects` (
 --
 
 INSERT INTO `subjects` (`id`, `CODE`, `NAME`, `description`, `applicable_grades`, `deleted_at`) VALUES
-(12, 'IT 213', 'Mathematics', 'Problem-solving', '1-6', NULL),
-(13, 'SCIENCE', 'Science', 'Botany, Physics', '1-6', NULL),
-(14, 'AP', 'Araling Panlipunan', 'History, Society, Law', '5', NULL),
-(15, 'MAPEH', 'Music, Arts, PE, Health', 'Music, Arts, PE, Health', '4-6', NULL),
-(16, '123', 'English', NULL, '1-6', NULL);
+(12, 'MATH', 'Math', 'Problem-solving', '1-6', NULL),
+(13, 'SCI', 'Science', 'Botany, Physics', '1-6', NULL),
+(14, 'AP', 'Araling Panlipunan', 'History, Society, Law', NULL, NULL),
+(15, 'MAPEH', 'Music, Arts, PE, Health', 'Music, Arts, PE, Health', NULL, NULL),
+(16, 'ENG', 'English', NULL, '1-6', NULL),
+(18, 'FIL', 'Filipino', NULL, '1-6', NULL),
+(19, 'MAK', 'Makabansa', NULL, '1-6', NULL),
+(20, 'GMRC', 'GMRC', NULL, '1-6', NULL),
+(21, 'REL', 'Religion', NULL, '1-6', NULL),
+(22, 'GEOM', 'Geometry', NULL, '1-6', NULL),
+(23, 'GEOG', 'Geography', NULL, '1-6', NULL),
+(24, 'READ', 'Reading', NULL, '1-6', NULL),
+(25, 'COMP', 'Computer', NULL, '4-6', NULL),
+(26, 'TLE', 'TLE', NULL, '4-6', NULL);
 
 -- --------------------------------------------------------
 
@@ -1389,7 +1403,7 @@ INSERT INTO `users` (`id`, `first_name`, `last_name`, `email`, `password_hash`, 
 (6, 'Jobert', 'Follero', 'jobert@usant.edu.ph', '$2b$10$2Q1tWwNWLzcPjBeqGl2ueu0oZIZEqNaMALqIyMVMNpVgx5KvmqOLm', '09123123123', 'teacher', 'inactive', 0, '2026-08-14 02:32:17', NULL, 0),
 (7, 'Jane', 'Doe', 'janedoe@usant.edu.ph', '$2b$10$rhH/17fzTLtIXYqyplVyruG.ad2EOyYBjQcFAlAnxyRnoY/xnFHcC', '09915521939', 'teacher', 'active', 0, '2026-08-15 03:02:46', NULL, 0),
 (8, 'John', 'Doe', 'johndoe@usant.edu.ph', '$2b$10$2c9uUd/HHSrTObOEthZ6wuM6u9KwRRdNKYonQIDOvZgW2RUqaktdW', '0991255678439', 'teacher', 'inactive', 0, '2026-08-15 07:33:36', NULL, 0),
-(11, 'Sample', 'Parent', 'sample.parent@usant.edu', '$2b$10$BChkmP4mYvlI0vM2a69bGew0SgRGHbHi4hH5Wo6Oj3Hs09.DRxSey', '09171234567', 'parent', 'active', 1, '2026-10-08 07:28:12', NULL, 0),
+(11, 'Sample', 'Parent', 'sample.parent@usant.edu', '$2b$10$HQC44z3mjMB5lu/yPq2KK.l.UdLEcD2q44i.7ffMa6WwzNLqIFzRG', '09171234567', 'parent', 'active', 0, '2026-10-08 07:28:12', NULL, 0),
 (12, 'Sample', 'Parent Two', 'sample.parent2@usant.edu', '$2b$10$0qDHN2UtT7COClDGi1z.L.XwebjNh81maZM3LYs6ERN4lgUj6Itpm', '09171234568', 'parent', 'active', 1, '2026-10-08 07:28:13', NULL, 0),
 (13, 'Sample', 'Parent Three', 'sample.parent3@usant.edu', '$2b$10$PliIwkocONQQiqSinKyaiuIjPAFkEIhBLl7S0jcxGLzTDuvcXfxNO', '09171234569', 'parent', 'active', 1, '2026-10-08 07:28:13', NULL, 0),
 (14, 'Sample', 'Teacher', 'sample.teacher@usant.edu', '$2b$10$FdzImr2znNySFZGSwnnR4OanOBGOo5FEbG6fMFakmHVXn/K8tSauu', '09182234567', 'teacher', 'inactive', 1, '2026-10-08 07:28:13', NULL, 0),
@@ -1399,13 +1413,14 @@ INSERT INTO `users` (`id`, `first_name`, `last_name`, `email`, `password_hash`, 
 (18, 'Sample', 'Lang', 'sample@usant.edu.ph', '$2b$10$u79XpXdjehSpE6Wh02wN8uHwK7ST8ublFRGbd6Tzb34sBXGlqb10m', '09148142752', 'teacher', 'inactive', 1, '2026-10-09 02:44:21', NULL, 0),
 (19, 'Argill', 'Bonita', 'argill@usant.edu.ph', '$2b$10$cQY/3R5qtnNiD/YeiJw0l.mGRId0wLUw3.SPBjvbQutbjAjUuYHjm', NULL, 'teacher', 'active', 0, '2026-10-09 02:52:46', NULL, 0),
 (20, 'Jen', 'Tal', 'jen@usant.edu.ph', '$2b$10$gnghqBbT.//Igb52La/62.bO1y3EeR430uPmVY4p8WORegvrf/akq', '09222555100', 'teacher', 'inactive', 1, '2026-10-09 03:08:10', NULL, 0),
-(21, 'Argill', 'Bonita', 'alexisbanana58@gmail.com', '$2b$10$C93UX.4EfMZz9yL4KODKveB86hRYGyushgUjGOSsO5u1A5jjswGqy', '09153983889', 'parent', 'inactive', 1, '2026-10-09 05:20:18', NULL, 0),
 (22, 'Argill', 'Bonita', 'argillertbonita@gmail.com', '$2b$10$ujwkKQ56xue3Koy6E60AwOeFN29PTV4B0vRVQXKWp4DwvCHPasIwu', '09153983889', 'parent', 'inactive', 1, '2026-10-09 05:22:28', NULL, 0),
 (23, 'Jobert', 'Follero', 'berto@gmail.com', '$2b$10$Dj6rcg6BFGo8d.2essMn6.vVPiiJuX5YA8PufoKfVbWyX.HiDwUou', '09153983889', 'parent', 'inactive', 1, '2026-10-09 05:40:34', NULL, 0),
 (24, 'Jobert', 'Follero', 'jobert@gmail.com', '$2b$10$MZdtLS6W3txtJr5uyGprG.uf8Hpg3qGb93CyXe37L.tmpx6ogs5QW', '09153983889', 'parent', 'active', 1, '2026-10-09 05:43:23', NULL, 0),
 (25, 'Jobert', 'Foll', 'follero@gmail.com', '$2b$10$cbUoUBdFnkV9CYLaZcGJzO5HW0D4nU7xKC2vF3Zt7u8CWD8ZlXCui', '09107197030', 'parent', 'active', 1, '2026-10-09 05:44:34', NULL, 0),
 (26, 'Cindy', 'Beralde', 'cindyberalde@gmail.com', '$2b$10$PZvEQzN8e8tOg05na4kNmuj4WwYWdHhHT63J8uJiXMUvAQnhZpiJK', '09107197030', 'parent', 'active', 1, '2026-10-09 06:00:23', NULL, 0),
-(27, 'Joe', 'Fol', 'bertofollero@gmail.com', '$2b$10$CsHI1RuCDRgwqJuKlmnkGeU/6GwuOekUnkXuQS6xuafUU4WdciuKK', '09153983889', 'parent', 'active', 1, '2026-10-09 06:03:22', NULL, 0);
+(27, 'Joe', 'Fol', 'bertofollero@gmail.com', '$2b$10$CsHI1RuCDRgwqJuKlmnkGeU/6GwuOekUnkXuQS6xuafUU4WdciuKK', '09153983889', 'parent', 'active', 1, '2026-10-09 06:03:22', NULL, 0),
+(28, 'Sunoo', 'Quart', 'alexisbanana58@gmail.com', '$2b$10$HDhkypsMsrIYWAgThN89huHDpBt8QOEtIexvZ6/6kppwoiUzIWaXS', '09301846142', 'parent', 'active', 1, '2026-10-09 14:20:07', NULL, 0),
+(29, 'Jen', 'Talagtag', 'jennylyntalagtag780@gmail.com', '$2b$10$Eij2oUWt4Z8I7cD1pAkYKOrUrPSy3NCfJJzNcu3imSaomDJwAYM6i', '09489321252', 'parent', 'active', 1, '2026-10-09 15:43:30', NULL, 0);
 
 --
 -- Indexes for dumped tables
@@ -1645,7 +1660,7 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `activity_log`
 --
 ALTER TABLE `activity_log`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=117;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=119;
 
 --
 -- AUTO_INCREMENT for table `ai_recommendations`
@@ -1711,7 +1726,7 @@ ALTER TABLE `messages`
 -- AUTO_INCREMENT for table `parent_profiles`
 --
 ALTER TABLE `parent_profiles`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=13;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=15;
 
 --
 -- AUTO_INCREMENT for table `parent_student_links`
@@ -1765,7 +1780,7 @@ ALTER TABLE `quiz_submissions`
 -- AUTO_INCREMENT for table `sms_queue`
 --
 ALTER TABLE `sms_queue`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=19;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=21;
 
 --
 -- AUTO_INCREMENT for table `students`
@@ -1777,7 +1792,7 @@ ALTER TABLE `students`
 -- AUTO_INCREMENT for table `subjects`
 --
 ALTER TABLE `subjects`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=18;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=27;
 
 --
 -- AUTO_INCREMENT for table `teacher_assignments`
@@ -1795,7 +1810,7 @@ ALTER TABLE `teacher_profiles`
 -- AUTO_INCREMENT for table `users`
 --
 ALTER TABLE `users`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=28;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=30;
 
 --
 -- Constraints for dumped tables
