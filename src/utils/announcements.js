@@ -7,9 +7,16 @@ async function ensureAnnouncementAudience() {
   schemaPromise = (async () => {
     try {
       await db.query(
-        "ALTER TABLE announcements ADD COLUMN audience ENUM('teachers','everyone') NOT NULL DEFAULT 'everyone'"
+        "ALTER TABLE announcements ADD COLUMN audience ENUM('teachers','parents','everyone') NOT NULL DEFAULT 'everyone'"
       );
     } catch (e) { /* exists */ }
+    try {
+      await db.query(
+        "ALTER TABLE announcements MODIFY COLUMN audience ENUM('teachers','parents','everyone') NOT NULL DEFAULT 'everyone'"
+      );
+    } catch (e) {
+      console.error('[announcements] audience enum:', e.message);
+    }
   })();
   try {
     await schemaPromise;
@@ -20,7 +27,10 @@ async function ensureAnnouncementAudience() {
 }
 
 function normalizeAudience(value) {
-  return String(value || 'everyone').toLowerCase() === 'teachers' ? 'teachers' : 'everyone';
+  const v = String(value || 'everyone').toLowerCase();
+  if (v === 'teachers' || v === 'teacher') return 'teachers';
+  if (v === 'parents' || v === 'parent') return 'parents';
+  return 'everyone';
 }
 
 function normalizeScope(value) {
@@ -53,12 +63,20 @@ function announcementTargets({ scope, target_grade, target_section }) {
 }
 
 function audienceSql(role, alias = 'a') {
-  if (role === 'parent') return ` AND COALESCE(${alias}.audience, 'everyone') = 'everyone'`;
+  if (role === 'parent') {
+    return ` AND COALESCE(${alias}.audience, 'everyone') IN ('everyone', 'parents')`;
+  }
+  if (role === 'teacher') {
+    return ` AND COALESCE(${alias}.audience, 'everyone') IN ('everyone', 'teachers')`;
+  }
   return '';
 }
 
 function audienceLabel(audience) {
-  return normalizeAudience(audience) === 'teachers' ? 'Teachers only' : 'Parents & teachers';
+  const v = normalizeAudience(audience);
+  if (v === 'teachers') return 'Teachers only';
+  if (v === 'parents') return 'Parents only';
+  return 'Parents & teachers';
 }
 
 ensureAnnouncementAudience().catch((e) => {

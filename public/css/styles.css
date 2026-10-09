@@ -505,6 +505,12 @@ body[data-view="admin"] .page-shell {
   margin-bottom: 14px;
 }
 
+.login-card-usant .form-field,
+.login-card-usant .field-label-usant,
+.login-card-usant .input-usant {
+  text-align: left;
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .login-hero-content {
@@ -2432,6 +2438,39 @@ html.layout-mobile .admin-student-filter-select {
   list-style: none;
   margin: 10px 0;
   padding: 0;
+}
+
+.progress-section-hint {
+  margin: 8px 0 10px;
+}
+
+.progress-q-section {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 10px 10px 2px;
+  border: 1px solid #eadfdf;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.progress-q-section.is-dragging {
+  opacity: 0.55;
+}
+
+.progress-q-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  cursor: grab;
+  font-size: 0.9rem;
+}
+
+.progress-q-drag {
+  color: var(--maroon);
+  font-weight: 700;
+  letter-spacing: -2px;
+  user-select: none;
 }
 
 .progress-q-item {
@@ -4612,6 +4651,25 @@ textarea:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 12px;
+}
+
+.inbox-filters button.inbox-filter-trash {
+  margin-left: auto;
+  color: #b71c1c;
+  border-color: #b71c1c;
+  background: #fff;
+}
+
+.inbox-filters button.inbox-filter-trash:hover {
+  color: #b71c1c;
+  border-color: #b71c1c;
+  background: #fdecea;
+}
+
+.inbox-filters button.inbox-filter-trash.active {
+  color: #b71c1c;
+  border-color: #b71c1c;
+  background: #fdecea;
 }
 
 .inbox-filters button {

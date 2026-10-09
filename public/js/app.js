@@ -1087,10 +1087,10 @@ function applyAccountFilters() {
         <input type="checkbox" class="admin-account-check" data-account-id="${u.id}" ${selectedAccountIds.has(Number(u.id)) ? 'checked' : ''} aria-label="Select account" />
       </td>
       <td>${u.role === 'teacher' 
-        ? `<span class="clickable-name" onclick="openTeacherDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</span>`
+        ? `<span class="clickable-name" onclick="openTeacherDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.last_name)}, ${escapeHtml(u.first_name)}</span>`
         : u.role === 'parent'
-        ? `<span class="clickable-name" onclick="openParentDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}</span>`
-        : `${escapeHtml(u.first_name)} ${escapeHtml(u.last_name)}`}</td>
+        ? `<span class="clickable-name" onclick="openParentDetailModal(${u.id})" style="cursor:pointer;color:var(--maroon);text-decoration:underline;font-weight:600;">${escapeHtml(u.last_name)}, ${escapeHtml(u.first_name)}</span>`
+        : `${escapeHtml(u.last_name)}, ${escapeHtml(u.first_name)}`}</td>
       <td>${escapeHtml(u.email)}</td>
       <td>${formatActivityRole(u.role)}</td>
       <td>
@@ -3610,7 +3610,75 @@ function isUnread(item) {
 }
 
 function announcementAudienceLabel(item) {
-  return String(item.audience || 'everyone') === 'teachers' ? 'Teachers only' : 'Parents & teachers';
+  const audience = String(item.audience || 'everyone');
+  if (audience === 'teachers') return 'Teachers only';
+  if (audience === 'parents') return 'Parents only';
+  return 'Parents & teachers';
+}
+
+function inboxDeleteAction(itemType, itemId) {
+  return `<button type="button" class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="moveInboxToTrash('${itemType}', ${Number(itemId)})">Delete</button>`;
+}
+
+function inboxRestoreAction(itemType, itemId) {
+  return `<button type="button" class="chip-ghost" onclick="restoreInboxItem('${itemType}', ${Number(itemId)})">Restore</button>`;
+}
+
+window.moveInboxToTrash = async function(itemType, itemId) {
+  try {
+    const res = await fetch(`${API_URL}/inbox/trash`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ item_type: itemType, item_id: Number(itemId) })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not move to trash');
+    showToast('Moved to Trash');
+    await reloadOpenInbox();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.restoreInboxItem = async function(itemType, itemId) {
+  try {
+    const res = await fetch(`${API_URL}/inbox/restore`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ item_type: itemType, item_id: Number(itemId) })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not restore');
+    showToast('Restored to Inbox');
+    await reloadOpenInbox();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.emptyInboxTrash = async function() {
+  if (!window.confirm('Empty trash? These messages stay hidden on your account only.')) return;
+  try {
+    const res = await fetch(`${API_URL}/inbox/empty`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not empty trash');
+    showToast('Trash emptied');
+    await reloadOpenInbox();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function reloadOpenInbox() {
+  const role = getAuthUser()?.role;
+  if (role === 'parent') {
+    await renderParentInbox();
+    return;
+  }
+  if (role === 'teacher') await loadTeacherInbox();
 }
 
 function priorityCardClass(item) {
@@ -3666,7 +3734,7 @@ function roleLabel(role) {
   return role || 'User';
 }
 
-function concernThreadHtml(item, canReply) {
+function concernThreadHtml(item, canReply, extraActionsHtml = '') {
   const open = concernIsOpen(item);
   let replies = Array.isArray(item.replies) ? item.replies : [];
   if (!replies.length && item.teacher_reply) {
@@ -3703,16 +3771,18 @@ function concernThreadHtml(item, canReply) {
   const thread = `<div class="concern-thread">${original}${followUps}</div>`;
 
   const replyForm = canReply && open
-    ? `<textarea id="concern-reply-${item.id}" rows="2" class="concern-reply-input" placeholder="Write a follow-up message..."></textarea>`
+    ? `<textarea id="concern-reply-${item.id}" rows="2" class="concern-reply-input" placeholder="Write a message..."></textarea>`
     : '';
 
-  const actions = canReply
+  const extra = extraActionsHtml || '';
+  const actions = (canReply || extra)
     ? `<div class="inbox-item-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-         ${open ? `<button type="button" class="chip-ghost primary" onclick="replyToConcern(${item.id}, this)">Send Reply</button>` : ''}
+         ${canReply && open ? `<button type="button" class="chip-ghost primary" onclick="replyToConcern(${item.id}, this)">Send Reply</button>` : ''}
          ${canReply && getAuthUser()?.role !== 'parent' && open
            ? `<button type="button" class="chip-ghost" onclick="resolveConcern(${item.id})">Mark Resolved</button>`
            : ''}
-         ${!open ? '<span class="page-subheading" style="margin:0;">Replies closed</span>' : ''}
+         ${canReply && !open ? '<span class="page-subheading" style="margin:0;">Replies closed</span>' : ''}
+         ${extra}
        </div>`
     : (!open ? '<p class="page-subheading">Replies closed</p>' : '');
 
@@ -3816,7 +3886,8 @@ function renderMailConcernRow(item, {
   toggleFn = 'toggleTeacherConcern',
   metaLine = '',
   canReply = true,
-  badgeLabel = null
+  badgeLabel = null,
+  extraActionsHtml = ''
 } = {}) {
   const unread = isConcernUnread(item);
   const expanded = Number(expandedId) === Number(item.id);
@@ -3841,7 +3912,7 @@ function renderMailConcernRow(item, {
         <div class="inbox-item-summary-meta">${metaLine}</div>
         ${expanded ? '' : `<p class="inbox-item-preview">${escapeHtml(concernPreviewText(item))}</p>`}
       </button>
-      ${expanded ? `<div class="inbox-item-detail">${concernThreadHtml(item, canReply)}</div>` : ''}
+      ${expanded ? `<div class="inbox-item-detail">${concernThreadHtml(item, canReply, extraActionsHtml)}</div>` : ''}
     </li>`;
 }
 
@@ -3896,7 +3967,7 @@ function renderMailAnnouncementRow(item, {
     </li>`;
 }
 
-function renderTeacherConcernRow(item) {
+function renderTeacherConcernRow(item, { trashed = false } = {}) {
   const studentBit = item.student_name
     ? `${escapeHtml(item.student_name)} (Grade ${item.grade_level || '?'}-${escapeHtml(item.section || '?')})`
     : 'N/A';
@@ -3905,18 +3976,22 @@ function renderTeacherConcernRow(item) {
     toggleFn: 'toggleTeacherConcern',
     badgeLabel: item.parent_name || 'Parent',
     metaLine: `Student: ${studentBit}`,
-    canReply: true
+    canReply: !trashed,
+    extraActionsHtml: trashed ? inboxRestoreAction('concern', item.id) : inboxDeleteAction('concern', item.id)
   });
 }
 
-function renderTeacherAnnouncementRow(item) {
+function renderTeacherAnnouncementRow(item, { trashed = false } = {}) {
   const unread = isUnread(item);
+  const readBtn = trashed
+    ? ''
+    : `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${item.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`;
   return renderMailAnnouncementRow(item, {
     expandedId: teacherExpandedAnnouncementId,
     toggleFn: 'toggleTeacherAnnouncement',
     showTypeBadge: false,
     metaLine: `From: ${escapeHtml(item.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(item))}`,
-    actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${item.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+    actionsHtml: `${readBtn}${trashed ? inboxRestoreAction('announcement', item.id) : inboxDeleteAction('announcement', item.id)}`
   });
 }
 
@@ -3924,7 +3999,7 @@ let teacherInboxFilter = 'unresolved';
 let teacherExpandedConcernId = null;
 let teacherExpandedAnnouncementId = null;
 let teacherInboxSearchQuery = '';
-let teacherInboxCache = { announcements: [], concerns: [] };
+let teacherInboxCache = { announcements: [], concerns: [], trash: { announcements: [], concerns: [], messages: [] } };
 
 async function markTeacherConcernRead(id) {
   await markConcernReadForRole(id);
@@ -4049,7 +4124,14 @@ function paintTeacherInboxList() {
   updateTeacherInboxFilterCounts();
 
   let items = [];
-  if (filter === 'admin') {
+  if (filter === 'trash') {
+    const trash = teacherInboxCache.trash || {};
+    items = [
+      ...(trash.concerns || []).map((c) => ({ ...c, type: 'parent', trashed: true })),
+      ...(trash.announcements || []).map((a) => ({ ...a, type: 'admin', trashed: true }))
+    ];
+    items.sort((a, b) => new Date(b.trashed_at || b.created_at) - new Date(a.trashed_at || a.created_at));
+  } else if (filter === 'admin') {
     items = (teacherInboxCache.announcements || []).map((a) => ({ ...a, type: 'admin' }));
     items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   } else if (filter === 'resolved') {
@@ -4067,24 +4149,33 @@ function paintTeacherInboxList() {
   items = items.filter((item) => matchesInboxSearch(item, q));
 
   const unreadAdmin = (teacherInboxCache.announcements || []).filter((a) => isUnread(a)).length;
+  const trashCount = ((teacherInboxCache.trash || {}).concerns || []).length
+    + ((teacherInboxCache.trash || {}).announcements || []).length;
   const markAllBtn = filter === 'admin' && unreadAdmin > 0 && !String(q || '').trim()
     ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All as Read (${unreadAdmin})</button></div>`
+    : '';
+  const emptyTrashBtn = filter === 'trash' && trashCount > 0 && !String(q || '').trim()
+    ? `<div style="margin-bottom:10px;"><button type="button" class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="emptyInboxTrash()">Empty Trash</button></div>`
     : '';
 
   if (!items.length) {
     const emptyLabel = String(q || '').trim()
       ? 'matches'
-      : filter === 'admin'
+      : filter === 'trash'
+        ? 'items in trash'
+        : filter === 'admin'
         ? 'admin announcements'
         : filter === 'resolved'
           ? 'resolved concerns'
           : 'unresolved concerns';
-    listEl.innerHTML = markAllBtn + `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
+    listEl.innerHTML = markAllBtn + emptyTrashBtn + `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
     return;
   }
 
-  listEl.innerHTML = markAllBtn + items.map((item) => (
-    item.type === 'admin' ? renderTeacherAnnouncementRow(item) : renderTeacherConcernRow(item)
+  listEl.innerHTML = markAllBtn + emptyTrashBtn + items.map((item) => (
+    item.type === 'admin'
+      ? renderTeacherAnnouncementRow(item, { trashed: !!item.trashed })
+      : renderTeacherConcernRow(item, { trashed: !!item.trashed })
   )).join('');
 }
 
@@ -4102,13 +4193,22 @@ async function loadTeacherInbox(filter = teacherInboxFilter || 'unresolved') {
   });
 
   try {
-    const res = await fetch(`${API_URL}/teacher/inbox`, { headers: getAuthHeaders() });
+    const [res, trashRes] = await Promise.all([
+      fetch(`${API_URL}/teacher/inbox`, { headers: getAuthHeaders() }),
+      fetch(`${API_URL}/inbox/trash`, { headers: getAuthHeaders() })
+    ]);
     const data = await res.json();
+    const trashData = await trashRes.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error);
 
     teacherInboxCache = {
       announcements: Array.isArray(data.announcements) ? data.announcements : [],
-      concerns: Array.isArray(data.concerns) ? data.concerns : []
+      concerns: Array.isArray(data.concerns) ? data.concerns : [],
+      trash: {
+        announcements: Array.isArray(trashData.announcements) ? trashData.announcements : [],
+        concerns: Array.isArray(trashData.concerns) ? trashData.concerns : [],
+        messages: Array.isArray(trashData.messages) ? trashData.messages : []
+      }
     };
 
     // Keep expanded only if still present
@@ -4607,7 +4707,7 @@ let parentInboxFilter = 'unresolved';
 let parentInboxSearchQuery = '';
 let parentExpandedInboxKey = null;
 let parentExpandedConcernId = null;
-let parentInboxCache = { announcements: [], messages: [], concerns: [] };
+let parentInboxCache = { announcements: [], messages: [], concerns: [], trash: { announcements: [], concerns: [], messages: [] } };
 
 function parentSelectedChildId() {
   return parentCurrentChild?.id != null ? Number(parentCurrentChild.id) : null;
@@ -4674,7 +4774,57 @@ function paintParentInboxList() {
   let html = '';
   let emptyLabel = 'messages';
 
-  if (filter === 'unresolved' || filter === 'resolved') {
+  if (filter === 'trash') {
+    const trash = parentInboxCache.trash || {};
+    const rows = [
+      ...(trash.concerns || []).map((c) => ({ kind: 'concern', t: new Date(c.trashed_at || c.created_at || 0).getTime(), c })),
+      ...(trash.announcements || []).map((a) => ({ kind: 'ann', t: new Date(a.trashed_at || a.created_at || 0).getTime(), a })),
+      ...(trash.messages || []).map((m) => ({ kind: 'msg', t: new Date(m.trashed_at || m.created_at || 0).getTime(), m }))
+    ].sort((x, y) => y.t - x.t);
+    const shown = rows.filter((row) => {
+      if (row.kind === 'concern') return matchesInboxSearch(row.c, q);
+      if (row.kind === 'msg') return matchesInboxSearch({ ...row.m, title: row.m.subject, body: row.m.message }, q);
+      return matchesInboxSearch(row.a, q);
+    });
+    emptyLabel = String(q || '').trim() ? 'matches' : 'items in trash';
+    html = shown.map((row) => {
+      if (row.kind === 'concern') {
+        return renderMailConcernRow(row.c, {
+          expandedId: parentExpandedConcernId,
+          toggleFn: 'toggleParentConcern',
+          badgeLabel: row.c.teacher_name || 'Teacher',
+          metaLine: `Student: ${escapeHtml(row.c.student_name || 'N/A')}`,
+          canReply: false,
+          extraActionsHtml: inboxRestoreAction('concern', row.c.id)
+        });
+      }
+      if (row.kind === 'msg') {
+        const m = row.m;
+        const key = `msg-${m.id}`;
+        const item = { ...m, title: m.subject, body: m.message, is_read: 1 };
+        return renderMailAnnouncementRow(item, {
+          expanded: parentExpandedInboxKey === key,
+          onToggle: `toggleParentInboxItem('${key}')`,
+          badgeLabel: 'Teacher notice',
+          badgeColor: 'var(--orange)',
+          metaLine: `From: ${escapeHtml(m.sender_name || 'Teacher')}`,
+          actionsHtml: inboxRestoreAction('message', m.id)
+        });
+      }
+      const a = row.a;
+      const key = `ann-${a.id}`;
+      const fromTeacher = String(a.sender_role || 'admin') === 'teacher';
+      return renderMailAnnouncementRow(a, {
+        expanded: parentExpandedInboxKey === key,
+        onToggle: `toggleParentInboxItem('${key}')`,
+        badgeLabel: fromTeacher ? 'Class notice' : '',
+        showTypeBadge: fromTeacher,
+        badgeColor: 'var(--orange)',
+        metaLine: `From: ${escapeHtml(a.sender_name || 'Admin')}`,
+        actionsHtml: inboxRestoreAction('announcement', a.id)
+      });
+    }).join('');
+  } else if (filter === 'unresolved' || filter === 'resolved') {
     let items = concerns.filter((c) =>
       filter === 'resolved' ? !concernIsOpen(c) : concernIsOpen(c)
     );
@@ -4688,7 +4838,8 @@ function paintParentInboxList() {
       toggleFn: 'toggleParentConcern',
       badgeLabel: c.teacher_name || 'Teacher',
       metaLine: `Student: ${escapeHtml(c.student_name || 'N/A')}`,
-      canReply: true
+      canReply: true,
+      extraActionsHtml: inboxDeleteAction('concern', c.id)
     })).join('');
   } else if (filter === 'admin') {
     let shownAnn = announcements.filter(isAdminAnnouncement);
@@ -4703,7 +4854,7 @@ function paintParentInboxList() {
         onToggle: `toggleParentInboxItem('${key}')`,
         showTypeBadge: false,
         metaLine: `From: ${escapeHtml(a.sender_name || 'Admin')} | ${escapeHtml(announcementMeta(a))}`,
-        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>${inboxDeleteAction('announcement', a.id)}`
       });
     }).join('');
   } else {
@@ -4743,7 +4894,7 @@ function paintParentInboxList() {
           badgeLabel: 'Teacher notice',
           badgeColor: 'var(--orange)',
           metaLine: `From: ${escapeHtml(m.sender_name || 'Teacher')}${m.student_name ? ` · Student: ${escapeHtml(m.student_name)}` : ''}`,
-          actionsHtml: `<button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+          actionsHtml: `<button type="button" class="chip-ghost ${unread ? 'primary' : ''}" onclick="toggleParentMessageRead(${m.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>${inboxDeleteAction('message', m.id)}`
         });
       }
       const a = row.a;
@@ -4755,7 +4906,7 @@ function paintParentInboxList() {
         badgeLabel: 'Class notice',
         badgeColor: 'var(--orange)',
         metaLine: `From: ${escapeHtml(a.sender_name || 'Teacher')} | ${escapeHtml(announcementMeta(a))}`,
-        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleAnnouncementRead(${a.id}, ${!unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>${inboxDeleteAction('announcement', a.id)}`
       });
     }).join('');
   }
@@ -4767,10 +4918,16 @@ function paintParentInboxList() {
   const markAllBtn = markCount > 0 && !String(q || '').trim()
     ? `<div style="margin-bottom:10px;"><button class="chip-ghost primary" onclick="markAllAnnouncementsRead()">Mark All as Read (${markCount})</button></div>`
     : '';
+  const trashCount = ((parentInboxCache.trash || {}).concerns || []).length
+    + ((parentInboxCache.trash || {}).announcements || []).length
+    + ((parentInboxCache.trash || {}).messages || []).length;
+  const emptyTrashBtn = filter === 'trash' && trashCount > 0 && !String(q || '').trim()
+    ? `<div style="margin-bottom:10px;"><button type="button" class="chip-ghost" style="color:#b71c1c;border-color:#b71c1c;" onclick="emptyInboxTrash()">Empty Trash</button></div>`
+    : '';
 
   const listHost = contentEl.querySelector('#parent-inbox-list');
   const markAllHost = contentEl.querySelector('#parent-inbox-markall');
-  if (markAllHost) markAllHost.innerHTML = markAllBtn;
+  if (markAllHost) markAllHost.innerHTML = markAllBtn + emptyTrashBtn;
   if (listHost) {
     listHost.innerHTML = html || `<li class="empty-state"><p>No ${emptyLabel}</p></li>`;
   }
@@ -4788,19 +4945,26 @@ async function renderParentInbox() {
   }
 
   try {
-    const [inboxRes, concernsRes] = await Promise.all([
+    const [inboxRes, concernsRes, trashRes] = await Promise.all([
       fetch(`${API_URL}/parent/inbox`, { headers: getAuthHeaders() }),
-      fetch(`${API_URL}/parent/concerns`, { headers: getAuthHeaders() })
+      fetch(`${API_URL}/parent/concerns`, { headers: getAuthHeaders() }),
+      fetch(`${API_URL}/inbox/trash`, { headers: getAuthHeaders() })
     ]);
     const inboxData = await inboxRes.json();
     const concernsData = await concernsRes.json();
+    const trashData = await trashRes.json().catch(() => ({}));
     if (!inboxRes.ok) throw new Error(inboxData.error);
     if (!concernsRes.ok) throw new Error(concernsData.error);
 
     parentInboxCache = {
       announcements: Array.isArray(inboxData.announcements) ? inboxData.announcements : [],
       messages: Array.isArray(inboxData.messages) ? inboxData.messages : [],
-      concerns: Array.isArray(concernsData) ? concernsData : []
+      concerns: Array.isArray(concernsData) ? concernsData : [],
+      trash: {
+        announcements: Array.isArray(trashData.announcements) ? trashData.announcements : [],
+        concerns: Array.isArray(trashData.concerns) ? trashData.concerns : [],
+        messages: Array.isArray(trashData.messages) ? trashData.messages : []
+      }
     };
     parentConcernsCache = parentInboxCache.concerns;
 
@@ -4825,6 +4989,7 @@ async function renderParentInbox() {
             <button type="button" class="${filter === 'resolved' ? 'active' : ''}" data-parent-inbox-filter="resolved">Resolved</button>
             <button type="button" class="${filter === 'admin' ? 'active' : ''}" data-parent-inbox-filter="admin">Admin</button>
             <button type="button" class="${filter === 'teacher' ? 'active' : ''}" data-parent-inbox-filter="teacher">Teacher</button>
+            <button type="button" class="inbox-filter-trash ${filter === 'trash' ? 'active' : ''}" data-parent-inbox-filter="trash">Trash</button>
           </div>
           <div class="inbox-search-bar">
             <input type="search" id="parent-inbox-search" class="inbox-search-input" placeholder="Search messages…" value="${escapeHtml(parentInboxSearchQuery)}" autocomplete="off" />
@@ -6655,6 +6820,112 @@ function setProgressListChromeVisible(show) {
   else chrome.setAttribute('hidden', '');
 }
 
+function groupQuestionsBySection(questions) {
+  const groups = [];
+  const map = new Map();
+  for (const q of questions || []) {
+    const key = String(q.item_type || 'mcq');
+    if (!map.has(key)) {
+      const group = { item_type: key, label: bankItemTypeLabel(key), items: [] };
+      map.set(key, group);
+      groups.push(group);
+    }
+    map.get(key).items.push(q);
+  }
+  return groups;
+}
+
+function progressQuestionItemHtml(q, idx) {
+  const type = canonicalBankItemType(q.item_type || 'mcq');
+  const pts = Number(q.points) || 1;
+  const choices = Array.isArray(q.choices) && q.choices.length
+    ? `<ul class="progress-choice-list">${q.choices.map((c, i) =>
+        `<li><strong>${String.fromCharCode(65 + i)}.</strong> ${escapeHtml(c)}</li>`
+      ).join('')}</ul>`
+    : '';
+  const answer = q.answer
+    ? `<div class="progress-q-answer"><strong>Correct:</strong> ${escapeHtml(formatMcqAnswerDisplay(q.answer, q.choices) || String(q.answer))}</div>`
+    : '';
+  const rubric = isActivityItemType(type) ? rubricPreviewHtml(q.rubric) : '';
+  return `<li class="progress-q-item">
+    <span class="progress-q-num">${idx + 1}.</span>
+    <div class="progress-q-body">
+      <div class="progress-q-meta">
+        <span class="progress-q-type">${escapeHtml(bankItemTypeLabel(type))}</span>
+        <span class="progress-q-pts">${pts} pt${pts === 1 ? '' : 's'}</span>
+      </div>
+      <div class="progress-q-text">${escapeHtml(q.question || '')}</div>
+      ${choices}
+      ${answer}
+      ${rubric}
+    </div>
+  </li>`;
+}
+
+function renderProgressQuestionSections(questions, assessmentId) {
+  const qList = document.getElementById('progress-questions-list');
+  if (!qList) return;
+  const groups = groupQuestionsBySection(questions);
+  let number = 0;
+  qList.innerHTML = groups.map((group) => {
+    const items = group.items.map((q) => progressQuestionItemHtml(q, number++)).join('');
+    return `<li class="progress-q-section" draggable="true" data-section-type="${escapeHtml(group.item_type)}">
+      <div class="progress-q-section-head">
+        <span class="progress-q-drag" aria-hidden="true">⋮⋮</span>
+        <strong>${escapeHtml(group.label)}</strong>
+        <span class="page-subheading">${group.items.length} item${group.items.length === 1 ? '' : 's'}</span>
+      </div>
+      <ol class="progress-questions-list">${items}</ol>
+    </li>`;
+  }).join('');
+
+  let dragEl = null;
+  let startOrder = '';
+  qList.querySelectorAll('.progress-q-section').forEach((el) => {
+    el.addEventListener('dragstart', (e) => {
+      dragEl = el;
+      startOrder = [...qList.querySelectorAll('.progress-q-section')].map((n) => n.dataset.sectionType).join('|');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', el.dataset.sectionType || '');
+      el.classList.add('is-dragging');
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!dragEl || dragEl === el) return;
+      const rect = el.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      qList.insertBefore(dragEl, after ? el.nextSibling : el);
+    });
+    el.addEventListener('dragend', async () => {
+      el.classList.remove('is-dragging');
+      const order = [...qList.querySelectorAll('.progress-q-section')].map((n) => n.dataset.sectionType);
+      dragEl = null;
+      if (!order.length || order.join('|') === startOrder) return;
+      try {
+        const res = await fetch(`${API_URL}/teacher/assessments/${assessmentId}/section-order`, {
+          method: 'PUT',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ section_order: order })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not save section order');
+        const saved = Array.isArray(data.section_order) ? data.section_order : order;
+        const regrouped = [];
+        const buckets = new Map(groupQuestionsBySection(questions).map((g) => [g.item_type, g.items]));
+        saved.forEach((key) => {
+          if (buckets.has(key)) regrouped.push(...buckets.get(key));
+        });
+        window._progressEditorQuestions = regrouped;
+        renderProgressQuestionSections(regrouped, assessmentId);
+        showToast('Section order saved');
+      } catch (err) {
+        showToast(err.message, 'error');
+        renderProgressQuestionSections(questions, assessmentId);
+      }
+    });
+  });
+}
+
 window.openProgressEditor = async function(id, mode = 'edit') {
   const editor = document.getElementById('progress-editor');
   showProgressCreateForm(false);
@@ -6762,33 +7033,7 @@ window.openProgressEditor = async function(id, mode = 'edit') {
         qWrap.hidden = false;
         qWrap.removeAttribute('hidden');
         if (qCount) qCount.textContent = `(${questions.length})`;
-        qList.innerHTML = questions.map((q, idx) => {
-          const type = canonicalBankItemType(q.item_type || 'mcq');
-          const pts = Number(q.points) || 1;
-          const typeLabelText = bankItemTypeLabel(type);
-          const choices = Array.isArray(q.choices) && q.choices.length
-            ? `<ul class="progress-choice-list">${q.choices.map((c, i) =>
-                `<li><strong>${String.fromCharCode(65 + i)}.</strong> ${escapeHtml(c)}</li>`
-              ).join('')}</ul>`
-            : '';
-          const answer = q.answer
-            ? `<div class="progress-q-answer"><strong>Correct:</strong> ${escapeHtml(formatMcqAnswerDisplay(q.answer, q.choices) || String(q.answer))}</div>`
-            : '';
-          const rubric = isActivityItemType(type) ? rubricPreviewHtml(q.rubric) : '';
-          return `<li class="progress-q-item">
-            <span class="progress-q-num">${idx + 1}.</span>
-            <div class="progress-q-body">
-              <div class="progress-q-meta">
-                <span class="progress-q-type">${escapeHtml(typeLabelText)}</span>
-                <span class="progress-q-pts">${pts} pt${pts === 1 ? '' : 's'}</span>
-              </div>
-              <div class="progress-q-text">${escapeHtml(q.question || '')}</div>
-              ${choices}
-              ${answer}
-              ${rubric}
-            </div>
-          </li>`;
-        }).join('');
+        renderProgressQuestionSections(questions, id);
       } else {
         qWrap.hidden = true;
         qWrap.setAttribute('hidden', '');
@@ -7347,7 +7592,7 @@ function printAssessmentItemsPaper({
 
   const maxScore = Number(max_score) || items.reduce((s, q) => s + (Number(q.points) || 1), 0);
   const heading = includeAnswers
-    ? `${escapeHtml(title || 'Assessment')} — ${reviewCopy ? 'Principal review' : 'ANSWER KEY (Teacher only)'}`
+    ? `${escapeHtml(title || 'Assessment')} — ${reviewCopy ? 'For Review' : 'ANSWER KEY (Teacher only)'}`
     : escapeHtml(title || 'Assessment');
   const meta = [
     type ? typeLabel(type) : null,
@@ -7377,10 +7622,8 @@ function printAssessmentItemsPaper({
     return `${sectionHead}${itemsHtml}`;
   });
 
-  const notice = includeAnswers
-    ? (reviewCopy
-      ? '<p class="meta"><strong>For principal review — not for students.</strong></p>'
-      : '<p class="meta"><strong>Do not distribute to students.</strong></p>')
+  const notice = includeAnswers && !reviewCopy
+    ? '<p class="meta"><strong>Do not distribute to students.</strong></p>'
     : '';
 
   const bodyHtml = `
@@ -7391,7 +7634,7 @@ function printAssessmentItemsPaper({
     ${bodyParts.join('')}
   `;
 
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${includeAnswers ? (reviewCopy ? 'Principal review' : 'Answer Key') : '\u00A0'}</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${includeAnswers ? (reviewCopy ? 'For Review' : 'Answer Key') : '\u00A0'}</title>
     <style>
       body { font-family: Arial, sans-serif; color: #222; padding: 20px; font-size: 12px; line-height: 1.45; }
       h1 { font-size: 16px; margin: 0 0 6px; color: #3d0a0a; }
@@ -7421,7 +7664,7 @@ function printAssessmentItemsPaper({
 
   printHtmlInHiddenFrame(html);
   showToast(reviewCopy
-    ? 'Opening print dialog for principal review…'
+    ? 'Opening print dialog…'
     : (includeAnswers ? 'Opening answer key print dialog…' : 'Opening exam paper print dialog (Save as PDF).'));
 }
 

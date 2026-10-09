@@ -54,6 +54,32 @@ function publicQuestion(row) {
   };
 }
 
+function shuffleQuestionsWithinSections(questions) {
+  const groups = [];
+  const map = new Map();
+  for (const q of questions || []) {
+    const key = String(q.item_type || 'mcq');
+    if (!map.has(key)) {
+      const bucket = [];
+      map.set(key, bucket);
+      groups.push(bucket);
+    }
+    map.get(key).push(q);
+  }
+  const shuffled = [];
+  for (const bucket of groups) {
+    const copy = bucket.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = copy[i];
+      copy[i] = copy[j];
+      copy[j] = tmp;
+    }
+    shuffled.push(...copy);
+  }
+  return shuffled;
+}
+
 async function getAssessmentQuestions(assessmentId) {
   await ensureQuestionBankSchema();
   const [rows] = await db.query(
@@ -291,6 +317,7 @@ module.exports = {
   ensureQuizShareSchema,
   generateShareToken,
   publicQuestion,
+  shuffleQuestionsWithinSections,
   getAssessmentQuestions,
   scoreSubmission,
   isActivityItemType,

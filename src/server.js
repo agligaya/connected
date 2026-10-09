@@ -43,6 +43,7 @@ app.use('/api/parent', require('./routes/parent'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/subjects', require('./routes/subjects'));
 app.use('/api/quiz', require('./routes/quizPublic'));
+app.use('/api/inbox', require('./routes/inbox'));
 
 // Public shared quiz page (students — no login)
 app.get('/quiz/:token', (req, res) => {
@@ -54,7 +55,7 @@ app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
   }
-  res.sendFile(path.join(__dirname, '../public/assets/index.html'));
+  res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
 const PORT = process.env.PORT || 5000;

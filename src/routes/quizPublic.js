@@ -8,6 +8,7 @@ const {
   ensureQuizShareSchema,
   publicQuestion,
   getAssessmentQuestions,
+  shuffleQuestionsWithinSections,
   scoreSubmission,
   isActivityItemType,
   activityWorkFromSubmission,
@@ -62,7 +63,7 @@ router.get('/:token', async (req, res) => {
       return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
 
-    const questions = await getAssessmentQuestions(assessment.id);
+    const questions = shuffleQuestionsWithinSections(await getAssessmentQuestions(assessment.id));
     if (!questions.length) {
       return res.status(400).json({ error: 'This link has no items yet.' });
     }

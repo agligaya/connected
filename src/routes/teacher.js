@@ -10,7 +10,8 @@ const {
   markConcernReadForParticipants,
   addConcernReply
 } = require('../utils/concernReplies');
-const { announcementTargets, ensureAnnouncementAudience } = require('../utils/announcements');
+const { announcementTargets, ensureAnnouncementAudience, audienceSql } = require('../utils/announcements');
+const { ensureInboxTrash, trashExcludeSql, teacherHandlesConcern } = require('../utils/inboxTrash');
 const { isQuarterUnlocked, getCurrentQuarter, normalizeQuarter } = require('../utils/schoolSettings');
 const { logActivity, logActivityThrottled } = require('../utils/activityLog');
 const {
@@ -951,7 +952,7 @@ router.post('/announcements', verifyToken, async (req, res) => {
 
     const [result] = await db.query(
       `INSERT INTO announcements (sender_id, title, body, scope, target_grade, target_section, priority, audience)
-       VALUES (?, ?, ?, 'class_specific', ?, ?, 'normal', 'everyone')`,
+       VALUES (?, ?, ?, 'class_specific', ?, ?, 'normal', 'parents')`,
       [teacherId, String(title).trim(), String(body).trim(), targets.target_grade, targets.target_section]
     );
     await logActivity(
@@ -1033,6 +1034,7 @@ router.get('/stats/:grade/:section', verifyToken, async (req, res) => {
 router.get('/inbox', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
+    await ensureInboxTrash();
 
     // Get teacher's assignments
     let assignmentRows = [];
@@ -1088,26 +1090,14 @@ router.get('/inbox', verifyToken, async (req, res) => {
         sql += ` OR (a.scope = 'class_specific' AND (${conds.join(' OR ')}))`;
         classList.forEach(cls => { const [g, sec] = cls.split('-'); params.push(g, sec); });
       }
-      sql += `) ORDER BY a.created_at DESC`;
+      sql += `)${audienceSql('teacher')}${trashExcludeSql('a', 'announcement')} ORDER BY a.created_at DESC`;
+      params.push(teacherId);
       [announcements] = await db.query(sql, params);
     } catch (e) { console.error('[Inbox] announcements error:', e.message); }
 
-    // Fetch concerns assigned to this teacher or in their classes
+    // Concerns only from a parent whose child this teacher handles, and only if sent to this teacher.
     let concerns = [];
     try {
-      const conditions = ['c.teacher_id = ?'];
-      const params = [teacherId];
-
-      assignmentRows.forEach(a => {
-        conditions.push('(s.grade_level = ? AND s.section = ?)');
-        params.push(a.grade_level, a.section);
-      });
-
-      if (profileRows.length > 0 && profileRows[0].homeroom_grade && profileRows[0].homeroom_section) {
-        conditions.push('(s.grade_level = ? AND s.section = ?)');
-        params.push(profileRows[0].homeroom_grade, profileRows[0].homeroom_section);
-      }
-
       const sql = `SELECT c.id, c.parent_id, c.teacher_id, c.student_id,
                      c.SUBJECT as subject, c.message, c.STATUS as status, c.priority,
                      c.created_at, c.updated_at, c.teacher_reply, c.replied_at,
@@ -1115,11 +1105,24 @@ router.get('/inbox', verifyToken, async (req, res) => {
                      CONCAT(s.first_name, ' ', s.last_name) as student_name,
                      s.grade_level, s.section
                    FROM concerns c
-                   LEFT JOIN users p ON c.parent_id = p.id
-                   LEFT JOIN students s ON c.student_id = s.id
-                   WHERE (${conditions.join(' OR ')})
+                   JOIN users p ON c.parent_id = p.id
+                   JOIN students s ON c.student_id = s.id
+                   WHERE c.teacher_id = ?
+                     AND (
+                       EXISTS (
+                         SELECT 1 FROM teacher_assignments ta
+                         WHERE ta.teacher_id = ? AND ta.school_year = ?
+                           AND ta.grade_level = s.grade_level AND ta.section = s.section
+                       )
+                       OR EXISTS (
+                         SELECT 1 FROM teacher_profiles tp
+                         WHERE tp.user_id = ?
+                           AND tp.homeroom_grade = s.grade_level AND tp.homeroom_section = s.section
+                       )
+                     )
+                     ${trashExcludeSql('c', 'concern')}
                    ORDER BY c.created_at DESC`;
-      [concerns] = await db.query(sql, params);
+      [concerns] = await db.query(sql, [teacherId, teacherId, schoolYear, teacherId, teacherId]);
       concerns = await attachReplies(concerns);
       concerns = await attachConcernReadState(concerns, teacherId);
     } catch (e) {
@@ -3499,6 +3502,62 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
   }
 });
 
+router.put('/assessments/:id/section-order', verifyToken, async (req, res) => {
+  try {
+    const teacherId = req.user?.id || req.user?.userId;
+    const { id } = req.params;
+    const requested = Array.isArray(req.body?.section_order)
+      ? req.body.section_order.map((t) => String(t || '').trim()).filter(Boolean)
+      : [];
+    if (!requested.length) return res.status(400).json({ error: 'Section order is required' });
+
+    const [owned] = await db.query(
+      'SELECT id FROM assessments WHERE id = ? AND created_by = ?',
+      [id, teacherId]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Record not found' });
+
+    const [rows] = await db.query(
+      `SELECT id, item_type
+       FROM assessment_questions
+       WHERE assessment_id = ?
+       ORDER BY sort_order ASC, id ASC`,
+      [id]
+    );
+    const groups = new Map();
+    const seen = [];
+    for (const row of rows) {
+      const key = String(row.item_type || 'mcq');
+      if (!groups.has(key)) {
+        groups.set(key, []);
+        seen.push(key);
+      }
+      groups.get(key).push(row.id);
+    }
+    const orderedTypes = [];
+    for (const key of requested) {
+      if (groups.has(key) && !orderedTypes.includes(key)) orderedTypes.push(key);
+    }
+    for (const key of seen) {
+      if (!orderedTypes.includes(key)) orderedTypes.push(key);
+    }
+    let sort = 0;
+    for (const key of orderedTypes) {
+      for (const questionId of groups.get(key)) {
+        await db.query(
+          'UPDATE assessment_questions SET sort_order = ? WHERE id = ? AND assessment_id = ?',
+          [sort, questionId, id]
+        );
+        sort += 1;
+      }
+    }
+    res.json({ message: 'Section order saved', section_order: orderedTypes });
+  } catch (error) {
+    console.error('Save section order error:', error);
+    res.status(500).json({ error: 'Server error saving section order', details: error.message });
+  }
+});
+
 router.delete('/assessments/:id', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
@@ -3521,14 +3580,8 @@ router.post('/concerns/:id/read', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
-    const [rows] = await db.query(
-      'SELECT id FROM concerns WHERE id = ? AND (teacher_id = ? OR teacher_id IS NULL)',
-      [id, teacherId]
-    );
-    if (!rows.length) {
-      const [any] = await db.query('SELECT id FROM concerns WHERE id = ?', [id]);
-      if (!any.length) return res.status(404).json({ error: 'Concern not found' });
-    }
+    const allowed = await teacherHandlesConcern(teacherId, id);
+    if (!allowed) return res.status(404).json({ error: 'Concern not found' });
     await markConcernRead(id, teacherId);
     res.json({ message: 'Marked as read' });
   } catch (error) {
@@ -3543,14 +3596,8 @@ router.post('/concerns/:id/reply', verifyToken, async (req, res) => {
     const { id } = req.params;
     const { message } = req.body;
 
-    const [rows] = await db.query(
-      'SELECT id FROM concerns WHERE id = ? AND (teacher_id = ? OR teacher_id IS NULL)',
-      [id, teacherId]
-    );
-    if (!rows.length) {
-      const [any] = await db.query('SELECT id FROM concerns WHERE id = ?', [id]);
-      if (!any.length) return res.status(404).json({ error: 'Concern not found' });
-    }
+    const allowed = await teacherHandlesConcern(teacherId, id);
+    if (!allowed) return res.status(404).json({ error: 'Concern not found' });
 
     const result = await addConcernReply({
       concernId: id,
@@ -3583,11 +3630,8 @@ router.patch('/concerns/:id/resolve', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
-    const [rows] = await db.query(
-      'SELECT id FROM concerns WHERE id = ? AND (teacher_id = ? OR teacher_id IS NULL)',
-      [id, teacherId]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Concern not found' });
+    const allowed = await teacherHandlesConcern(teacherId, id);
+    if (!allowed) return res.status(404).json({ error: 'Concern not found' });
 
     await db.query("UPDATE concerns SET STATUS = 'resolved' WHERE id = ?", [id]);
     try {

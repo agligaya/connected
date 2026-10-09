@@ -7,6 +7,7 @@ const {
   addConcernReply
 } = require('../utils/concernReplies');
 const { audienceSql } = require('../utils/announcements');
+const { ensureInboxTrash, trashExcludeSql } = require('../utils/inboxTrash');
 const { logActivity } = require('../utils/activityLog');
 const { ensureAttendanceSchema, manilaISODate } = require('../utils/attendanceSchema');
 const { buildParentInsight } = require('../utils/parentInsights');
@@ -302,6 +303,8 @@ exports.getParentInbox = async (req, res) => {
       [parentId]
     );
 
+    await ensureInboxTrash();
+
     if (children.length === 0) {
       const [notices] = await db.query(
         `SELECT m.id, m.SUBJECT as subject, m.message, m.is_read, m.created_at, m.student_id,
@@ -312,8 +315,9 @@ exports.getParentInbox = async (req, res) => {
          JOIN users u ON u.id = m.sender_id
          LEFT JOIN students s ON s.id = m.student_id
          WHERE m.receiver_id = ?
+         ${trashExcludeSql('m', 'message')}
          ORDER BY m.created_at DESC`,
-        [parentId]
+        [parentId, parentId]
       );
       return res.json({ announcements: [], messages: notices });
     }
@@ -341,7 +345,8 @@ exports.getParentInbox = async (req, res) => {
       classes.forEach(cls => { const [g, sec] = cls.split('-'); params.push(g, sec); });
     }
 
-    sql += `)${audienceSql('parent')} ORDER BY a.created_at DESC`;
+    sql += `)${audienceSql('parent')}${trashExcludeSql('a', 'announcement')} ORDER BY a.created_at DESC`;
+    params.push(parentId);
 
     const [announcements] = await db.query(sql, params);
 
@@ -354,8 +359,9 @@ exports.getParentInbox = async (req, res) => {
        JOIN users u ON u.id = m.sender_id
        LEFT JOIN students s ON s.id = m.student_id
        WHERE m.receiver_id = ?
+       ${trashExcludeSql('m', 'message')}
        ORDER BY m.created_at DESC`,
-      [parentId]
+      [parentId, parentId]
     );
 
     res.json({ announcements, messages: notices });
@@ -508,6 +514,7 @@ exports.createConcern = async (req, res) => {
 exports.getMyConcerns = async (req, res) => {
   try {
     const parentId = req.user.id;
+    await ensureInboxTrash();
     const studentId = req.query.student_id ? parseInt(req.query.student_id, 10) : null;
 
     if (studentId) {
@@ -528,7 +535,8 @@ exports.getMyConcerns = async (req, res) => {
        FROM concerns c
        LEFT JOIN users t ON c.teacher_id = t.id
        LEFT JOIN students s ON c.student_id = s.id
-       WHERE c.parent_id = ?`;
+       WHERE c.parent_id = ?${trashExcludeSql('c', 'concern')}`;
+    params.push(parentId);
     if (studentId) {
       sql += ' AND c.student_id = ?';
       params.push(studentId);
