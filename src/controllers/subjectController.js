@@ -1,4 +1,5 @@
 const db = require('../../db');
+const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 
 function cleanText(value) {
   return String(value ?? '').trim();
@@ -37,8 +38,12 @@ function duplicateSubjectMessage(error) {
 
 exports.getSubjects = async (req, res) => {
   try {
+    await ensureSoftDeleteSchema();
     const [subjects] = await db.query(
-      "SELECT id, CODE AS code, NAME AS name, description, applicable_grades FROM subjects ORDER BY CODE"
+      `SELECT id, CODE AS code, NAME AS name, description, applicable_grades
+       FROM subjects
+       WHERE deleted_at IS NULL
+       ORDER BY CODE`
     );
     res.json(subjects);
   } catch (error) {
@@ -98,6 +103,7 @@ exports.updateSubject = async (req, res) => {
 
 exports.deleteSubject = async (req, res) => {
   try {
+    await ensureSoftDeleteSchema();
     const { id } = req.params;
 
     const [[used]] = await db.query(
@@ -108,8 +114,16 @@ exports.deleteSubject = async (req, res) => {
       return res.status(409).json({ error: 'Cannot delete: subject is assigned to teachers' });
     }
 
-    await db.query('DELETE FROM subjects WHERE id = ?', [id]);
-    res.json({ message: 'Subject deleted' });
+    const [result] = await db.query(
+      `UPDATE subjects SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL`,
+      [id]
+    );
+    if (!result.affectedRows) {
+      const [rows] = await db.query('SELECT id FROM subjects WHERE id = ?', [id]);
+      if (!rows.length) return res.status(404).json({ error: 'Subject not found' });
+      return res.json({ message: 'Subject already removed' });
+    }
+    res.json({ message: 'Subject removed' });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }

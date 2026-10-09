@@ -18,6 +18,10 @@ app.use((req, res, next) => {
   next();
 });
 
+const indexHtmlPath = path.join(__dirname, '../public/index.html');
+const { portalRoot, portalPages, unknownPage } = require('./auth/portalPages');
+app.use(portalRoot());
+
 // Serve static files (HTML, CSS, JS, images, avatars)
 app.use(express.static(path.join(__dirname, '../public')));
 
@@ -28,10 +32,10 @@ const { getPublicConfig } = require('./utils/schoolSettings');
 app.get('/api/config', async (_req, res) => {
   try {
     const config = await getPublicConfig();
-    res.json(config);
+    res.json({ ...config, routingV2: require('./auth/flags').routingV2Enabled() });
   } catch (error) {
     console.error('Get config error:', error);
-    res.json({ schoolYear, currentQuarter: 'Q1', unlockedQuarters: ['Q1'] });
+    res.json({ schoolYear, currentQuarter: 'Q1', unlockedQuarters: ['Q1'], routingV2: false });
   }
 });
 
@@ -50,7 +54,11 @@ app.get('/quiz/:token', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/quiz.html'));
 });
 
-// Serve SPA Entry Point for non-API routes only
+// Path portals (/login, /admin, /teacher, /parent) when ROUTING_V2_ENABLED is on.
+app.use(portalPages(indexHtmlPath));
+app.use(unknownPage(indexHtmlPath));
+
+// Flag off: previous fallback for non-API paths.
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
@@ -72,6 +80,12 @@ app.listen(PORT, async () => {
     await ensureAttendanceSchema();
   } catch (e) {
     console.error('[startup] attendanceSchema:', e.message);
+  }
+  try {
+    const { ensureSoftDeleteSchema } = require('./utils/softDeleteSchema');
+    await ensureSoftDeleteSchema();
+  } catch (e) {
+    console.error('[startup] softDelete:', e.message);
   }
   try {
     const { ensureQuizAttendanceSchema } = require('./utils/quizAttendance');

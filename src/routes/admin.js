@@ -2,14 +2,24 @@ const express = require('express');
 const router = express.Router();
 const { verifyToken, requireRole } = require('../middleware/auth');
 const adminController = require('../controllers/adminController');
+const { bulkUpload } = require('../utils/tabularUpload');
+
+function acceptBulkFile(req, res, next) {
+  bulkUpload()(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+    next();
+  });
+}
 
 // Accounts
 router.post('/accounts', verifyToken, requireRole('admin'), adminController.createAccount);
+router.post('/accounts/bulk', verifyToken, requireRole('admin'), acceptBulkFile, adminController.bulkCreateAccounts);
 router.get('/accounts', verifyToken, requireRole('admin'), adminController.getAccounts);
 router.get('/accounts/:id', verifyToken, requireRole('admin'), adminController.getAccountById);
 router.put('/accounts/:id', verifyToken, requireRole('admin'), adminController.updateAccount);
 router.put('/accounts/:id/assignments', verifyToken, requireRole('admin'), adminController.updateAssignments);
 router.patch('/accounts/:id/status', verifyToken, requireRole('admin'), adminController.toggleStatus);
+router.post('/accounts/:id/transfer-deactivate', verifyToken, requireRole('admin'), adminController.transferAndDeactivate);
 router.post('/accounts/:id/reset-password', verifyToken, requireRole('admin'), adminController.resetAccountPassword);
 
 // Sections & Subjects
@@ -18,6 +28,7 @@ router.get('/subjects', verifyToken, requireRole('admin'), adminController.getSu
 router.get('/class-adviser', verifyToken, requireRole('admin'), adminController.getClassAdviser);
 
 // Activity & Inbox
+router.get('/overview-charts', verifyToken, requireRole('admin'), adminController.getOverviewCharts);
 router.get('/activity-log', verifyToken, requireRole('admin'), adminController.getActivityLog);
 router.get('/inbox', verifyToken, requireRole('admin'), adminController.getAdminInbox);
 router.get('/settings', verifyToken, requireRole('admin'), adminController.getSchoolSettings);

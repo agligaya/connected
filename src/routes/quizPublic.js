@@ -24,6 +24,7 @@ const {
   getSubmittedStudentIds,
   isAtOrBeforeManila
 } = require('../utils/quizAttendance');
+const { notifyStudentScore } = require('../utils/sms');
 
 function normalizeLrn(value) {
   const digits = String(value || '').replace(/\D/g, '');
@@ -349,6 +350,21 @@ router.post('/:token/submit', async (req, res) => {
           `INSERT INTO assessment_scores (assessment_id, student_id, score) VALUES (?, ?, ?)`,
           [assessment.id, student_id, finalScore]
         );
+      }
+      const kind = String(assessment.type || '').toLowerCase();
+      if (kind === 'quiz' || kind === 'exam') {
+        try {
+          await notifyStudentScore({
+            studentId: student.id,
+            firstName: student.first_name,
+            lastName: student.last_name,
+            score: finalScore,
+            maxScore: recordMax,
+            title: assessment.title
+          });
+        } catch (smsError) {
+          console.error('[sms] score notice:', smsError.message);
+        }
       }
     }
 

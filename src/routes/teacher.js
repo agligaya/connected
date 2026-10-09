@@ -14,17 +14,20 @@ const { announcementTargets, ensureAnnouncementAudience, audienceSql } = require
 const { ensureInboxTrash, trashExcludeSql, teacherHandlesConcern } = require('../utils/inboxTrash');
 const { isQuarterUnlocked, getCurrentQuarter, normalizeQuarter } = require('../utils/schoolSettings');
 const { logActivity, logActivityThrottled } = require('../utils/activityLog');
+const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const {
   ensureAttendanceSchema,
   manilaISODate,
   sqlDateToISO,
   weekStartMonday,
   weekdaysMonFri,
+  attendanceRangeBounds,
   isSubjectGrade,
   normalizeSession,
+  currentManilaSession,
   statusLetter
 } = require('../utils/attendanceSchema');
-const { enqueueSms, pickParentPhone, processSmsQueue } = require('../utils/sms');
+const { enqueueSms, pickParentPhone, processSmsQueue, notifyStudentScore, notifyClassAnnouncement } = require('../utils/sms');
 const {
   ensureAiRecommendationsSchema,
   generateRecommendationsForLesson,
@@ -54,6 +57,7 @@ const {
   isAllowedItemType,
   ITEM_TYPES
 } = require('../utils/questionBank');
+const { lessonName } = require('../utils/lessonParts');
 const {
   ensureQuizAttendanceSchema,
   parseMakeupIds,
@@ -211,12 +215,13 @@ router.get('/roster/:grade/:section', verifyToken, async (req, res) => {
 
 // ========== ATTENDANCE ==========
 
-async function loadWeeklySheet({ grade, section, weekStart, subjectId }) {
+async function loadWeeklySheet({ grade, section, weekStart, subjectId, range, anchor }) {
   await ensureAttendanceSchema();
   const sectionNorm = String(section || '').trim();
-  const start = weekStartMonday(weekStart || manilaISODate());
-  const dates = weekdaysMonFri(start);
-  const weekEnd = dates[dates.length - 1];
+  const bounds = attendanceRangeBounds(range || 'week', anchor || weekStart, schoolYear);
+  const dates = bounds.dates;
+  const start = bounds.from;
+  const weekEnd = bounds.to;
   const subjectMode = isSubjectGrade(grade) && subjectId;
 
   let subjectName = null;
@@ -288,6 +293,8 @@ async function loadWeeklySheet({ grade, section, weekStart, subjectId }) {
   }
 
   return {
+    range: bounds.range,
+    schoolYear: bounds.schoolYear || null,
     weekStart: start,
     weekEnd,
     dates,
@@ -330,7 +337,6 @@ async function weeklySheetToXlsx(sheet) {
   const title = subjectMode
     ? `Attendance Sheet — Grade ${sheet.grade}-${sheet.section} · ${sheet.subject_name || 'Subject'}`
     : `Attendance Sheet — Grade ${sheet.grade}-${sheet.section}`;
-  const weekLabel = `${formatAttendanceShortDate(sheet.weekStart)} – ${formatAttendanceShortDate(sheet.weekEnd)}`;
 
   ws.mergeCells(1, 1, 1, totalCols);
   ws.getCell(1, 1).value = title;
@@ -338,7 +344,7 @@ async function weeklySheetToXlsx(sheet) {
   ws.getCell(1, 1).alignment = left;
 
   ws.mergeCells(2, 1, 2, totalCols);
-  ws.getCell(2, 1).value = `Students ${sheet.students.length}  ·  Week ${weekLabel} (weekdays only)`;
+  ws.getCell(2, 1).value = `Students ${sheet.students.length}  ·  ${sheetRangeCaption(sheet)}`;
   ws.getCell(2, 1).font = { size: 10, color: { argb: 'FF555555' } };
 
   ws.mergeCells(3, 1, 3, totalCols);
@@ -467,11 +473,18 @@ async function weeklySheetToXlsx(sheet) {
   return Buffer.from(buffer);
 }
 
+function sheetRangeCaption(sheet) {
+  const span = `${formatAttendanceShortDate(sheet.weekStart)} – ${formatAttendanceShortDate(sheet.weekEnd)}`;
+  if (sheet.range === 'day') return formatAttendanceShortDate(sheet.weekStart);
+  if (sheet.range === 'month') return span;
+  if (sheet.range === 'year') return `School Year ${sheet.schoolYear || ''}`.trim();
+  return span;
+}
+
 function weeklySheetToPrintHtml(sheet) {
   const title = sheet.mode === 'subject'
     ? `Attendance Sheet — Grade ${sheet.grade}-${sheet.section} · ${sheet.subject_name || 'Subject'}`
     : `Attendance Sheet — Grade ${sheet.grade}-${sheet.section}`;
-  const weekLabel = `${formatAttendanceShortDate(sheet.weekStart)} – ${formatAttendanceShortDate(sheet.weekEnd)}`;
   const markCols = sheet.mode === 'subject' ? sheet.dates.length : sheet.dates.length * 2;
   const colgroup =
     '<colgroup><col style="width:9rem"><col style="width:14rem">' +
@@ -524,7 +537,7 @@ function weeklySheetToPrintHtml(sheet) {
 </style></head><body>
 <button onclick="window.print()">Print / Save as PDF</button>
 <h1>${title}</h1>
-<p class="meta">Students ${sheet.students.length} · Week ${weekLabel} (weekdays only)</p>
+<p class="meta">Students ${sheet.students.length} · ${sheetRangeCaption(sheet)}</p>
 <p class="legend"><span><strong>P</strong> – Present</span><span><strong>A</strong> – Absent</span><span><strong>L</strong> – Late</span><span><strong>E</strong> – Excused</span></p>
 <table>
 ${colgroup}
@@ -549,8 +562,9 @@ ${renderGroup(other, 'Other')}
 router.get('/attendance/:grade/:section/week/export', verifyToken, async (req, res) => {
   try {
     const { grade, section } = req.params;
-    const weekParam = String(req.query.week || req.query.weekStart || '').trim();
+    const weekParam = String(req.query.date || req.query.week || req.query.weekStart || '').trim();
     const weekStart = /^\d{4}-\d{2}-\d{2}$/.test(weekParam) ? weekParam : manilaISODate();
+    const range = String(req.query.range || 'week');
     const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
     const format = String(req.query.format || 'xlsx').toLowerCase();
 
@@ -558,7 +572,7 @@ router.get('/attendance/:grade/:section/week/export', verifyToken, async (req, r
       return res.status(400).json({ error: 'subject_id is required for Grades 4–6' });
     }
 
-    const sheet = await loadWeeklySheet({ grade, section, weekStart, subjectId });
+    const sheet = await loadWeeklySheet({ grade, section, weekStart, subjectId, range, anchor: weekStart });
     const base = `attendance_G${sheet.grade}-${sheet.section}_${sheet.weekStart}`;
 
     if (format === 'pdf' || format === 'html') {
@@ -582,8 +596,9 @@ router.get('/attendance/:grade/:section/week/export', verifyToken, async (req, r
 router.get('/attendance/:grade/:section/week', verifyToken, async (req, res) => {
   try {
     const { grade, section } = req.params;
-    const weekParam = String(req.query.week || req.query.weekStart || '').trim();
+    const weekParam = String(req.query.date || req.query.week || req.query.weekStart || '').trim();
     const weekStart = /^\d{4}-\d{2}-\d{2}$/.test(weekParam) ? weekParam : manilaISODate();
+    const range = String(req.query.range || 'week');
     const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
 
     if (isSubjectGrade(grade) && !subjectId) {
@@ -592,7 +607,7 @@ router.get('/attendance/:grade/:section/week', verifyToken, async (req, res) => 
       });
     }
 
-    const sheet = await loadWeeklySheet({ grade, section, weekStart, subjectId });
+    const sheet = await loadWeeklySheet({ grade, section, weekStart, subjectId, range, anchor: weekStart });
     res.json(sheet);
   } catch (error) {
     console.error('Get weekly attendance error:', error);
@@ -699,6 +714,14 @@ router.post('/attendance', verifyToken, async (req, res) => {
     }
 
     const session = normalizeSession(sessionBody, { subjectMode });
+    if (!subjectMode && session !== currentManilaSession()) {
+      const now = currentManilaSession();
+      return res.status(400).json({
+        error: now === 'AM'
+          ? 'Morning attendance is open. Afternoon attendance starts at 12:00.'
+          : 'Afternoon attendance is open. Morning attendance is closed after 12:00.'
+      });
+    }
 
     await db.query(
       `INSERT INTO attendance (student_id, \`DATE\`, session, subject_id, \`STATUS\`, recorded_by)
@@ -963,6 +986,11 @@ router.post('/announcements', verifyToken, async (req, res) => {
       String(title).trim(),
       `Grade ${grade}-${section}`
     );
+    try {
+      await notifyClassAnnouncement({ grade, section });
+    } catch (smsError) {
+      console.error('[sms] announcement notice:', smsError.message);
+    }
     res.status(201).json({ id: result.insertId, message: 'Announcement sent to parents of this class' });
   } catch (error) {
     console.error('Teacher announcement error:', error);
@@ -1027,6 +1055,151 @@ router.get('/stats/:grade/:section', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('Get stats error:', error);
     res.status(500).json({ error: 'Server error fetching stats', details: error.message });
+  }
+});
+
+router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
+  try {
+    const teacherId = req.user?.id || req.user?.userId;
+    const grade = req.params.grade;
+    const sectionNorm = String(req.params.section || '').trim();
+    const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
+    await assertTeacherClassAssignment(teacherId, grade, sectionNorm);
+
+    const [students] = await db.query(
+      `SELECT id, first_name, last_name
+       FROM students
+       WHERE grade_level = ? AND TRIM(section) = ? AND \`STATUS\` = 'active'
+       ORDER BY last_name, first_name`,
+      [grade, sectionNorm]
+    );
+
+    let scoreSql = `SELECT sc.student_id, sc.score, a.max_score, a.lesson_title, a.title
+       FROM assessment_scores sc
+       JOIN assessments a ON a.id = sc.assessment_id
+       JOIN students s ON s.id = sc.student_id
+       WHERE s.grade_level = ? AND TRIM(s.section) = ? AND s.\`STATUS\` = 'active'`;
+    const scoreParams = [grade, sectionNorm];
+    if (subjectId) {
+      scoreSql += ' AND a.subject_id = ?';
+      scoreParams.push(subjectId);
+    }
+    const [scores] = await db.query(scoreSql, scoreParams);
+
+    const byStudent = new Map();
+    const lessonsByStudent = new Map();
+    const classLessons = new Map();
+    for (const row of scores) {
+      const max = Number(row.max_score) || 0;
+      const raw = Number(row.score);
+      if (!Number.isFinite(raw) || max <= 0) continue;
+      const pct = Math.min(100, Math.max(0, Math.round((raw / max) * 100)));
+      const lesson = lessonName(row.lesson_title, row.title);
+      const lessonKey = lesson.toLowerCase();
+      if (!byStudent.has(row.student_id)) byStudent.set(row.student_id, []);
+      byStudent.get(row.student_id).push(pct);
+      if (!lessonsByStudent.has(row.student_id)) lessonsByStudent.set(row.student_id, new Map());
+      const studentLessons = lessonsByStudent.get(row.student_id);
+      if (!studentLessons.has(lessonKey)) studentLessons.set(lessonKey, { lesson, percents: [] });
+      studentLessons.get(lessonKey).percents.push(pct);
+      if (!classLessons.has(lessonKey)) classLessons.set(lessonKey, { lesson, percents: [] });
+      classLessons.get(lessonKey).percents.push(pct);
+    }
+
+    function weakestLessonName(studentId) {
+      const map = lessonsByStudent.get(studentId);
+      if (!map || !map.size) return null;
+      const ranked = [...map.values()].map((entry) => ({
+        lesson: entry.lesson,
+        avg: Math.round(entry.percents.reduce((sum, n) => sum + n, 0) / entry.percents.length)
+      }));
+      ranked.sort((a, b) => a.avg - b.avg || a.lesson.localeCompare(b.lesson));
+      return ranked[0].lesson;
+    }
+
+    function displayName(student) {
+      const last = String(student.last_name || '').trim();
+      const first = String(student.first_name || '').trim();
+      if (last && first) return `${last}, ${first}`;
+      return last || first || 'Student';
+    }
+
+    const bands = { excels: [], on_track: [], behind: [] };
+    const unscored = [];
+    for (const student of students) {
+      const percents = byStudent.get(student.id);
+      if (!percents || !percents.length) {
+        unscored.push({
+          id: student.id,
+          first_name: student.first_name,
+          last_name: student.last_name
+        });
+        continue;
+      }
+      const avg = Math.round(percents.reduce((sum, n) => sum + n, 0) / percents.length);
+      const entry = {
+        id: student.id,
+        first_name: student.first_name,
+        last_name: student.last_name,
+        avg_percent: avg,
+        weakest_lesson: weakestLessonName(student.id)
+      };
+      if (avg >= 85) bands.excels.push(entry);
+      else if (avg >= 75) bands.on_track.push(entry);
+      else bands.behind.push(entry);
+    }
+    const byName = (a, b) => String(a.last_name).localeCompare(String(b.last_name))
+      || String(a.first_name).localeCompare(String(b.first_name));
+    bands.excels.sort((a, b) => b.avg_percent - a.avg_percent || byName(a, b));
+    bands.on_track.sort((a, b) => b.avg_percent - a.avg_percent || byName(a, b));
+    bands.behind.sort((a, b) => a.avg_percent - b.avg_percent || byName(a, b));
+    unscored.sort(byName);
+
+    const counts = {
+      excels: bands.excels.length,
+      on_track: bands.on_track.length,
+      behind: bands.behind.length
+    };
+    const scored = counts.excels + counts.on_track + counts.behind;
+    let summary = 'No scores yet. Open Records to add quiz, activity, or exam scores.';
+    if (scored === 1) {
+      const one = bands.excels[0] || bands.on_track[0] || bands.behind[0];
+      const verb = bands.excels.length ? 'is excelling' : bands.on_track.length ? 'is on track' : 'is left behind';
+      summary = `${displayName(one)} ${verb} (${one.avg_percent}%).`;
+    } else if (scored > 1) {
+      summary = `${counts.excels} excelling, ${counts.on_track} on track, ${counts.behind} left behind.`;
+    }
+
+    const lessonAvgs = [...classLessons.values()].map((entry) => ({
+      lesson: entry.lesson,
+      avg: Math.round(entry.percents.reduce((sum, n) => sum + n, 0) / entry.percents.length)
+    })).sort((a, b) => b.avg - a.avg || a.lesson.localeCompare(b.lesson));
+    let lesson_line = '';
+    if (lessonAvgs.length === 1) {
+      lesson_line = `Excelled Lesson: ${lessonAvgs[0].lesson} (${lessonAvgs[0].avg}%).`;
+    } else if (lessonAvgs.length > 1) {
+      const best = lessonAvgs[0];
+      const worst = lessonAvgs[lessonAvgs.length - 1];
+      lesson_line = `Excelled Lesson: ${best.lesson} (${best.avg}%).\nNeeds Improvement: ${worst.lesson} (${worst.avg}%).`;
+    }
+
+    res.json({
+      total_students: students.length,
+      scored_students: scored,
+      counts,
+      summary,
+      lesson_line,
+      excels: bands.excels,
+      on_track: bands.on_track,
+      behind: bands.behind,
+      unscored
+    });
+  } catch (error) {
+    console.error('Class progress error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.status ? error.message : 'Server error fetching class progress'
+    });
   }
 });
 
@@ -1138,6 +1311,7 @@ router.get('/inbox', verifyToken, async (req, res) => {
 
 router.get('/subjects', verifyToken, async (req, res) => {
   try {
+    await ensureSoftDeleteSchema();
     const teacherId = req.user?.id || req.user?.userId;
     const [assignmentRows] = await db.query(
       `SELECT ta.grade_level, ta.subject_id, s.NAME as subject_name
@@ -1179,7 +1353,9 @@ router.get('/subjects', verifyToken, async (req, res) => {
 
     if (adviserGrades.length) {
       const [allSubjects] = await db.query(
-        'SELECT id, NAME as name, applicable_grades FROM subjects ORDER BY NAME'
+        `SELECT id, NAME as name, applicable_grades FROM subjects
+         WHERE deleted_at IS NULL
+         ORDER BY NAME`
       );
       const gradeMatches = (gradeLevel, applicableGrades) => {
         if (!applicableGrades) return false;
@@ -1758,8 +1934,8 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
     let assessmentId;
     try {
       const [result] = await db.query(
-        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, quiz_link)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, quiz_link, lesson_plan_id, lesson_title)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           title,
           type,
@@ -1769,7 +1945,9 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
           maxScore,
           teacherId,
           qtr,
-          quizLink
+          quizLink,
+          row.lesson_plan_id || null,
+          row.lesson_title ? String(row.lesson_title).slice(0, 255) : null
         ]
       );
       assessmentId = result.insertId;
@@ -2005,7 +2183,7 @@ router.post('/classwork/sets', verifyToken, async (req, res) => {
       }
       if (!hasExplicit && isG13Adviser) {
         const [[sub]] = await db.query(
-          'SELECT id, applicable_grades FROM subjects WHERE id = ?',
+          'SELECT id, applicable_grades FROM subjects WHERE id = ? AND deleted_at IS NULL',
           [subjectId]
         );
         if (!sub) return res.status(400).json({ error: 'Subject not found' });
@@ -2547,11 +2725,12 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       String(title || '').trim() ||
       `${typeLabelFallback(type)} from bank (${ordered.length} items)`;
 
+    const lesson = dominantLesson(ordered);
     let assessmentId;
     try {
       const [result] = await db.query(
-        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, lesson_plan_id, lesson_title)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           recordTitle,
           type,
@@ -2560,7 +2739,9 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
           String(section).trim(),
           maxScore,
           teacherId,
-          qtr
+          qtr,
+          lesson.lesson_plan_id,
+          lesson.lesson_title
         ]
       );
       assessmentId = result.insertId;
@@ -2682,6 +2863,13 @@ async function ensureAssessmentSchema() {
   try {
     await db.query(`ALTER TABLE assessment_scores ADD COLUMN rubric_scores JSON NULL`);
   } catch (e) { /* column may already exist */ }
+  // Lesson link (parent analytics: strengths / weaknesses per lesson)
+  try {
+    await db.query(`ALTER TABLE assessments ADD COLUMN lesson_plan_id INT NULL`);
+  } catch (e) { /* column may already exist */ }
+  try {
+    await db.query(`ALTER TABLE assessments ADD COLUMN lesson_title VARCHAR(255) NULL`);
+  } catch (e) { /* column may already exist */ }
   try {
     const { ensureQuizShareSchema } = require('../utils/quizShare');
     await ensureQuizShareSchema();
@@ -2693,6 +2881,70 @@ async function ensureAssessmentSchema() {
   } catch (e) {
     console.warn('[quiz-attendance] schema ensure:', e.message);
   }
+  await backfillAssessmentLessons();
+}
+
+/**
+ * One-time fill of assessments.lesson_plan_id / lesson_title for rows created
+ * before the columns existed. Sources: approved AI drafts, then the dominant
+ * lesson of attached question-bank items.
+ */
+async function backfillAssessmentLessons() {
+  try {
+    await db.query(
+      `UPDATE assessments a
+       JOIN ai_recommendations r ON r.assessment_id = a.id
+       JOIN lesson_plans lp ON lp.id = r.lesson_plan_id
+       SET a.lesson_plan_id = r.lesson_plan_id, a.lesson_title = lp.title
+       WHERE a.lesson_title IS NULL`
+    );
+  } catch (e) { /* tables may not exist yet */ }
+  try {
+    const [rows] = await db.query(
+      `SELECT aq.assessment_id, qb.lesson_plan_id, qb.lesson_title, COUNT(*) as n
+       FROM assessment_questions aq
+       JOIN question_bank qb ON qb.id = aq.question_bank_id
+       JOIN assessments a ON a.id = aq.assessment_id
+       WHERE a.lesson_title IS NULL
+         AND (qb.lesson_title IS NOT NULL OR qb.lesson_plan_id IS NOT NULL)
+       GROUP BY aq.assessment_id, qb.lesson_plan_id, qb.lesson_title
+       ORDER BY aq.assessment_id, n DESC`
+    );
+    const seen = new Set();
+    for (const r of rows) {
+      if (seen.has(r.assessment_id)) continue;
+      seen.add(r.assessment_id);
+      let title = r.lesson_title || null;
+      if (!title && r.lesson_plan_id) {
+        const [[lp]] = await db.query('SELECT title FROM lesson_plans WHERE id = ?', [r.lesson_plan_id]);
+        title = lp?.title || null;
+      }
+      if (!title && !r.lesson_plan_id) continue;
+      await db.query(
+        'UPDATE assessments SET lesson_plan_id = ?, lesson_title = ? WHERE id = ? AND lesson_title IS NULL',
+        [r.lesson_plan_id || null, title, r.assessment_id]
+      );
+    }
+  } catch (e) { /* tables may not exist yet */ }
+}
+
+/** Pick the most common (lesson_plan_id, lesson_title) among bank items. */
+function dominantLesson(items) {
+  const counts = new Map();
+  for (const it of items || []) {
+    const lpId = it.lesson_plan_id || null;
+    const title = it.lesson_title ? String(it.lesson_title).trim() : '';
+    if (!lpId && !title) continue;
+    const key = `${lpId || 'x'}|${title}`;
+    const cur = counts.get(key) || { lesson_plan_id: lpId, lesson_title: title || null, n: 0 };
+    cur.n += 1;
+    counts.set(key, cur);
+  }
+  let best = null;
+  for (const v of counts.values()) {
+    if (!best || v.n > best.n) best = v;
+  }
+  return best ? { lesson_plan_id: best.lesson_plan_id, lesson_title: best.lesson_title } : { lesson_plan_id: null, lesson_title: null };
 }
 
 function parseRubricScoresColumn(raw) {
@@ -3094,7 +3346,7 @@ router.get('/assessments', verifyToken, async (req, res) => {
 router.post('/assessments', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
-    const { title, type, subject_id, grade_level, section, max_score, quarter, quiz_link } = req.body;
+    const { title, type, subject_id, grade_level, section, max_score, quarter, quiz_link, lesson_plan_id } = req.body;
 
     if (!title || !String(title).trim()) {
       return res.status(400).json({ error: 'Title is required' });
@@ -3129,11 +3381,24 @@ router.post('/assessments', verifyToken, async (req, res) => {
       });
     }
 
+    // Optional lesson link (used by parent analytics)
+    let lessonPlanId = null;
+    let lessonTitle = null;
+    if (lesson_plan_id != null && lesson_plan_id !== '') {
+      const [[lp]] = await db.query(
+        'SELECT id, title FROM lesson_plans WHERE id = ? AND uploaded_by = ?',
+        [Number(lesson_plan_id), teacherId]
+      );
+      if (!lp) return res.status(400).json({ error: 'Selected lesson plan was not found' });
+      lessonPlanId = lp.id;
+      lessonTitle = String(lp.title || '').slice(0, 255) || null;
+    }
+
     try {
       const [result] = await db.query(
-        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, quiz_link)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [String(title).trim(), type, subjectId, Number(grade_level), section, maxScore, teacherId, qtr, quizLink]
+        `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, quiz_link, lesson_plan_id, lesson_title)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [String(title).trim(), type, subjectId, Number(grade_level), section, maxScore, teacherId, qtr, quizLink, lessonPlanId, lessonTitle]
       );
       await logActivity(
         db,
@@ -3403,7 +3668,7 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
     }
 
     const [[assessment]] = await db.query(
-      `SELECT id, title, max_score, share_enabled, grade_level, section, subject_id,
+      `SELECT id, title, TYPE as type, max_score, share_enabled, grade_level, section, subject_id,
               quiz_attendance_date, quiz_attendance_session, quiz_subject_id
        FROM assessments WHERE id = ?`,
       [id]
@@ -3432,6 +3697,7 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       }
     }
 
+    const recorded = [];
     for (const row of scores) {
       if (!row.student_id) continue;
       const hasScore = !(row.score === '' || row.score === null || row.score === undefined);
@@ -3446,6 +3712,17 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
         return res.status(400).json({
           error: 'Cannot score a student who is absent or excused until they submit.'
         });
+      }
+
+      if (hasRubric) {
+        const negativeRubric = Object.values(rubricObj).some((v) => {
+          if (v === '' || v == null) return false;
+          const n = Number(v);
+          return Number.isNaN(n) || n < 0;
+        });
+        if (negativeRubric) {
+          return res.status(400).json({ error: 'Scores cannot be negative.' });
+        }
       }
 
       let score = hasScore ? Number(row.score) : null;
@@ -3482,6 +3759,22 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
           'INSERT INTO assessment_scores (assessment_id, student_id, score, rubric_scores) VALUES (?, ?, ?, ?)',
           [id, row.student_id, score, rubricJson]
         );
+      }
+      recorded.push({ studentId: row.student_id, score });
+    }
+
+    if (String(assessment.type || '').toLowerCase() === 'activity') {
+      for (const item of recorded) {
+        try {
+          await notifyStudentScore({
+            studentId: item.studentId,
+            score: item.score,
+            maxScore,
+            title: assessment.title
+          });
+        } catch (smsError) {
+          console.error('[sms] activity score notice:', smsError.message);
+        }
       }
     }
 

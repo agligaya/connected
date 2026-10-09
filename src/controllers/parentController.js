@@ -9,8 +9,17 @@ const {
 const { audienceSql } = require('../utils/announcements');
 const { ensureInboxTrash, trashExcludeSql } = require('../utils/inboxTrash');
 const { logActivity } = require('../utils/activityLog');
-const { ensureAttendanceSchema, manilaISODate } = require('../utils/attendanceSchema');
-const { buildParentInsight } = require('../utils/parentInsights');
+const {
+  ensureAttendanceSchema,
+  manilaISODate,
+  weekStartMonday,
+  addDaysISO,
+  sqlDateToISO
+} = require('../utils/attendanceSchema');
+const { buildParentInsight, PASSING, STRONG } = require('../utils/parentInsights');
+const { lessonName, partsByLesson, attachPartsToLessons } = require('../utils/lessonParts');
+const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission } = require('../utils/quizShare');
+const { ensureQuestionBankSchema, formatBankRow } = require('../utils/questionBank');
 
 function cappedPercent(score, maxScore) {
   const max = Number(maxScore) || 100;
@@ -178,10 +187,16 @@ exports.getChildProgress = async (req, res) => {
       return res.status(403).json({ error: 'You do not have access to this student' });
     }
 
+    await ensureQuizShareSchema();
+
     const [records] = await db.query(
       `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.created_at,
               a.grade_level, a.section, s.NAME as subject_name, sc.score,
-              CONCAT(u.first_name, ' ', u.last_name) as teacher_name
+              CONCAT(u.first_name, ' ', u.last_name) as teacher_name,
+              EXISTS (
+                SELECT 1 FROM quiz_submissions qs
+                WHERE qs.assessment_id = a.id AND qs.student_id = sc.student_id
+              ) AS has_submission
        FROM assessment_scores sc
        JOIN assessments a ON sc.assessment_id = a.id
        LEFT JOIN subjects s ON a.subject_id = s.id
@@ -196,6 +211,7 @@ exports.getChildProgress = async (req, res) => {
       const score = Number(r.score);
       return {
         ...r,
+        has_submission: Number(r.has_submission) === 1,
         percent: cappedPercent(score, max)
       };
     });
@@ -208,6 +224,73 @@ exports.getChildProgress = async (req, res) => {
   } catch (error) {
     console.error('Get child progress error:', error);
     res.status(500).json({ error: 'Server error fetching progress', details: error.message });
+  }
+};
+
+exports.getChildSubmission = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId, assessmentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+
+    const [[assessment]] = await db.query(
+      `SELECT a.id, a.title, a.TYPE as type, a.max_score
+       FROM assessments a
+       JOIN assessment_scores sc ON sc.assessment_id = a.id AND sc.student_id = ?
+       WHERE a.id = ?`,
+      [studentId, assessmentId]
+    );
+    if (!assessment) {
+      return res.status(404).json({ error: 'This record is not available for your child' });
+    }
+
+    await ensureQuizShareSchema();
+    await ensureQuestionBankSchema();
+    const [[submission]] = await db.query(
+      `SELECT answers FROM quiz_submissions WHERE assessment_id = ? AND student_id = ?`,
+      [assessmentId, studentId]
+    );
+    if (!submission) {
+      return res.status(404).json({ error: 'No submitted work for this record' });
+    }
+
+    const [qrows] = await db.query(
+      `SELECT id, item_type, question, choices, answer, points, rubric
+       FROM assessment_questions
+       WHERE assessment_id = ?
+       ORDER BY sort_order ASC, id ASC`,
+      [assessmentId]
+    );
+    const questions = qrows.map((row) => formatBankRow(row));
+    const quizTaken = quizTakenFromSubmission(submission.answers, questions).map((item) => ({
+      n: item.n,
+      item_type: item.item_type,
+      question: item.question,
+      choices: item.choices,
+      given: item.given,
+      correct: item.correct,
+      points: item.points
+    }));
+    const activityWork = activityWorkFromSubmission(submission.answers, questions).map((item) => ({
+      question: item.question,
+      text: item.text,
+      file: item.file && String(item.file.url || '').startsWith('/uploads/')
+        ? { url: item.file.url, name: item.file.name }
+        : null
+    }));
+
+    res.json({
+      title: assessment.title,
+      type: assessment.type,
+      max_score: assessment.max_score,
+      quiz_taken: quizTaken,
+      activity_work: activityWork
+    });
+  } catch (error) {
+    console.error('Get child submission error:', error);
+    res.status(500).json({ error: 'Server error fetching submitted work', details: error.message });
   }
 };
 
@@ -237,7 +320,7 @@ exports.getChildInsights = async (req, res) => {
     const stats = await loadChildAttendanceWindow(studentId, monthAgo);
 
     const [records] = await db.query(
-      `SELECT a.title, a.TYPE as type, a.max_score, a.created_at, s.NAME as subject_name, sc.score
+      `SELECT a.title, a.lesson_title, a.TYPE as type, a.max_score, a.created_at, s.NAME as subject_name, sc.score
        FROM assessment_scores sc
        JOIN assessments a ON sc.assessment_id = a.id
        LEFT JOIN subjects s ON a.subject_id = s.id
@@ -251,6 +334,7 @@ exports.getChildInsights = async (req, res) => {
       const score = Number(r.score);
       return {
         title: r.title,
+        lesson_title: r.lesson_title,
         type: r.type,
         subject_name: r.subject_name,
         percent: cappedPercent(score, max)
@@ -260,17 +344,261 @@ exports.getChildInsights = async (req, res) => {
       ? Math.round(withPct.reduce((sum, r) => sum + r.percent, 0) / withPct.length)
       : 0;
 
+    const lessonGroups = new Map();
+    for (const r of withPct) {
+      const lesson = lessonName(r.lesson_title, r.title);
+      const key = lesson.toLowerCase();
+      if (!lessonGroups.has(key)) {
+        lessonGroups.set(key, { lesson, percents: [] });
+      }
+      lessonGroups.get(key).percents.push(r.percent);
+    }
+    let lessons = [...lessonGroups.values()].map((g) => ({
+      lesson: g.lesson,
+      avg_percent: Math.round(g.percents.reduce((sum, n) => sum + n, 0) / g.percents.length)
+    }));
+    try {
+      const partMap = await partsByLesson(db, studentId);
+      lessons = attachPartsToLessons(lessons, partMap);
+    } catch (partErr) {
+      console.warn('[insights] lesson parts:', partErr.message);
+    }
+
     const insight = buildParentInsight({
       firstName: child?.first_name,
       stats,
       records: withPct,
-      average
+      average,
+      lessons
     });
 
     res.json(insight);
   } catch (error) {
     console.error('Get child insights error:', error);
     res.status(500).json({ error: 'Server error fetching insights', details: error.message });
+  }
+};
+
+// ---------- Dashboard analytics ----------
+
+function lessonStatus(avg) {
+  if (avg >= STRONG) return 'excels';
+  if (avg >= PASSING) return 'on_track';
+  return 'needs_improvement';
+}
+
+function isISODate(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+}
+
+/**
+ * School year 'YYYY-YYYY' -> [June 1 of first year, May 31 of second year].
+ * If the anchor date falls outside the configured SY (e.g. SCHOOL_YEAR not yet
+ * updated), use the June–May school year that contains the anchor instead.
+ */
+function schoolYearBounds(sy, anchorISO) {
+  const m = String(sy || '').match(/^(\d{4})\s*-\s*(\d{4})$/);
+  let y1 = m ? Number(m[1]) : null;
+  let y2 = m ? Number(m[2]) : null;
+  if (y1 == null || y2 == null || (anchorISO && (anchorISO < `${y1}-06-01` || anchorISO > `${y2}-05-31`))) {
+    const [ay, am] = String(anchorISO || manilaISODate()).split('-').map(Number);
+    y1 = am >= 6 ? ay : ay - 1;
+    y2 = y1 + 1;
+  }
+  return { from: `${y1}-06-01`, to: `${y2}-05-31`, label: `${y1}-${y2}` };
+}
+
+function lastDayOfMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m, 0)); // day 0 of next month
+  return d.toISOString().slice(0, 10);
+}
+
+// GET /api/parent/child/:id/analytics/lessons
+exports.getChildLessonAnalytics = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+
+    let rows;
+    try {
+      [rows] = await db.query(
+        `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.subject_id, a.lesson_title,
+                s.NAME as subject_name, sc.score
+         FROM assessment_scores sc
+         JOIN assessments a ON sc.assessment_id = a.id
+         LEFT JOIN subjects s ON a.subject_id = s.id
+         WHERE sc.student_id = ?`,
+        [studentId]
+      );
+    } catch (e) {
+      // lesson_title column not migrated yet: fall back to titles only
+      [rows] = await db.query(
+        `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.subject_id, NULL as lesson_title,
+                s.NAME as subject_name, sc.score
+         FROM assessment_scores sc
+         JOIN assessments a ON sc.assessment_id = a.id
+         LEFT JOIN subjects s ON a.subject_id = s.id
+         WHERE sc.student_id = ?`,
+        [studentId]
+      );
+    }
+
+    const subjectsMap = new Map();
+    const groups = new Map();
+    for (const r of rows) {
+      const subjectId = r.subject_id != null ? Number(r.subject_id) : 0;
+      const subjectName = String(r.subject_name || '').trim() || 'General';
+      if (!subjectsMap.has(subjectId)) subjectsMap.set(subjectId, { id: subjectId, name: subjectName });
+      const lesson = lessonName(r.lesson_title, r.title);
+      const key = `${subjectId}|${lesson.toLowerCase()}`;
+      if (!groups.has(key)) {
+        groups.set(key, { subject_id: subjectId, subject_name: subjectName, lesson, percents: [] });
+      }
+      groups.get(key).percents.push(cappedPercent(r.score, r.max_score));
+    }
+
+    const lessons = [...groups.values()].map((g) => {
+      const avg = Math.round(g.percents.reduce((a, b) => a + b, 0) / g.percents.length);
+      return {
+        subject_id: g.subject_id,
+        subject_name: g.subject_name,
+        lesson: g.lesson,
+        items: g.percents.length,
+        avg_percent: avg,
+        status: lessonStatus(avg)
+      };
+    }).sort((a, b) => b.avg_percent - a.avg_percent || a.subject_name.localeCompare(b.subject_name));
+
+    const subjects = [...subjectsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+    let lessonsWithParts = lessons;
+    try {
+      const partMap = await partsByLesson(db, studentId);
+      lessonsWithParts = attachPartsToLessons(lessons, partMap);
+    } catch (partErr) {
+      console.warn('[lessons] parts:', partErr.message);
+    }
+
+    res.json({ subjects, lessons: lessonsWithParts, thresholds: { passing: PASSING, strong: STRONG } });
+  } catch (error) {
+    console.error('Get child lesson analytics error:', error);
+    res.status(500).json({ error: 'Server error fetching lesson analytics', details: error.message });
+  }
+};
+
+// GET /api/parent/child/:id/analytics/classwork?week=YYYY-MM-DD
+exports.getChildWeeklyClasswork = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+
+    const anchor = isISODate(req.query.week) ? String(req.query.week) : manilaISODate();
+    const weekStart = weekStartMonday(anchor);
+    const weekEnd = addDaysISO(weekStart, 6);
+
+    const [rows] = await db.query(
+      `SELECT a.id, a.title, a.TYPE as type, a.max_score, s.NAME as subject_name,
+              sc.score, sc.recorded_at, a.created_at
+       FROM assessment_scores sc
+       JOIN assessments a ON sc.assessment_id = a.id
+       LEFT JOIN subjects s ON a.subject_id = s.id
+       WHERE sc.student_id = ?
+         AND DATE(sc.recorded_at) BETWEEN ? AND ?
+       ORDER BY sc.recorded_at ASC, a.id ASC`,
+      [studentId, weekStart, weekEnd]
+    );
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      type: r.type,
+      subject_name: r.subject_name || null,
+      score: Number(r.score),
+      max_score: Number(r.max_score) || 100,
+      percent: cappedPercent(r.score, r.max_score),
+      date: sqlDateToISO(r.recorded_at || r.created_at)
+    }));
+    const average = items.length
+      ? Math.round(items.reduce((sum, it) => sum + it.percent, 0) / items.length)
+      : 0;
+
+    res.json({ weekStart, weekEnd, items, average });
+  } catch (error) {
+    console.error('Get child weekly classwork error:', error);
+    res.status(500).json({ error: 'Server error fetching weekly classwork', details: error.message });
+  }
+};
+
+// GET /api/parent/child/:id/analytics/attendance?range=day|week|month|year&date=YYYY-MM-DD
+exports.getChildAttendanceSummary = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+    await ensureAttendanceSchema();
+
+    const range = ['day', 'week', 'month', 'year'].includes(String(req.query.range))
+      ? String(req.query.range)
+      : 'month';
+    const anchor = isISODate(req.query.date) ? String(req.query.date) : manilaISODate();
+
+    let from;
+    let to;
+    let syLabel = schoolYear;
+    if (range === 'day') {
+      from = anchor;
+      to = anchor;
+    } else if (range === 'week') {
+      from = weekStartMonday(anchor);
+      to = addDaysISO(from, 6);
+    } else if (range === 'month') {
+      from = `${anchor.slice(0, 7)}-01`;
+      to = lastDayOfMonth(anchor.slice(0, 7));
+    } else {
+      ({ from, to, label: syLabel } = schoolYearBounds(schoolYear, anchor));
+    }
+
+    const [[days]] = await db.query(
+      `SELECT COUNT(DISTINCT \`DATE\`) as count
+       FROM attendance WHERE student_id = ? AND \`DATE\` BETWEEN ? AND ?`,
+      [studentId, from, to]
+    );
+    const [rows] = await db.query(
+      `SELECT \`STATUS\` as status, COUNT(*) as count
+       FROM attendance
+       WHERE student_id = ? AND \`DATE\` BETWEEN ? AND ?
+       GROUP BY \`STATUS\``,
+      [studentId, from, to]
+    );
+
+    const counts = { present: 0, late: 0, absent: 0, excused: 0 };
+    for (const r of rows) {
+      const key = String(r.status || '').toLowerCase();
+      if (key in counts) counts[key] += Number(r.count) || 0;
+    }
+    const totalMarks = counts.present + counts.late + counts.absent + counts.excused;
+
+    res.json({
+      range,
+      from,
+      to,
+      schoolYear: syLabel,
+      ...counts,
+      totalMarks,
+      totalSchoolDays: Number(days.count) || 0,
+      attendanceRate: totalMarks > 0 ? Math.round(((counts.present + counts.late) / totalMarks) * 100) : 0
+    });
+  } catch (error) {
+    console.error('Get child attendance summary error:', error);
+    res.status(500).json({ error: 'Server error fetching attendance summary', details: error.message });
   }
 };
 

@@ -23,12 +23,26 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20260920c58" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261010m5" />
 
 </head>
 <body data-view="login">
   <main class="page-shell">
     <div class="view-stack">
+      <section id="view-forbidden" class="app-view" data-view="forbidden" hidden>
+        <div class="portal-status">
+          <h1 class="font-heading">403</h1>
+          <p>You don't have access to this page.</p>
+          <a class="btn-solid portal-status-link" id="forbidden-home" href="/">Go to your home</a>
+        </div>
+      </section>
+      <section id="view-notfound" class="app-view" data-view="notfound" hidden>
+        <div class="portal-status">
+          <h1 class="font-heading">404</h1>
+          <p>That page doesn't exist.</p>
+          <a class="btn-solid portal-status-link" href="/">Back to home</a>
+        </div>
+      </section>
 
       <!-- ========== LOGIN VIEW ========== -->
       <section id="view-login" class="app-view login-page-view" data-view="login" aria-label="Login Screen">
@@ -106,7 +120,10 @@
               </p>
               <div class="my-classes-flyout" id="my-classes-flyout">
                 <button type="button" class="my-classes-trigger" id="my-classes-trigger" aria-expanded="false" aria-controls="teacher-class-list">
-                  <span>My Classes</span>
+                  <span class="my-classes-trigger-copy">
+                    <span class="my-classes-kicker">My Classes</span>
+                    <span class="my-classes-current" id="my-classes-current">Choose a class</span>
+                  </span>
                   <span class="my-classes-chev" aria-hidden="true">▾</span>
                 </button>
                 <div class="my-classes-panel" id="teacher-class-list">
@@ -165,9 +182,6 @@
                         Session Date: <span id="teacher-session-date">July 14, 2026</span>
                       </div>
                     </div>
-                    <div class="teacher-actions teacher-actions--toolbar">
-                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="notify-all-btn">Send Attendance Update</button>
-                    </div>
                   </div>
 
                   <div class="teacher-stats teacher-stats--branded">
@@ -187,15 +201,63 @@
                       <div class="stat-card-icon stat-card-icon--orange" style="font-size:1.3rem;">📊</div>
                       <span class="stat-label">Class Progress</span>
                       <p style="margin-top:4px;color:#6b7280;font-size:0.78rem;" id="teacher-performance-text">
-                        Record scores in Progress so parents can see how their child is doing.
+                        Select a class to see how the class is doing.
                       </p>
-                      <button class="btn-outline" id="view-ai-insights-btn" style="margin-top:8px;">Open Progress</button>
                     </div>
                     <div class="stat-card stat-card--light stat-card--stat">
                       <div class="stat-card-icon stat-card-icon--orange" style="font-size:1.3rem;">✉</div>
                       <span class="stat-label">Absent Alerts</span>
                       <div class="stat-main"><span id="stat-absent-count">--</span></div>
-                      <span class="stat-trend">Parents to notify</span>
+                      <span class="stat-trend">Absent today</span>
+                    </div>
+                  </div>
+
+                  <div class="chart-card teacher-progress-card" id="teacher-progress-card">
+                    <h3 class="page-heading font-heading" style="font-size:1rem;margin:0 0 4px;">Class progress</h3>
+                    <p class="page-subheading" id="teacher-progress-hint" style="margin:0 0 12px;">Scores recorded for this class.</p>
+                    <div class="teacher-progress-layout">
+                      <div class="teacher-progress-chart-col">
+                        <div class="parent-chart-wrap teacher-progress-chart-wrap" id="teacher-progress-chart-wrap">
+                          <canvas id="teacher-progress-chart" aria-label="Students by progress group" role="img"></canvas>
+                        </div>
+                        <p class="page-subheading teacher-progress-lesson" id="teacher-lesson-line"></p>
+                      </div>
+                      <div class="teacher-progress-side">
+                        <div class="teacher-progress-lists parent-lesson-lists">
+                          <div class="parent-lesson-list parent-lesson-list--good">
+                            <h4>Excelling</h4>
+                            <ul id="teacher-excels-list"></ul>
+                          </div>
+                          <div class="parent-lesson-list parent-lesson-list--bad">
+                            <h4>Most at risk</h4>
+                            <ul id="teacher-behind-list"></ul>
+                          </div>
+                        </div>
+                        <button type="button" class="btn-outline" id="teacher-progress-see-all">See all students</button>
+                      </div>
+                    </div>
+                    <div class="teacher-progress-all" id="teacher-progress-all" hidden></div>
+                  </div>
+
+                  <div class="chart-card teacher-progress-card" id="teacher-today-inbox-card">
+                    <h3 class="page-heading font-heading" style="font-size:1rem;margin:0 0 4px;">Inbox Today</h3>
+                    <ul class="inbox-list" id="teacher-today-inbox-list">
+                      <li class="page-subheading">No Inbox for Today.</li>
+                    </ul>
+                  </div>
+                </section>
+
+                <!-- PANEL: Attendance Sheet -->
+                <section id="teacher-panel-attendance-sheet" class="teacher-panel" hidden>
+                  <div id="attendance-today-page">
+                  <div class="teacher-header-row">
+                    <div>
+                      <h2 class="page-heading font-heading">Attendance Sheet</h2>
+                      <p class="page-subheading" id="attendance-today-meta">Select a class to mark attendance.</p>
+                    </div>
+                    <div class="teacher-actions teacher-actions--toolbar" style="align-items:center;gap:10px;flex-wrap:wrap;">
+                      <button type="button" class="btn-toolbar btn-toolbar--solid" id="notify-all-btn">Send Attendance Update</button>
+                      <button type="button" class="btn-toolbar btn-toolbar--outline" id="attendance-open-week">Weekly attendance</button>
                     </div>
                   </div>
 
@@ -211,7 +273,7 @@
                     <div class="records-card">
                       <div class="records-header">
                         <div>
-                          <h3 class="page-heading font-heading">Class Roster</h3>
+                          <h3 class="page-heading font-heading">Today</h3>
                           <p class="page-subheading" id="classroom-roster-hint">Tap P, A, L, or E to mark every student before enabling a shared link.</p>
                         </div>
                         <div class="records-header-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
@@ -239,13 +301,13 @@
                       </div>
                     </div>
                   </div>
-                </section>
+                  </div>
 
-                <!-- PANEL: Attendance Sheet -->
-                <section id="teacher-panel-attendance-sheet" class="teacher-panel" hidden>
+                  <div id="attendance-week-page" hidden>
+                  <button type="button" class="chip-ghost" id="attendance-week-back" style="margin-bottom:12px;">← Back</button>
                   <div class="teacher-header-row">
                     <div>
-                      <h2 class="page-heading font-heading">Attendance Sheet</h2>
+                      <h2 class="page-heading font-heading">Attendance</h2>
                       <p class="page-subheading" id="attendance-sheet-meta">Select a class to view the weekly register.</p>
                     </div>
                     <div class="teacher-actions teacher-actions--toolbar" style="align-items:center;gap:10px;flex-wrap:wrap;">
@@ -260,9 +322,12 @@
                   </div>
 
                   <div class="attendance-week-bar" id="attendance-week-bar">
-                    <button type="button" class="chip-ghost" id="attendance-week-prev" title="Previous week">← Week</button>
-                    <span id="attendance-week-label" class="page-subheading attendance-week-label" style="margin:0;text-align:center;"></span>
-                    <button type="button" class="chip-ghost" id="attendance-week-next" title="Next week">Week →</button>
+                    <div class="parent-chart-filters" id="attendance-range-filters" role="group" aria-label="Attendance range"></div>
+                    <div class="attendance-range-nav">
+                      <button type="button" class="chip-ghost" id="attendance-week-prev" title="Previous">←</button>
+                      <span id="attendance-week-label" class="page-subheading attendance-week-label" style="margin:0;text-align:center;"></span>
+                      <button type="button" class="chip-ghost" id="attendance-week-next" title="Next">→</button>
+                    </div>
                     <div class="dash-search-wrap">
                       <span class="dash-search-icon" aria-hidden="true">🔍</span>
                       <input type="text" id="attendance-sheet-search-input" class="dash-search-input" placeholder="Search student..." />
@@ -286,8 +351,8 @@
                   <div class="records-card" style="margin-top:16px;">
                     <div class="records-header">
                       <div>
-                        <h3 class="page-heading font-heading">Weekly Attendance</h3>
-                        <p class="page-subheading" id="attendance-sheet-hint">From Dashboard attendance · Monday–Friday weeks.</p>
+                        <h3 class="page-heading font-heading">Class Attendance</h3>
+                        <p class="page-subheading" id="attendance-sheet-hint">Morning (AM) and Afternoon (PM) attendance under each date.</p>
                       </div>
                     </div>
                     <div class="records-table-wrapper attendance-sheet-scroll">
@@ -296,6 +361,7 @@
                         <tbody></tbody>
                       </table>
                     </div>
+                  </div>
                   </div>
                 </section>
 
@@ -558,7 +624,7 @@
             <div>
               <nav class="sidebar-nav sidebar-nav--icons">
                 <button class="sidebar-item active" data-parent-tab="overview"><span class="nav-ico">▦</span> Dashboard</button>
-                <button class="sidebar-item" data-parent-tab="progress"><span class="nav-ico">📈</span> Progress Reports</button>
+                <button class="sidebar-item" data-parent-tab="progress"><span class="nav-ico">📈</span> Records</button>
                 <button class="sidebar-item" data-parent-tab="attendance"><span class="nav-ico">📅</span> Attendance Records</button>
                 <button class="sidebar-item" data-parent-tab="inbox">
                   <span class="nav-ico">✉</span> Inbox
@@ -703,6 +769,16 @@
                           <a href="#" class="admin-stat-link" data-admin-tab-click="students">Manage Students</a>
                         </div>
                       </div>
+                      <div class="admin-charts">
+                        <div class="admin-announce-row">
+                          <div class="admin-panel admin-announce-card">
+                            <div id="admin-today-announcement" class="admin-announce-body"></div>
+                          </div>
+                          <div class="admin-panel admin-announce-card">
+                            <div id="admin-important-announcement" class="admin-announce-body"></div>
+                          </div>
+                        </div>
+                      </div>
                       <div class="admin-overview-grid">
                         <div class="admin-panel">
                           <h3 class="admin-panel-title">Recent System Activity</h3>
@@ -756,7 +832,10 @@
                           <h2>Manage Accounts</h2>
                           <p class="admin-subtitle">Create, edit, or deactivate teacher and parent accounts.</p>
                         </div>
-                        <button type="button" class="btn-solid" id="open-add-account-modal">+ Add Account</button>
+                        <div class="admin-header-actions">
+                          <button type="button" class="btn-solid" id="open-bulk-account-modal">Bulk Add</button>
+                          <button type="button" class="btn-solid" id="open-add-account-modal">+ Add Account</button>
+                        </div>
                       </div>
 
                       <div class="admin-list-toolbar">
@@ -796,6 +875,7 @@
                         <tbody></tbody>
                       </table>
                       </div>
+                      <div id="admin-accounts-pager" class="admin-table-pager"></div>
                     </div>
 
                     <!-- TAB: Manage Students -->
@@ -805,7 +885,10 @@
                           <h2>Manage Students</h2>
                           <p class="admin-subtitle">Enroll students, assign parents and class advisers.</p>
                         </div>
-                        <button type="button" class="btn-solid" id="open-add-student-modal">+ Enroll Student</button>
+                        <div class="admin-header-actions">
+                          <button type="button" class="btn-solid" id="open-bulk-student-modal">Bulk Enroll</button>
+                          <button type="button" class="btn-solid" id="open-add-student-modal">+ Enroll Student</button>
+                        </div>
                       </div>
                       <div class="admin-list-toolbar">
                         <h3 class="admin-section-title" style="margin:0;">Student List</h3>
@@ -858,6 +941,7 @@
                         <tbody></tbody>
                       </table>
                       </div>
+                      <div id="admin-students-pager" class="admin-table-pager"></div>
                     </div>
 
                     <!-- TAB: Subjects -->
@@ -868,6 +952,27 @@
                           <p class="admin-subtitle">Manage the Montessori elementary curriculum subjects.</p>
                         </div>
                         <button type="button" class="btn-solid" id="open-add-subject-modal">+ Add Subject</button>
+                      </div>
+                      <div class="admin-filter-bar admin-accounts-filter-bar">
+                        <div class="admin-filter-group">
+                          <div class="download-menu" id="admin-subject-grade-menu">
+                            <button type="button" class="chip-ghost" id="admin-subject-grade-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by grade">All grades ▾</button>
+                            <div class="download-menu-panel download-menu-panel--scroll" id="admin-subject-grade-panel" hidden></div>
+                          </div>
+                        </div>
+                        <div class="admin-accounts-controls">
+                          <div class="dash-search-wrap admin-accounts-search">
+                            <span class="dash-search-icon" aria-hidden="true">🔍</span>
+                            <input type="text" id="admin-subject-search" class="dash-search-input" placeholder="Search by name or code..." />
+                          </div>
+                          <div class="download-menu" id="admin-subjects-export-menu">
+                            <button type="button" class="chip-ghost" id="admin-subjects-export-btn" aria-haspopup="true" aria-expanded="false">Export ▾</button>
+                            <div class="download-menu-panel" id="admin-subjects-export-panel" hidden>
+                              <button type="button" class="download-menu-item" id="admin-subjects-export-excel">Excel</button>
+                              <button type="button" class="download-menu-item" id="admin-subjects-export-pdf">PDF</button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
 
                       <div id="admin-subjects-bulk-bar" class="admin-bulk-bar" hidden>
@@ -889,6 +994,7 @@
                           <!-- Populated dynamically -->
                         </tbody>
                       </table>
+                      <div id="admin-subjects-pager" class="admin-table-pager"></div>
                     </div>
 
                     <!-- TAB: Announcements -->
@@ -943,7 +1049,7 @@
         <label for="admin-profile-avatar">Profile Picture</label>
         <input id="admin-profile-avatar" type="file" accept="image/jpeg,image/png,image/webp" />
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="admin-profile-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Save Changes</button>
       </div>
@@ -956,7 +1062,7 @@
   <div class="modal-card">
     <h3 class="font-heading">Forgot Password</h3>
     <p class="page-subheading">ConnectED does not send reset emails. Ask the school administrator to open Manage Accounts, click your name, open <strong>Actions</strong>, and choose <strong>Reset Password</strong>. Sign in with that temporary password, then change it when prompted.</p>
-    <div class="modal-form-actions">
+    <div class="modal-form-actions modal-form-actions--match">
       <button type="button" class="btn-solid" id="forgot-password-close">OK</button>
     </div>
   </div>
@@ -996,7 +1102,7 @@
           </div>
         </div>
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="change-password-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Update Password</button>
       </div>
@@ -1019,7 +1125,7 @@
           <button type="button" class="chip-ghost" id="reset-password-regen" title="Generate new password">↻</button>
         </div>
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="reset-password-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Set Temporary Password</button>
       </div>
@@ -1043,7 +1149,7 @@
       </div>
       <p id="attendance-update-preview" class="page-subheading"></p>
       <p class="page-subheading" id="attendance-update-sms-hint" style="margin-top:4px;"></p>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="attendance-update-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Send Notices + SMS</button>
       </div>
@@ -1073,7 +1179,7 @@
           <label for="add-student-gender">Gender</label>
           <select id="add-student-gender"><option value="M">Male</option><option value="F">Female</option></select>
         </div>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="teacher-add-student-cancel" data-modal-cancel>Cancel</button>
           <button type="submit" class="btn-solid">Add Student</button>
         </div>
@@ -1114,7 +1220,7 @@
           </label>
         </div>
       </div>
-      <div class="modal-actions" style="margin-top:16px;">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="ai-generate-count-cancel" data-modal-cancel>Cancel</button>
         <button type="button" class="btn-solid" id="ai-generate-count-go">Generate</button>
       </div>
@@ -1175,7 +1281,7 @@
           </div>
         </div>
         <p id="lp-message" class="inline-message"></p>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="upload-material-cancel" data-modal-cancel>Cancel</button>
           <button type="submit" class="btn-solid" id="upload-lesson-btn">Upload</button>
         </div>
@@ -1203,7 +1309,7 @@
           <textarea id="teacher-notice-body" rows="4" required placeholder="Write a notice for parents of this class..."></textarea>
         </div>
         <p id="teacher-notice-msg" class="inline-message"></p>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="teacher-notice-cancel" data-modal-cancel>Cancel</button>
           <button type="submit" class="btn-solid">Send to Parents</button>
         </div>
@@ -1235,12 +1341,20 @@
           </select>
         </div>
       </div>
-      <div class="field-small">
-        <label for="progress-max">Total score</label>
-        <input type="number" id="progress-max" min="1" max="999" value="100" />
+      <div class="form-row">
+        <div class="field-small">
+          <label for="progress-lesson">Lesson (optional)</label>
+          <select id="progress-lesson">
+            <option value="">-- No specific lesson --</option>
+          </select>
+        </div>
+        <div class="field-small">
+          <label for="progress-max">Total score</label>
+          <input type="number" id="progress-max" min="1" max="999" value="100" />
+        </div>
       </div>
       <p id="progress-create-msg" class="inline-message"></p>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="progress-create-cancel" data-modal-cancel>Cancel</button>
         <button type="button" class="btn-solid" id="progress-create-save">Create Record</button>
       </div>
@@ -1298,7 +1412,7 @@
         <input type="number" id="qb-exam-max" min="1" max="9999" step="0.5" value="1" />
       </div>
       <p class="page-subheading" id="qb-exam-preview" style="margin:12px 0 0;">Select a classwork set or material.</p>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="qb-exam-cancel" data-modal-cancel>Cancel</button>
         <button type="button" class="btn-outline" id="qb-exam-print">Print</button>
         <button type="button" class="btn-solid" id="qb-exam-confirm" disabled>Create Exam</button>
@@ -1337,7 +1451,7 @@
         <label for="qb-create-max">Total score</label>
         <input type="number" id="qb-create-max" min="1" max="9999" step="0.5" value="1" />
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="qb-create-cancel">Cancel</button>
         <button type="button" class="btn-outline" id="qb-create-print">Print</button>
         <button type="button" class="btn-solid" id="qb-create-confirm">Create Quiz</button>
@@ -1369,7 +1483,7 @@
             </select>
           </div>
         </div>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="qb-add-quiz-cancel" data-modal-cancel>Cancel</button>
           <button type="submit" class="btn-solid">Create Set</button>
         </div>
@@ -1433,7 +1547,7 @@
           <div id="qb-edit-rubric-list" class="qb-rubric-list"></div>
           <button type="button" class="chip-ghost" id="qb-edit-rubric-add" style="margin-top:8px;">+ Add Category</button>
         </div>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="qb-edit-cancel">Cancel</button>
           <button type="button" class="btn-solid" id="qb-edit-save">Save</button>
         </div>
@@ -1447,7 +1561,7 @@
       <p class="page-subheading" id="teacher-report-subtitle"></p>
       <div id="teacher-report-summary" class="report-summary-grid"></div>
       <div id="teacher-report-table" class="report-table-wrap"></div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-solid" id="teacher-report-close">Close</button>
       </div>
     </div>
@@ -1466,7 +1580,7 @@
         </div>
         <p class="page-subheading progress-share-preview" id="progress-makeup-preview" style="margin:0 0 12px;"></p>
         <p id="progress-makeup-modal-msg" class="inline-message" style="color:#b71c1c;" hidden></p>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" data-modal-cancel>Cancel</button>
           <button type="button" class="btn-solid" id="progress-makeup-confirm">Allow Access</button>
         </div>
@@ -1479,7 +1593,7 @@
       <h3 class="font-heading" id="progress-activity-work-title">Student work</h3>
       <p class="page-subheading" id="progress-activity-work-sub" style="margin:0 0 12px;">Submitted from the live activity link.</p>
       <div id="progress-activity-work-body"></div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-solid" data-modal-cancel>Close</button>
       </div>
     </div>
@@ -1515,7 +1629,7 @@
             <textarea id="concern-message" rows="4" placeholder="Describe your concern..." required></textarea>
           </div>
         </div>
-        <div class="modal-form-actions">
+        <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="concern-cancel" data-modal-cancel>Cancel</button>
           <button type="submit" class="btn-solid">Send Concern</button>
         </div>
@@ -1597,16 +1711,17 @@
         <button type="button" class="chip-ghost" onclick="addEditSubjectAssignment()" style="margin-top:8px;">+ Add Another Subject</button>
       </div>
 
-      <div class="modal-form-actions">
-        <button type="button" class="btn-outline" id="edit-teacher-cancel" style="min-width:140px;">Cancel</button>
-        <button type="submit" class="btn-solid" style="min-width:140px;">Save Changes</button>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" id="edit-teacher-cancel">Cancel</button>
+        <button type="submit" class="btn-solid">Save Changes</button>
       </div>
     </form>
   </div>
 </div>
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
-  <script src="/js/app.js?v=20260920c69" type="module"></script>
+  <script src="/js/vendor/chart.umd.js"></script>
+  <script src="/js/app.js?v=20261010m6" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -1661,7 +1776,7 @@
         <div class="field-small" style="visibility:hidden;"><label>&nbsp;</label><input type="text" tabindex="-1" style="visibility:hidden;" disabled /></div>
       </div>
 
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="reenroll-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Confirm Re-enroll</button>
       </div>
@@ -1723,9 +1838,49 @@
         <label for="edit-announcement-body">Message</label>
         <textarea id="edit-announcement-body" rows="4" required></textarea>
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="edit-announcement-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- TRANSFER TEACHER CLASSES -->
+<div id="transfer-teacher-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:640px;max-height:90vh;overflow-y:auto;">
+    <h3 class="font-heading">Transfer classes before deactivating</h3>
+    <p class="page-subheading" id="transfer-teacher-sub">Choose an active teacher or a newly hired teacher for each class. The account is deactivated after the classes move.</p>
+    <p id="transfer-teacher-error" class="inline-message" style="color:#b71c1c;" hidden></p>
+    <form id="transfer-teacher-form" class="admin-form">
+      <input type="hidden" id="transfer-teacher-id" />
+      <div id="transfer-teacher-list"></div>
+      <div id="transfer-new-teacher" hidden>
+        <h4 class="font-heading" style="margin:8px 0;">Newly hired teacher</h4>
+        <p class="page-subheading">They sign in with this email and temporary password, then set their own password.</p>
+        <div class="form-row admin-edit-form-row-2">
+          <div class="field-small">
+            <label for="transfer-new-first">First name</label>
+            <input id="transfer-new-first" type="text" />
+          </div>
+          <div class="field-small">
+            <label for="transfer-new-last">Last name</label>
+            <input id="transfer-new-last" type="text" />
+          </div>
+        </div>
+        <div class="field-small" style="margin-bottom:12px;">
+          <label for="transfer-new-email">Email</label>
+          <input id="transfer-new-email" type="email" />
+        </div>
+        <div class="field-small" style="margin-bottom:12px;">
+          <label for="transfer-new-password">Temporary password</label>
+          <input id="transfer-new-password" type="text" minlength="6" />
+          <button type="button" class="chip-ghost" id="transfer-new-password-generate" style="margin-top:8px;">Generate password</button>
+        </div>
+      </div>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" data-modal-cancel>Cancel</button>
+        <button type="submit" class="btn-solid">Transfer and deactivate</button>
       </div>
     </form>
   </div>
@@ -1750,7 +1905,7 @@
     <div id="teacher-detail-content" style="margin-top:16px;">
       <p style="color:var(--text-muted);">Loading...</p>
     </div>
-    <div class="modal-form-actions" style="margin-top:20px;">
+    <div class="modal-form-actions modal-form-actions--match" style="margin-top:20px;">
       <button type="button" class="btn-solid" id="teacher-detail-close">Close</button>
     </div>
   </div>
@@ -1774,13 +1929,58 @@
     <div id="parent-detail-content" style="margin-top:16px;">
       <p style="color:var(--text-muted);">Loading...</p>
     </div>
-    <div class="modal-form-actions" style="margin-top:20px;">
+    <div class="modal-form-actions modal-form-actions--match" style="margin-top:20px;">
       <button type="button" class="btn-solid" id="parent-detail-close">Close</button>
     </div>
   </div>
 </div>
 
 <!-- ADD ACCOUNT MODAL -->
+<div id="bulk-account-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:560px;">
+    <h3 class="font-heading">Bulk Add Accounts</h3>
+    <p class="page-subheading">Upload an Excel (.xlsx) or CSV file. One row creates one teacher or parent. Download the template for the column names.</p>
+    <p class="page-subheading">Teachers need <code>is_class_adviser</code> and/or <code>is_subject_teacher</code> set to yes. Subject rows use <code>CODE:grade:section</code> separated by semicolons, for example <code>MATH:4:A;SCI:5:B</code>.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">
+      <button type="button" class="chip-ghost" id="bulk-account-template">Download template</button>
+    </div>
+    <form id="bulk-account-form">
+      <div class="field-small">
+        <label for="bulk-account-file">File</label>
+        <input id="bulk-account-file" name="file" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+      </div>
+      <p id="bulk-account-error" class="inline-message" style="color:#b71c1c;"></p>
+      <div id="bulk-account-result"></div>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" data-modal-cancel>Cancel</button>
+        <button type="submit" class="btn-solid">Import</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="bulk-student-modal" class="modal-overlay" hidden>
+  <div class="modal-card" style="max-width:560px;">
+    <h3 class="font-heading">Bulk Enroll Students</h3>
+    <p class="page-subheading">Upload an Excel (.xlsx) or CSV file. <code>parent_email</code> must match an existing parent account. Leave it blank to enroll without a parent link.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">
+      <button type="button" class="chip-ghost" id="bulk-student-template">Download template</button>
+    </div>
+    <form id="bulk-student-form">
+      <div class="field-small">
+        <label for="bulk-student-file">File</label>
+        <input id="bulk-student-file" name="file" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+      </div>
+      <p id="bulk-student-error" class="inline-message" style="color:#b71c1c;"></p>
+      <div id="bulk-student-result"></div>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" data-modal-cancel>Cancel</button>
+        <button type="submit" class="btn-solid">Import</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div id="add-account-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:720px;max-height:90vh;overflow-y:auto;">
     <h3 class="font-heading">Add Account</h3>
@@ -1888,7 +2088,7 @@
           <input id="admin-account-emergency" type="text" placeholder="0917xxxxxxx" />
         </div>
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="add-account-cancel" data-modal-cancel>Cancel</button>
         <button class="btn-solid" type="submit">Create Account</button>
       </div>
@@ -1941,7 +2141,7 @@
       <div class="form-row">
         <div class="field-small"><label for="student-dob">Date of Birth</label><input id="student-dob" type="date" /></div>
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="admin-enroll-student-cancel" data-modal-cancel>Cancel</button>
         <button class="btn-solid" type="submit">Enroll Student</button>
       </div>
@@ -1987,7 +2187,14 @@
           <div id="edit-student-parent-text">—</div>
         </div>
       </div>
-      <div class="modal-form-actions">
+      <div class="field-small" id="edit-student-parent-field" hidden>
+        <label for="edit-student-parent">Link to registered parent</label>
+        <select id="edit-student-parent">
+          <option value="">-- Select Parent --</option>
+        </select>
+        <small style="color:var(--text-muted);font-size:0.75rem;">This student has no parent on record. Choose a registered parent account to link them.</small>
+      </div>
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="edit-student-cancel" data-modal-cancel>Cancel</button>
         <button class="btn-solid" type="submit">Save Changes</button>
       </div>
@@ -2018,7 +2225,7 @@
         <label for="subject-desc">Description</label>
         <input id="subject-desc" type="text" placeholder="Number concepts, operations..." />
       </div>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="add-subject-cancel" data-modal-cancel>Cancel</button>
         <button class="btn-solid" type="submit">Add Subject</button>
       </div>
@@ -2080,7 +2287,7 @@
         <textarea id="announcement-body" rows="4" placeholder="Share important updates..." required></textarea>
       </div>
       <p id="admin-announcement-message" class="inline-message"></p>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="compose-announcement-cancel" data-modal-cancel>Cancel</button>
         <button class="btn-solid" type="submit">Send Announcement</button>
       </div>
@@ -2133,7 +2340,7 @@
         </div>
       </div>
       <p id="edit-account-info-msg" class="inline-message" hidden></p>
-      <div class="modal-form-actions">
+      <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="edit-account-info-cancel">Cancel</button>
         <button type="submit" class="btn-solid">Save Changes</button>
       </div>
@@ -2245,8 +2452,8 @@
       </ul>
     </section>
 
-    <div class="modal-form-actions">
-      <button type="button" class="btn-outline" id="legal-modal-close">Close</button>
+    <div class="modal-form-actions modal-form-actions--match">
+      <button type="button" class="btn-solid" id="legal-modal-close">Close</button>
     </div>
   </div>
 </div>

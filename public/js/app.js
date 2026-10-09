@@ -1,3 +1,8 @@
+import { bootRouting } from './auth/routeGuard.js?v=20261008r1';
+import { createSessionSync } from './auth/sessionSync.js';
+
+const sessionSync = createSessionSync(Math.random().toString(36).slice(2));
+
 const API_URL = `${window.location.origin}/api`;
 let SCHOOL_YEAR = '2025-2026';
 let CURRENT_QUARTER = 'Q1';
@@ -8,7 +13,19 @@ let lastStudentsData = [];
 let currentAccountRoleFilter = 'all';
 let currentAccountStatusFilter = 'active';
 let currentAccountSearch = '';
-let currentAccountSort = 'az'; 
+let currentAccountSort = 'az';
+let accountPage = 1;
+let studentPage = 1;
+let subjectPage = 1;
+const ADMIN_PAGE_SIZE = 10;
+
+function paintAdminPager(hostId, pager, onPage) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const innerId = `${hostId}-inner`;
+  host.innerHTML = parentPagerHtml(innerId, pager);
+  wireParentPager(innerId, onPage);
+} 
 let accountSortMenuApi = null;
 
 function normalizeQuarterClient(value) {
@@ -75,6 +92,7 @@ async function loadAppConfig() {
   try {
     const res = await fetch(`${API_URL}/config`);
     const data = await res.json();
+    window.__routingV2 = data.routingV2 === true;
     if (data.schoolYear) {
       SCHOOL_YEAR = data.schoolYear;
       const yearEl = document.getElementById('teacher-school-year-label');
@@ -116,17 +134,12 @@ function authUserStore() {
 }
 
 function saveAuth(token, user, persist) {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
   sessionStorage.removeItem('token');
   sessionStorage.removeItem('user');
-
-  const store = persist ? localStorage : sessionStorage;
-  store.setItem('token', token);
-  store.setItem('user', JSON.stringify(user));
-
-  if (persist) localStorage.setItem('rememberMe', '1');
-  else localStorage.setItem('rememberMe', '0');
+  localStorage.setItem('token', token);
+  localStorage.setItem('user', JSON.stringify(user));
+  localStorage.setItem('rememberMe', persist ? '1' : '0');
+  sessionStorage.setItem('connected.session', '1');
 }
 
 function persistAuthUser(user) {
@@ -139,6 +152,7 @@ function clearAuth() {
   localStorage.removeItem('rememberMe');
   sessionStorage.removeItem('token');
   sessionStorage.removeItem('user');
+  sessionStorage.removeItem('connected.session');
 }
 
 function applyLoggedInUser(user) {
@@ -213,6 +227,59 @@ function switchView(viewName) {
     view.hidden = view.dataset.view !== viewName;
   });
   document.body.setAttribute('data-view', viewName);
+  if (window.__routingV2 && !window.__routeLock && window.__syncRoute) window.__syncRoute(viewName);
+}
+
+function showLoginScreen() {
+  clearAuth();
+  clearUserAvatars();
+  const emailEl = document.getElementById('login-email');
+  const passwordEl = document.getElementById('login-password');
+  if (emailEl) emailEl.value = '';
+  if (passwordEl) passwordEl.value = '';
+  const rememberEl = document.getElementById('login-remember');
+  if (rememberEl) rememberEl.checked = true;
+  switchView('login');
+}
+
+let sessionPeer = false;
+
+function openSharedAccount() {
+  const token = getAuthToken();
+  const user = getAuthUser();
+  if (!token || !user?.role) return false;
+  sessionStorage.setItem('connected.session', '1');
+  const view = document.body?.getAttribute('data-view');
+  if (view && view !== 'login') return true;
+  enterPortal(user);
+  loadUserProfile();
+  return true;
+}
+
+sessionSync.listen((type) => {
+  if (type === 'LOGOUT') showLoginScreen();
+  if (type === 'LOGIN') openSharedAccount();
+  if (type === 'PING' && sessionStorage.getItem('connected.session') === '1' && getAuthToken()) {
+    sessionSync.publish('PONG');
+  }
+  if (type === 'PONG') sessionPeer = true;
+});
+
+async function claimSharedSession() {
+  if (!localStorage.getItem('token')) return false;
+  if (localStorage.getItem('rememberMe') !== '0' || sessionStorage.getItem('connected.session') === '1') {
+    sessionStorage.setItem('connected.session', '1');
+    return true;
+  }
+  sessionPeer = false;
+  sessionSync.publish('PING');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (!sessionPeer) {
+    clearAuth();
+    return false;
+  }
+  sessionStorage.setItem('connected.session', '1');
+  return true;
 }
 
 // ========== LOGIN ==========
@@ -221,6 +288,8 @@ document.getElementById('login-signin-btn')?.addEventListener('click', async () 
   const password = document.getElementById('login-password').value;
   const remember = document.getElementById('login-remember')?.checked !== false;
   const msgEl = document.getElementById('login-message');
+
+  if (openSharedAccount()) return;
 
   if (!email || !password) {
     msgEl.textContent = 'Please enter email and password';
@@ -258,6 +327,15 @@ document.getElementById('login-signin-btn')?.addEventListener('click', async () 
     }
 
     saveAuth(data.token, mergedUser, remember);
+    sessionSync.publish('LOGIN');
+    if (window.__routingV2) {
+      localStorage.removeItem('token');
+      sessionStorage.removeItem('token');
+      if (window.__routingPublish) window.__routingPublish('LOGIN');
+      const next = new URLSearchParams(location.search).get('next');
+      location.assign(window.__routingNext ? window.__routingNext(next, mergedUser.role) : '/');
+      return;
+    }
     enterPortal(mergedUser);
     loadUserProfile();
 
@@ -277,13 +355,12 @@ document.getElementById('login-email')?.addEventListener('keydown', (e) => {
 // ========== LOGOUT ==========
 document.querySelectorAll('[data-action="logout"]').forEach(btn => {
   btn.addEventListener('click', () => {
-    clearAuth();
-    clearUserAvatars();
-    document.getElementById('login-email').value = '';
-    document.getElementById('login-password').value = '';
-    const rememberEl = document.getElementById('login-remember');
-    if (rememberEl) rememberEl.checked = true;
-    switchView('login');
+    if (window.__routingV2 && window.__routingLogout) {
+      window.__routingLogout();
+      return;
+    }
+    showLoginScreen();
+    sessionSync.publish('LOGOUT');
   });
 });
 
@@ -382,10 +459,23 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('DOMContentLoaded', async () => {
   await loadAppConfig();
 
+  if (window.__routingV2) {
+    await bootRouting({
+      switchView,
+      enterPortal,
+      clearAuth,
+      apiUrl: API_URL
+    });
+    return;
+  }
+
   const rememberEl = document.getElementById('login-remember');
   if (rememberEl) {
     rememberEl.checked = localStorage.getItem('rememberMe') !== '0';
   }
+
+  const shared = await claimSharedSession();
+  if (!shared) return;
 
   const token = getAuthToken();
   const user = getAuthUser();
@@ -465,10 +555,9 @@ if (parentAvatarBtn && parentSettingsDropdown) {
 // ========== HELPERS ==========
 function getAuthHeaders() {
   const token = getAuthToken();
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
-  };
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 async function loadUserProfile() {
@@ -929,7 +1018,7 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to create account');
 
-    alert('Account created successfully');
+    alert(data.message || 'Account created successfully');
     e.target.reset();
     document.getElementById('subject-assignments-container').innerHTML = '';
     subjectCounter = 0;
@@ -1073,6 +1162,7 @@ function applyAccountFilters() {
     const statusLabel = currentAccountStatusFilter === 'active' ? 'active ' : currentAccountStatusFilter === 'inactive' ? 'inactive ' : '';
     const roleLabel = currentAccountRoleFilter === 'all' ? 'accounts' : currentAccountRoleFilter + 's';
     tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">No ${statusLabel}${roleLabel} found</td></tr>`;
+    paintAdminPager('admin-accounts-pager', null, () => {});
     return;
   }
 
@@ -1081,7 +1171,10 @@ function applyAccountFilters() {
     if (!visibleIds.has(id)) selectedAccountIds.delete(id);
   });
 
-  tbody.innerHTML = filtered.map(u => `
+  const accountPager = paginate(filtered, accountPage, ADMIN_PAGE_SIZE);
+  accountPage = accountPager.page;
+
+  tbody.innerHTML = accountPager.rows.map(u => `
     <tr data-account-id="${u.id}" style="${u.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
       <td class="col-check">
         <input type="checkbox" class="admin-account-check" data-account-id="${u.id}" ${selectedAccountIds.has(Number(u.id)) ? 'checked' : ''} aria-label="Select account" />
@@ -1117,6 +1210,10 @@ function applyAccountFilters() {
       <td>${statusBadgeHtml(u.status)}</td>
     </tr>
   `).join('');
+  paintAdminPager('admin-accounts-pager', accountPager, (p) => {
+    accountPage = p;
+    applyAccountFilters();
+  });
   updateAccountsBulkBar();
 }
 
@@ -1180,7 +1277,6 @@ function updateAccountsBulkBar() {
       if (shouldSelectAll) selectedAccountIds.add(id);
       else selectedAccountIds.delete(id);
     });
-    if (!shouldSelectAll) selectedAccountIds.clear();
     selectAll.indeterminate = false;
     selectAll.checked = shouldSelectAll;
     wasIndeterminate = false;
@@ -1199,6 +1295,7 @@ document.getElementById('admin-accounts-bulk-status')?.addEventListener('click',
   if (!confirm(`${verb} ${ids.length} selected account(s)? ${detail}`)) return;
 
   const selfId = Number(getAuthUser()?.id || getAuthUser()?.userId);
+  const blocked = [];
   try {
     for (const id of ids) {
       if (selfId && Number(id) === selfId) continue;
@@ -1210,11 +1307,20 @@ document.getElementById('admin-accounts-bulk-status')?.addEventListener('click',
         body: JSON.stringify({ status: newStatus })
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && Array.isArray(data.classes) && data.classes.length) {
+        const who = account ? `${account.first_name} ${account.last_name}` : `account #${id}`;
+        blocked.push(who);
+        continue;
+      }
       if (!res.ok) throw new Error(data.error || `Failed to update account #${id}`);
       account.status = newStatus;
     }
     selectedAccountIds.clear();
-    showToast(newStatus === 'inactive' ? 'Selected accounts deactivated.' : 'Selected accounts activated.');
+    if (blocked.length) {
+      showToast(`Deactivated the other accounts. Transfer classes before deactivating: ${blocked.join(', ')}.`, 'error');
+    } else {
+      showToast(newStatus === 'inactive' ? 'Selected accounts deactivated.' : 'Selected accounts activated.');
+    }
     await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
   } catch (err) {
     alert(err.message);
@@ -1642,7 +1748,6 @@ window.resetAccountPassword = async function(id) {
 };
 
 window.toggleAccountStatus = async function(id, newStatus) {
-  const action = newStatus === 'inactive' ? 'deactivate' : 'activate';
   const confirmMsg = newStatus === 'inactive' 
     ? 'Deactivate this account? The user will no longer be able to log in.'
     : 'Activate this account? The user will be able to log in again.';
@@ -1656,6 +1761,10 @@ window.toggleAccountStatus = async function(id, newStatus) {
       body: JSON.stringify({ status: newStatus })
     });
     const data = await res.json();
+    if (res.status === 409 && Array.isArray(data.classes) && data.classes.length) {
+      openTransferTeacherModal(id, data.classes);
+      return;
+    }
     if (!res.ok) throw new Error(data.error);
     await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
     if (currentDetailAccountId === id) {
@@ -1668,6 +1777,134 @@ window.toggleAccountStatus = async function(id, newStatus) {
     alert(err.message);
   }
 };
+
+function openTransferTeacherModal(teacherId, classes) {
+  const teacher = lastAccountsData.find((user) => Number(user.id) === Number(teacherId));
+  const name = teacher ? `${teacher.first_name} ${teacher.last_name}` : 'this teacher';
+  const sub = document.getElementById('transfer-teacher-sub');
+  const errEl = document.getElementById('transfer-teacher-error');
+  const list = document.getElementById('transfer-teacher-list');
+  const idInput = document.getElementById('transfer-teacher-id');
+  if (sub) {
+    sub.textContent = `${name} still handles ${classes.length} class${classes.length === 1 ? '' : 'es'}. A class adviser class goes to a newly hired teacher. A subject class goes to an active teacher who already handles that subject.`;
+  }
+  if (errEl) {
+    errEl.hidden = true;
+    errEl.textContent = '';
+  }
+  if (idInput) idInput.value = teacherId;
+  if (list) {
+    list.innerHTML = classes.map((item, index) => {
+      const isAdviser = item.kind === 'adviser';
+      const candidates = Array.isArray(item.candidates) ? item.candidates : [];
+      const options = isAdviser
+        ? '<option value="new" selected>Newly hired teacher</option>'
+        : candidates.map((user) =>
+          `<option value="${user.id}">${escapeHtml(user.first_name)} ${escapeHtml(user.last_name)}</option>`
+        ).join('');
+      const emptyNote = !isAdviser && !candidates.length
+        ? '<p class="page-subheading">No other active teacher handles this subject yet.</p>'
+        : '';
+      return `
+      <div class="field-small" style="margin-bottom:12px;">
+        <label for="transfer-teacher-${index}">${escapeHtml(item.label)}</label>
+        <select id="transfer-teacher-${index}" class="transfer-teacher-pick" required
+          data-grade="${escapeHtml(String(item.grade_level))}"
+          data-section="${escapeHtml(item.section || '')}"
+          data-subject="${item.subject_id == null ? '' : escapeHtml(String(item.subject_id))}"
+          ${!isAdviser && !candidates.length ? 'disabled' : ''}>
+          ${isAdviser ? '' : '<option value="">Select a teacher</option>'}
+          ${options}
+        </select>
+        ${emptyNote}
+      </div>`;
+    }).join('');
+    list.querySelectorAll('.transfer-teacher-pick').forEach((select) => {
+      select.addEventListener('change', syncTransferNewTeacher);
+    });
+  }
+  syncTransferNewTeacher();
+  const submit = document.querySelector('#transfer-teacher-form button[type="submit"]');
+  if (submit) submit.disabled = false;
+  openAdminModal('transfer-teacher-modal');
+}
+
+function syncTransferNewTeacher() {
+  const needsNew = [...document.querySelectorAll('.transfer-teacher-pick')]
+    .some((select) => select.value === 'new');
+  const box = document.getElementById('transfer-new-teacher');
+  if (!box) return;
+  box.hidden = !needsNew;
+  if (needsNew) box.removeAttribute('hidden');
+  else box.setAttribute('hidden', '');
+}
+
+document.getElementById('transfer-new-password-generate')?.addEventListener('click', () => {
+  fillTempPasswordInput('transfer-new-password');
+});
+
+document.getElementById('transfer-teacher-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('transfer-teacher-error');
+  const teacherId = document.getElementById('transfer-teacher-id')?.value;
+  const picks = [...document.querySelectorAll('.transfer-teacher-pick')];
+  if (picks.some((select) => select.disabled)) {
+    if (errEl) {
+      errEl.hidden = false;
+      errEl.textContent = 'A subject class can move only when another active teacher already handles that subject.';
+    }
+    return;
+  }
+  const transfers = picks.map((select) => ({
+    grade_level: Number(select.dataset.grade),
+    section: select.dataset.section,
+    subject_id: select.dataset.subject === '' ? null : Number(select.dataset.subject),
+    replacement_id: select.value === 'new' ? 'new' : Number(select.value)
+  }));
+  if (transfers.some((item) => item.replacement_id !== 'new' && !item.replacement_id)) {
+    if (errEl) {
+      errEl.hidden = false;
+      errEl.textContent = 'Choose a teacher for every class.';
+    }
+    return;
+  }
+  const needsNew = transfers.some((item) => item.replacement_id === 'new');
+  const newTeacher = needsNew ? {
+    first_name: document.getElementById('transfer-new-first')?.value.trim() || '',
+    last_name: document.getElementById('transfer-new-last')?.value.trim() || '',
+    email: document.getElementById('transfer-new-email')?.value.trim() || '',
+    password: document.getElementById('transfer-new-password')?.value || ''
+  } : null;
+  if (needsNew && (!newTeacher.first_name || !newTeacher.last_name || !newTeacher.email || newTeacher.password.length < 6)) {
+    if (errEl) {
+      errEl.hidden = false;
+      errEl.textContent = 'Enter the new teacher’s name, email, and a temporary password of at least 6 characters.';
+    }
+    return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/admin/accounts/${teacherId}/transfer-deactivate`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ transfers, new_teacher: newTeacher })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not transfer the classes');
+    closeAdminModal('transfer-teacher-modal');
+    showToast(data.message || 'Classes transferred and account deactivated');
+    await refreshSchoolData({ accounts: true, teachers: true, parents: true, overview: true });
+    if (Number(currentDetailAccountId) === Number(teacherId)) {
+      document.getElementById('teacher-detail-modal')?.setAttribute('hidden', '');
+    }
+  } catch (err) {
+    if (errEl) {
+      errEl.hidden = false;
+      errEl.textContent = err.message;
+    } else {
+      alert(err.message);
+    }
+  }
+});
 
 // ========== ADMIN: STUDENTS ==========
 async function loadDropdowns() {
@@ -1941,6 +2178,7 @@ function clearStudentFilters() {
   currentStudentFilter = '';
   currentStudentGradeFilter = '';
   currentStudentSectionFilter = '';
+  studentPage = 1;
 
   const search = document.getElementById('admin-student-search');
   if (search) search.value = '';
@@ -1979,6 +2217,7 @@ function filterStudentsTable() {
     selectedStudentIds.clear();
     updateStudentsBulkBar();
     tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No students enrolled</td></tr>';
+    paintAdminPager('admin-students-pager', null, () => {});
     return;
   }
 
@@ -1993,6 +2232,7 @@ function filterStudentsTable() {
     if (currentStudentFilter) parts.push(`"${currentStudentFilter}"`);
     const label = parts.length ? parts.join(', ') : 'your filters';
     tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">No students match ${label}</td></tr>`;
+    paintAdminPager('admin-students-pager', null, () => {});
     return;
   }
 
@@ -2002,11 +2242,18 @@ function filterStudentsTable() {
     if (!visibleIds.has(id)) selectedStudentIds.delete(id);
   });
 
-  tbody.innerHTML = sorted.map(s => `
+  const studentPager = paginate(sorted, studentPage, ADMIN_PAGE_SIZE);
+  studentPage = studentPager.page;
+
+  tbody.innerHTML = studentPager.rows.map(s => `
     <tr data-student-id="${s.id}" style="${s.status === 'inactive' ? 'opacity:0.6;background:#f9f9f9;' : ''}">
       ${renderStudentRow(s)}
     </tr>
   `).join('');
+  paintAdminPager('admin-students-pager', studentPager, (p) => {
+    studentPage = p;
+    filterStudentsTable();
+  });
   updateStudentsBulkBar();
 }
 
@@ -2201,7 +2448,6 @@ window.addEventListener('resize', () => {
       if (shouldSelectAll) selectedStudentIds.add(id);
       else selectedStudentIds.delete(id);
     });
-    if (!shouldSelectAll) selectedStudentIds.clear();
 
     selectAll.indeterminate = false;
     selectAll.checked = shouldSelectAll;
@@ -2238,7 +2484,7 @@ document.getElementById('admin-students-bulk-unenroll')?.addEventListener('click
 document.getElementById('admin-students-bulk-delete')?.addEventListener('click', async () => {
   const ids = [...selectedStudentIds];
   if (!ids.length) return;
-  if (!confirm(`Permanently delete ${ids.length} selected student(s)? This cannot be undone.`)) return;
+  if (!confirm(`Remove ${ids.length} selected student(s) from the lists? Attendance and scores are kept.`)) return;
   try {
     for (const id of ids) {
       const res = await fetch(`${API_URL}/admin/students/${id}`, {
@@ -2608,24 +2854,60 @@ window.startEditStudent = function(id) {
     classText.textContent = `Grade ${student.grade_level || '—'} · ${student.section || '—'}`;
   }
   const parentText = document.getElementById('edit-student-parent-text');
+  const parentField = document.getElementById('edit-student-parent-field');
+  const parentSelect = document.getElementById('edit-student-parent');
+  const unlinked = student.parent_id == null || student.parent_id === '';
   if (parentText) {
     parentText.textContent = student.parent_last
       ? `${student.parent_last}, ${student.parent_first || ''}`.trim()
       : 'Unlinked';
   }
+  if (parentField) parentField.hidden = !unlinked;
+  if (parentSelect) parentSelect.value = '';
+  if (unlinked) loadEditStudentParents();
   if (subtitle) {
-    subtitle.textContent = `Editing ${student.last_name || ''}, ${student.first_name || ''}`;
+    subtitle.textContent = unlinked
+      ? `${student.last_name || ''}, ${student.first_name || ''} has no parent. You can link a registered parent.`
+      : `Editing ${student.last_name || ''}, ${student.first_name || ''}`;
   }
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   modal?.removeAttribute('hidden');
   document.getElementById('edit-student-last')?.focus();
 };
 
+async function loadEditStudentParents() {
+  const parentSelect = document.getElementById('edit-student-parent');
+  if (!parentSelect) return;
+  parentSelect.innerHTML = '<option value="">Loading parents...</option>';
+  parentSelect.disabled = true;
+  try {
+    const res = await fetch(`${API_URL}/admin/parents`, { headers: getAuthHeaders() });
+    const parents = await res.json();
+    if (!res.ok) throw new Error(parents.error || 'Failed to load parents');
+    const active = (Array.isArray(parents) ? parents : []).filter((p) => {
+      const status = String(p.status || p.STATUS || 'active').toLowerCase();
+      return status === 'active';
+    });
+    parentSelect.innerHTML = '<option value="">-- Select Parent --</option>' +
+      active.map((p) => `<option value="${p.id}">${escapeHtml(p.last_name)}, ${escapeHtml(p.first_name)} (${escapeHtml(p.email)})</option>`).join('');
+    if (!active.length) {
+      parentSelect.innerHTML = '<option value="">No registered parents</option>';
+    }
+  } catch (err) {
+    console.error('Load edit student parents error:', err);
+    parentSelect.innerHTML = '<option value="">Failed to load parents</option>';
+  } finally {
+    parentSelect.disabled = false;
+  }
+}
+
 function closeEditStudentModal() {
   const modal = document.getElementById('edit-student-modal');
   modal?.setAttribute('hidden', '');
   document.getElementById('edit-student-form')?.reset();
   document.getElementById('edit-student-id').value = '';
+  const parentField = document.getElementById('edit-student-parent-field');
+  if (parentField) parentField.hidden = true;
   const errEl = document.getElementById('edit-student-error');
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
 }
@@ -2647,6 +2929,9 @@ document.getElementById('edit-student-form')?.addEventListener('submit', async (
     first_name: document.getElementById('edit-student-first')?.value.trim(),
     middle_name: document.getElementById('edit-student-middle')?.value.trim() || null
   };
+  const parentField = document.getElementById('edit-student-parent-field');
+  const parentId = document.getElementById('edit-student-parent')?.value || '';
+  if (parentField && !parentField.hidden && parentId) payload.parent_id = Number(parentId);
 
   if (!payload.last_name || !payload.first_name) {
     if (errEl) { errEl.hidden = false; errEl.textContent = 'First and last name are required.'; }
@@ -2671,7 +2956,7 @@ document.getElementById('edit-student-form')?.addEventListener('submit', async (
     if (!res.ok) throw new Error(data.error || 'Failed to update student');
 
     closeEditStudentModal();
-    showToast('Student updated.');
+    showToast(payload.parent_id ? 'Student updated and linked to parent.' : 'Student updated.');
     await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     if (errEl) { errEl.hidden = false; errEl.textContent = err.message; }
@@ -2956,7 +3241,7 @@ document.getElementById('reenroll-student-form')?.addEventListener('submit', asy
 
 // FIX #5: Add confirmation before permanent delete
 window.deleteStudent = async function(id) {
-  if (!confirm('Permanently delete this student? This cannot be undone.')) return;
+  if (!confirm('Remove this student from the lists? Attendance and scores are kept.')) return;
   try {
     const res = await fetch(`${API_URL}/admin/students/${id}`, {
       method: 'DELETE',
@@ -3040,6 +3325,14 @@ function resetAdminModalForm(modalId) {
       { text: '-- Auto Select --', state: 'placeholder' }
     );
     if (hiddenInput) hiddenInput.value = '';
+  }
+
+  if (modalId === 'bulk-account-modal' || modalId === 'bulk-student-modal') {
+    const prefix = modalId === 'bulk-account-modal' ? 'bulk-account' : 'bulk-student';
+    const err = document.getElementById(`${prefix}-error`);
+    const result = document.getElementById(`${prefix}-result`);
+    if (err) err.textContent = '';
+    if (result) result.innerHTML = '';
   }
 
   if (modalId === 'compose-announcement-modal') {
@@ -3169,6 +3462,7 @@ async function refreshTeacherClassesPreserveSelection() {
     if (!listEl) return;
 
     if (!classes.length) {
+      setMyClassesTriggerLabel();
       listEl.innerHTML = '<div class="class-nav-empty">No classes assigned</div>';
       return;
     }
@@ -3220,7 +3514,10 @@ async function refreshTeacherRosterIfActive() {
   if (canLoadRoster) {
     await loadRoster(grade, section);
     loadClassStats(grade, section);
-    if (panel === 'classroom') refreshClassroomAttendanceStatus();
+    if (panel === 'classroom') {
+      refreshClassroomAttendanceStatus();
+      loadTeacherClassProgress(grade, section);
+    }
   }
 
   if (panel === 'attendance-sheet' || canLoadRoster) {
@@ -3313,6 +3610,7 @@ async function loadOverviewStats() {
   if (teachersEl) teachersEl.textContent = '...';
   if (parentsEl) parentsEl.textContent = '...';
   if (studentsEl) studentsEl.textContent = '...';
+  loadAdminOverviewCharts();
 
   try {
     const [accountsRes, studentsRes, settingsRes] = await Promise.all([
@@ -3348,6 +3646,222 @@ async function loadOverviewStats() {
     if (parentsEl) parentsEl.textContent = '--';
     if (studentsEl) studentsEl.textContent = '--';
   }
+}
+
+const adminCharts = {};
+
+function destroyAdminCharts() {
+  for (const key of Object.keys(adminCharts)) {
+    try { adminCharts[key]?.destroy(); } catch { /* ignore */ }
+    delete adminCharts[key];
+  }
+}
+
+function adminChartCanvas(wrapId, canvasId, label) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return null;
+  wrap.innerHTML = `<canvas id="${canvasId}" aria-label="${label}" role="img"></canvas>`;
+  return document.getElementById(canvasId);
+}
+
+async function loadAdminOverviewCharts() {
+  const gradeWrap = document.getElementById('admin-grade-chart-wrap');
+  const attWrap = document.getElementById('admin-att-chart-wrap');
+  const annEl = document.getElementById('admin-today-announcement');
+  if (!gradeWrap && !attWrap && !annEl) return;
+
+  destroyAdminCharts();
+  try {
+    const res = await fetch(`${API_URL}/admin/overview-charts`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load overview charts');
+    paintAdminGradeChart(data.studentsByGrade || []);
+    paintAdminAttendanceChart(data.attendance || {});
+    paintAdminTodayAnnouncement(data.announcement || null);
+    paintAdminAnnouncementCard('admin-important-announcement', data.importantAnnouncement || null, {
+      badge: importantAnnouncementBadge(data.importantAnnouncement),
+      badgeClass: importantAnnouncementBadgeClass(data.importantAnnouncement),
+      emptyBadge: 'None',
+      emptyTitle: 'No other announcement',
+      emptyText: 'The highest-priority announcement that is not already shown for today will appear here.'
+    });
+  } catch (err) {
+    console.error('Overview charts error:', err);
+    if (gradeWrap) gradeWrap.innerHTML = '<p class="admin-chart-empty">Could not load enrollment chart.</p>';
+    if (attWrap) attWrap.innerHTML = '<p class="admin-chart-empty">Could not load attendance chart.</p>';
+    if (annEl) annEl.innerHTML = '';
+    const importantEl = document.getElementById('admin-important-announcement');
+    if (importantEl) importantEl.innerHTML = '';
+  }
+}
+
+function paintAdminGradeChart(rows) {
+  const canvas = adminChartCanvas('admin-grade-chart-wrap', 'admin-grade-chart', 'Students by grade');
+  const ChartLib = typeof window !== 'undefined' ? window.Chart : null;
+  if (!canvas || !ChartLib) {
+    const wrap = document.getElementById('admin-grade-chart-wrap');
+    if (wrap && !ChartLib) wrap.innerHTML = '<p class="admin-chart-empty">Charts are unavailable right now.</p>';
+    return;
+  }
+  const labels = [1, 2, 3, 4, 5, 6].map((g) => `Grade ${g}`);
+  const counts = [1, 2, 3, 4, 5, 6].map((g) => {
+    const row = rows.find((r) => Number(r.grade) === g);
+    return row ? Number(row.count) || 0 : 0;
+  });
+  adminCharts.grade = new ChartLib(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Students',
+        data: counts,
+        backgroundColor: '#60100b',
+        borderRadius: 6,
+        maxBarThickness: 36
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+}
+
+function paintAdminAttendanceChart(attendance) {
+  const sub = document.getElementById('admin-att-chart-sub');
+  if (sub) {
+    const recorded = Number(attendance.recorded) || 0;
+    const total = Number(attendance.activeStudents) || 0;
+    sub.textContent = `${recorded} of ${total} active students marked today`;
+  }
+  const canvas = adminChartCanvas('admin-att-chart-wrap', 'admin-att-chart', "Today's attendance");
+  const ChartLib = typeof window !== 'undefined' ? window.Chart : null;
+  if (!canvas || !ChartLib) {
+    const wrap = document.getElementById('admin-att-chart-wrap');
+    if (wrap && !ChartLib) wrap.innerHTML = '<p class="admin-chart-empty">Charts are unavailable right now.</p>';
+    return;
+  }
+  const slices = [
+    { label: 'Present', value: Number(attendance.present) || 0, color: '#2e7d32' },
+    { label: 'Late', value: Number(attendance.late) || 0, color: '#f39c12' },
+    { label: 'Absent', value: Number(attendance.absent) || 0, color: '#c62828' },
+    { label: 'Excused', value: Number(attendance.excused) || 0, color: '#1565c0' },
+    { label: 'Not yet marked', value: Number(attendance.unmarked) || 0, color: '#d7ccc8' }
+  ].filter((s) => s.value > 0);
+  if (!slices.length) {
+    const wrap = document.getElementById('admin-att-chart-wrap');
+    if (wrap) wrap.innerHTML = '<p class="admin-chart-empty">No active students to chart.</p>';
+    return;
+  }
+  adminCharts.attendance = new ChartLib(canvas, {
+    type: 'doughnut',
+    data: {
+      labels: slices.map((s) => s.label),
+      datasets: [{ data: slices.map((s) => s.value), backgroundColor: slices.map((s) => s.color), borderWidth: 0 }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
+      },
+      cutout: '58%'
+    }
+  });
+}
+
+function dashboardAnnouncementAudience(item) {
+  const teachersOnly = String(item.audience || 'everyone') === 'teachers';
+  const who = teachersOnly ? 'Teachers' : 'Parents & teachers';
+  if (item.scope === 'grade_wide' && item.target_grade) return `Grade ${item.target_grade} · ${who}`;
+  if (item.scope === 'class_specific' && item.target_grade) {
+    const section = item.target_section ? `-${item.target_section}` : '';
+    return `Grade ${item.target_grade}${section} · ${who}`;
+  }
+  return teachersOnly ? 'All teachers' : 'All parents & teachers';
+}
+
+function dashboardAnnouncementWhen(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return `${day} | ${time}`;
+}
+
+function importantAnnouncementBadge(item) {
+  const priority = String(item?.priority || 'normal').toLowerCase();
+  if (priority === 'urgent') return 'Urgent';
+  if (priority === 'high') return 'High';
+  return 'Important';
+}
+
+function importantAnnouncementBadgeClass(item) {
+  const priority = String(item?.priority || 'normal').toLowerCase();
+  if (priority === 'urgent') return 'admin-announce-badge--urgent';
+  if (priority === 'high') return 'admin-announce-badge--high';
+  return 'admin-announce-badge--important';
+}
+
+function paintAdminAnnouncementCard(hostId, item, labels) {
+  const el = document.getElementById(hostId);
+  if (!el) return;
+  const emptyBadge = labels.emptyBadge || 'None today';
+  const emptyTitle = labels.emptyTitle || 'No announcement yet';
+  const emptyText = labels.emptyText || 'An announcement sent today will show here.';
+  if (!item) {
+    el.innerHTML = `
+      <div class="admin-announce admin-announce--empty">
+        <span class="admin-announce-badge">${escapeHtml(emptyBadge)}</span>
+        <h3 class="admin-announce-title">${escapeHtml(emptyTitle)}</h3>
+        <p class="admin-announce-text">${escapeHtml(emptyText)}</p>
+      </div>
+    `;
+    return;
+  }
+  const when = dashboardAnnouncementWhen(item.created_at);
+  const audience = dashboardAnnouncementAudience(item);
+  const sender = item.sender_name || 'Admin';
+  const initial = escapeHtml(sender.trim().charAt(0).toUpperCase() || 'A');
+  const avatar = item.sender_avatar
+    ? `<img src="${escapeHtml(item.sender_avatar)}" alt="" />`
+    : initial;
+  const reached = Number(item.reached) || 0;
+  const body = String(item.body || '').trim();
+  const badge = labels.badge || 'Sent';
+  const badgeClass = labels.badgeClass ? ` ${labels.badgeClass}` : '';
+  el.innerHTML = `
+    <article class="admin-announce">
+      <span class="admin-announce-badge${badgeClass}">${escapeHtml(badge)}</span>
+      <h3 class="admin-announce-title">${escapeHtml(item.title || 'Announcement')}</h3>
+      <p class="admin-announce-meta">
+        ${when ? `<span>${escapeHtml(when)}</span>` : ''}
+        <span>${escapeHtml(audience)}</span>
+      </p>
+      ${body ? `<p class="admin-announce-text">${escapeHtml(body)}</p>` : ''}
+      <div class="admin-announce-foot">
+        <div class="admin-announce-sender">
+          <span class="admin-announce-avatar">${avatar}</span>
+          <span class="admin-announce-name">${escapeHtml(sender)}</span>
+        </div>
+        <span class="admin-announce-reached">${reached} reached</span>
+      </div>
+    </article>
+  `;
+}
+
+function paintAdminTodayAnnouncement(item) {
+  paintAdminAnnouncementCard('admin-today-announcement', item, {
+    badge: 'Sent',
+    emptyBadge: 'None today',
+    emptyTitle: 'No announcement yet',
+    emptyText: 'An announcement sent today will show here.'
+  });
 }
 
 window.resolveConcern = async function(id) {
@@ -4221,6 +4735,7 @@ async function loadTeacherInbox(filter = teacherInboxFilter || 'unresolved') {
 
     updateTeacherInboxBadge();
     paintTeacherInboxList();
+    paintTeacherTodayInbox();
     wireInboxSearch({
       inputId: 'teacher-inbox-search',
       clearId: 'teacher-inbox-search-clear',
@@ -4235,6 +4750,75 @@ async function loadTeacherInbox(filter = teacherInboxFilter || 'unresolved') {
     if (badgeEl) badgeEl.hidden = true;
   }
 }
+
+function manilaDayKey(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return localISODate(d);
+}
+
+function paintTeacherTodayInbox() {
+  const list = document.getElementById('teacher-today-inbox-list');
+  if (!list) return;
+  const today = localISODate();
+  const concerns = (teacherInboxCache.concerns || [])
+    .filter((c) => manilaDayKey(c.created_at) === today)
+    .map((c) => ({
+      kind: 'concern',
+      title: concernSubject(c),
+      meta: c.parent_name || 'Parent',
+      unread: concernIsOpen(c)
+    }));
+  const announcements = (teacherInboxCache.announcements || [])
+    .filter((a) => manilaDayKey(a.created_at) === today)
+    .map((a) => ({
+      kind: 'announcement',
+      title: a.title || 'Announcement',
+      meta: a.sender_name || 'Admin',
+      unread: isUnread(a)
+    }));
+  const items = [...concerns, ...announcements];
+  if (!items.length) {
+    list.innerHTML = '<li class="page-subheading">No Inbox for Today.</li>';
+    return;
+  }
+  list.innerHTML = items.map((item) => `
+    <li class="inbox-item ${item.unread ? 'inbox-item--unread' : 'inbox-item--read'}">
+      <button type="button" class="inbox-item-summary" data-today-inbox="${item.kind}">
+        <span class="inbox-item-summary-title">${escapeHtml(item.title)}</span>
+        <span class="inbox-item-summary-meta">${escapeHtml(item.meta)}</span>
+      </button>
+    </li>
+  `).join('');
+}
+
+async function loadTeacherTodayInbox() {
+  const list = document.getElementById('teacher-today-inbox-list');
+  if (!list) return;
+  try {
+    const res = await fetch(`${API_URL}/teacher/inbox`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load inbox');
+    teacherInboxCache = {
+      ...teacherInboxCache,
+      announcements: Array.isArray(data.announcements) ? data.announcements : [],
+      concerns: Array.isArray(data.concerns) ? data.concerns : []
+    };
+    updateTeacherInboxBadge();
+    paintTeacherTodayInbox();
+  } catch (err) {
+    console.error('Today inbox error:', err);
+    list.innerHTML = '<li class="page-subheading">Could not load today\'s inbox.</li>';
+  }
+}
+
+document.getElementById('teacher-today-inbox-list')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-today-inbox]');
+  if (!btn) return;
+  teacherInboxFilter = btn.dataset.todayInbox === 'announcement' ? 'admin' : 'unresolved';
+  goToTeacherPanel('inbox');
+});
 
 async function refreshParentInboxBadge() {
   try {
@@ -4449,7 +5033,9 @@ function scrollPortalMain(viewId) {
 
 const ADMIN_ADD_MODAL_IDS = [
   'add-account-modal',
+  'bulk-account-modal',
   'add-student-modal',
+  'bulk-student-modal',
   'add-subject-modal',
   'compose-announcement-modal'
 ];
@@ -4473,6 +5059,7 @@ function resetAdminTabState(tabId) {
     const searchInput = document.getElementById('admin-account-search');
     if (searchInput) searchInput.value = '';
     accountSortMenuApi?.sync?.();
+    accountPage = 1;
     applyAccountFilters();
   }
 }
@@ -4524,8 +5111,11 @@ function resetParentTabState(tabId) {
   if (tabId === 'inbox') parentInboxFilter = 'unresolved';
   if (tabId === 'attendance') {
     parentAttendanceStatus = 'all';
-    // keep month preference across visits
+    parentAttPage = 1;
+    // keep period preference across visits
   }
+  if (tabId === 'progress') parentProgressPage = 1;
+  if (tabId === 'overview') destroyParentCharts();
 }
 
 const adminTabHistory = [];
@@ -4588,6 +5178,7 @@ document.querySelectorAll('[data-admin-tab]').forEach(btn => {
 document.querySelectorAll('[data-account-filter]').forEach(btn => {
   btn.addEventListener('click', () => {
     currentAccountRoleFilter = btn.dataset.accountFilter;
+    accountPage = 1;
     applyAccountFilters();
   });
 });
@@ -4595,12 +5186,14 @@ document.querySelectorAll('[data-account-filter]').forEach(btn => {
 document.querySelectorAll('[data-account-status]').forEach(btn => {
   btn.addEventListener('click', () => {
     currentAccountStatusFilter = btn.dataset.accountStatus;
+    accountPage = 1;
     applyAccountFilters();
   });
 });
 
 document.getElementById('admin-account-search')?.addEventListener('input', (e) => {
   currentAccountSearch = e.target.value || '';
+  accountPage = 1;
   applyAccountFilters();
 });
 
@@ -4614,7 +5207,7 @@ accountSortMenuApi = wireDownloadSelectMenu({
   ],
   getValue: () => currentAccountSort,
   setValue: (v) => { currentAccountSort = v === 'recent' ? 'recent' : 'az'; },
-  onPick: () => applyAccountFilters(),
+  onPick: () => { accountPage = 1; applyAccountFilters(); },
   formatButtonLabel: (opt) => (opt?.label || 'A–Z')
 });
 
@@ -4643,7 +5236,104 @@ document.querySelectorAll('[data-admin-tab-click]').forEach(link => {
 });
 
 wireAdminModal('add-account-modal', 'open-add-account-modal');
+wireAdminModal('bulk-account-modal', 'open-bulk-account-modal');
 wireAdminModal('add-student-modal', 'open-add-student-modal');
+wireAdminModal('bulk-student-modal', 'open-bulk-student-modal');
+
+function downloadCsvTemplate(filename, headerLine) {
+  const blob = new Blob(['\uFEFF' + headerLine], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function paintBulkResult(el, data, noun) {
+  if (!el) return;
+  const failed = Array.isArray(data.failed) ? data.failed : [];
+  const items = failed.map((f) => {
+    const who = f.email || f.name || '';
+    return `<li>Row ${escapeHtml(String(f.row ?? ''))}${who ? ` (${escapeHtml(who)})` : ''}: ${escapeHtml(f.error || 'Failed')}</li>`;
+  }).join('');
+  const emailed = Number(data.emailed);
+  const mailNote = Number.isFinite(emailed)
+    ? ` Sign-in details emailed to ${emailed}.`
+    : '';
+  el.innerHTML = `<p class="page-subheading">${Number(data.created) || 0} ${noun}.${mailNote}</p>${items ? `<ul class="bulk-result-list">${items}</ul>` : ''}`;
+}
+
+async function submitBulkImport({ url, fileInput, errorEl, resultEl, noun, refresh }) {
+  if (errorEl) errorEl.textContent = '';
+  if (resultEl) resultEl.innerHTML = '';
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    if (errorEl) errorEl.textContent = 'Choose an Excel or CSV file.';
+    return;
+  }
+  const lower = file.name.toLowerCase();
+  if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx')) {
+    if (errorEl) errorEl.textContent = 'Upload an Excel (.xlsx) or CSV file.';
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getAuthToken()}` },
+    body: fd
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Import failed');
+  paintBulkResult(resultEl, data, noun);
+  if (data.created && typeof refresh === 'function') refresh();
+}
+
+document.getElementById('bulk-account-template')?.addEventListener('click', () => {
+  downloadCsvTemplate(
+    'account-import-template.csv',
+    'first_name,last_name,email,password,role,phone,address,emergency_contact,is_class_adviser,class_adviser_grade,class_adviser_section,is_subject_teacher,subject_assignments\n'
+  );
+});
+document.getElementById('bulk-student-template')?.addEventListener('click', () => {
+  downloadCsvTemplate(
+    'student-import-template.csv',
+    'lrn,first_name,middle_name,last_name,grade_level,section,dob,gender,parent_email\n'
+  );
+});
+document.getElementById('bulk-account-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('bulk-account-error');
+  try {
+    await submitBulkImport({
+      url: `${API_URL}/admin/accounts/bulk`,
+      fileInput: document.getElementById('bulk-account-file'),
+      errorEl,
+      resultEl: document.getElementById('bulk-account-result'),
+      noun: 'account(s) added',
+      refresh: () => loadAccountsTable()
+    });
+  } catch (err) {
+    if (errorEl) errorEl.textContent = err.message;
+  }
+});
+document.getElementById('bulk-student-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('bulk-student-error');
+  try {
+    await submitBulkImport({
+      url: `${API_URL}/admin/students/bulk`,
+      fileInput: document.getElementById('bulk-student-file'),
+      errorEl,
+      resultEl: document.getElementById('bulk-student-result'),
+      noun: 'student(s) enrolled',
+      refresh: () => loadStudentsTable()
+    });
+  } catch (err) {
+    if (errorEl) errorEl.textContent = err.message;
+  }
+});
 wireAdminModal('add-subject-modal', 'open-add-subject-modal');
 wireAdminModal('compose-announcement-modal', 'open-compose-announcement-modal');
 wireSimpleModal('teacher-add-student-modal');
@@ -4655,6 +5345,7 @@ wireSimpleModal('qb-exam-modal');
 wireSimpleModal('parent-concern-modal');
 wireSimpleModal('progress-makeup-modal');
 wireSimpleModal('progress-activity-work-modal');
+wireSimpleModal('transfer-teacher-modal');
 
 document.getElementById('parent-concern-form')?.addEventListener('submit', submitParentConcern);
 document.getElementById('concern-student')?.addEventListener('change', (e) => {
@@ -5122,13 +5813,20 @@ function applyTeacherPanel(panelId) {
       attendanceSheetWeekStart = weekStartMondayClient(localISODate());
     }
     loadAttendanceSheet();
+    if (teacherCurrentClass?.grade && teacherCurrentClass?.section) {
+      syncClassroomAttendanceChrome();
+      loadRoster(teacherCurrentClass.grade, teacherCurrentClass.section);
+      refreshClassroomAttendanceStatus();
+    }
   }
   if (panelId === 'classroom') {
+    loadTeacherTodayInbox();
     if (teacherCurrentClass?.grade && teacherCurrentClass?.section) {
       syncClassroomAttendanceChrome();
       Promise.all([
         loadClassStats(teacherCurrentClass.grade, teacherCurrentClass.section),
-        loadRoster(teacherCurrentClass.grade, teacherCurrentClass.section)
+        loadRoster(teacherCurrentClass.grade, teacherCurrentClass.section),
+        loadTeacherClassProgress(teacherCurrentClass.grade, teacherCurrentClass.section)
       ]);
     }
   }
@@ -5257,7 +5955,9 @@ let teacherAssignedClasses = [];
 let rosterData = [];
 let attendanceSheetData = [];
 let attendanceSheetWeekStart = '';
-let attendanceCurrentSession = 'AM';
+let attendanceSheetRange = 'week';
+let attendanceSheetAnchor = '';
+let attendanceCurrentSession = currentManilaSessionClient();
 
 function currentManilaSessionClient() {
   const hourStr = new Intl.DateTimeFormat('en-US', {
@@ -5328,12 +6028,21 @@ function syncClassroomAttendanceChrome() {
         : 'Grades 4–6: open a subject from My Classes to take attendance before class starts.';
     }
   } else {
+    const openSession = currentManilaSessionClient();
+    attendanceCurrentSession = openSession;
     if (bar) bar.hidden = false;
     document.querySelectorAll('.session-chip').forEach((chip) => {
-      chip.classList.toggle('active', chip.dataset.session === attendanceCurrentSession);
+      const open = chip.dataset.session === openSession;
+      chip.classList.toggle('active', open);
+      chip.disabled = !open;
+      chip.title = open ? '' : (openSession === 'AM'
+        ? 'Afternoon attendance starts at 12:00.'
+        : 'Morning attendance is closed after 12:00.');
     });
     if (hint) {
-      hint.textContent = `Click P, A, L, or E to save ${attendanceCurrentSession === 'PM' ? 'afternoon' : 'morning'} attendance. Mark every student before enabling a shared link.`;
+      hint.textContent = openSession === 'AM'
+        ? 'Morning attendance is open. Click P, A, L, or E. Afternoon attendance starts at 12:00.'
+        : 'Afternoon attendance is open. Click P, A, L, or E. Morning attendance is closed after 12:00.';
     }
     if (sessionHint) {
       sessionHint.textContent = 'Grades 1–3: class-wide morning and afternoon attendance.';
@@ -5356,13 +6065,30 @@ function scorePercentDisplay(score, max = progressEditorMax) {
   return `${Math.min(100, Math.max(0, Math.round((n / m) * 100)))}%`;
 }
 
+function rejectNegativeScoreInput(input) {
+  if (!input || input.readOnly || input.disabled) return false;
+  const raw = String(input.value);
+  if (raw === '' || !raw.includes('-')) return false;
+  input.value = '';
+  if (input.dataset.negToast !== '1') {
+    input.dataset.negToast = '1';
+    showToast("Scores can't be negative.", 'error');
+  }
+  return true;
+}
+
 function clampProgressTotalInput(input) {
   if (!input || input.readOnly || input.value === '') return;
+  if (rejectNegativeScoreInput(input)) {
+    const cell = input.closest('tr')?.querySelector('.progress-pct-cell');
+    if (cell) cell.textContent = '—';
+    return;
+  }
   const n = Number(input.value);
   if (!Number.isFinite(n)) return;
+  input.dataset.negToast = '';
   const max = Number(progressEditorMax);
   let next = n;
-  if (n < 0) next = 0;
   if (Number.isFinite(max) && n > max) {
     next = max;
     if (input.dataset.overToast !== '1') {
@@ -5577,6 +6303,18 @@ function goToTeacherPanel(panelId) {
   applyTeacherPanel(panelId);
 }
 
+function setMyClassesTriggerLabel(grade, section, subjectName) {
+  const el = document.getElementById('my-classes-current');
+  if (!el) return;
+  if (!grade || !section) {
+    el.textContent = 'Choose a class';
+    return;
+  }
+  el.textContent = subjectName
+    ? `Grade ${grade} – ${section} · ${subjectName}`
+    : `Grade ${grade} – ${section}`;
+}
+
 function renderTeacherClassNav(classes) {
   const listEl = document.getElementById('teacher-class-list');
   if (!listEl) return;
@@ -5592,7 +6330,7 @@ function renderTeacherClassNav(classes) {
             data-subject-name="${String(s.name).replace(/"/g, '&quot;')}">
             ${s.name}
           </button>`).join('')
-      : `<span class="class-nav-subject" style="cursor:default;opacity:0.65;">${c.is_class_adviser ? 'Class adviser' : 'No subjects listed'}</span>`;
+      : `<span class="class-nav-subject">${c.is_class_adviser ? 'Class adviser' : 'No subjects listed'}</span>`;
 
     return `
       <div class="class-nav-group ${i === 0 ? 'is-expanded' : ''}" data-grade="${c.grade_level}" data-section="${c.section}">
@@ -5602,7 +6340,7 @@ function renderTeacherClassNav(classes) {
           data-action="select-class">
           <span class="pill-icon">🏫</span>
           <span class="pill-class-main">Grade ${c.grade_level} – ${c.section}</span>
-          <span class="class-nav-expand" aria-hidden="true">›</span>
+          <span class="class-nav-expand" aria-hidden="true">▾</span>
         </button>
         <div class="class-nav-subjects">${subjectsHtml}</div>
       </div>`;
@@ -5621,6 +6359,7 @@ async function loadTeacherClasses() {
     if (!classes.length) {
       teacherAssignedClasses = [];
       fillTeacherNoticeClasses();
+      setMyClassesTriggerLabel();
       listEl.innerHTML = '<div class="class-nav-empty">No classes assigned</div>';
       return;
     }
@@ -5747,6 +6486,7 @@ async function selectTeacherClassContext({
       ? `Grade ${grade} – ${section} · ${subjectName}`
       : `Grade ${grade} – ${section}`;
   }
+  setMyClassesTriggerLabel(grade, section, subjectName);
   if (metaEl) metaEl.style.display = 'flex';
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   if (modeBadge) modeBadge.textContent = subjectName || (classInfo?.is_class_adviser ? 'Class Adviser' : 'Class');
@@ -5755,6 +6495,13 @@ async function selectTeacherClassContext({
   if (classroomSearch) classroomSearch.value = '';
   const sheetSearch = document.getElementById('attendance-sheet-search-input');
   if (sheetSearch) sheetSearch.value = '';
+
+  const todayMeta = document.getElementById('attendance-today-meta');
+  if (todayMeta) {
+    todayMeta.textContent = subjectName
+      ? `Grade ${grade} – ${section} · ${subjectName}`
+      : `Grade ${grade} – ${section}`;
+  }
 
   const progressMeta = document.getElementById('progress-class-meta');
   if (progressMeta) {
@@ -5768,7 +6515,11 @@ async function selectTeacherClassContext({
     document.getElementById('my-classes-trigger')?.setAttribute('aria-expanded', 'false');
     goToTeacherPanel('classroom');
     syncClassroomAttendanceChrome();
-    await Promise.all([loadClassStats(grade, section), loadRoster(grade, section)]);
+    await Promise.all([
+      loadClassStats(grade, section),
+      loadRoster(grade, section),
+      loadTeacherClassProgress(grade, section)
+    ]);
   } else if (goToPanel === 'progress') {
     document.getElementById('my-classes-flyout')?.classList.remove('is-open');
     document.getElementById('my-classes-trigger')?.setAttribute('aria-expanded', 'false');
@@ -5784,7 +6535,11 @@ async function selectTeacherClassContext({
     const activePanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
     syncClassroomAttendanceChrome();
     if (activePanel === 'classroom' || !activePanel) {
-      await Promise.all([loadClassStats(grade, section), loadRoster(grade, section)]);
+      await Promise.all([
+        loadClassStats(grade, section),
+        loadRoster(grade, section),
+        loadTeacherClassProgress(grade, section)
+      ]);
     }
     if (activePanel === 'progress') loadProgressList();
     if (activePanel === 'attendance-sheet') loadAttendanceSheet();
@@ -5847,6 +6602,159 @@ async function loadClassStats(grade, section) {
     console.error('Load stats error:', err);
   }
 }
+
+let teacherProgressChart = null;
+
+function teacherProgressName(student) {
+  const last = String(student.last_name || '').trim();
+  const first = String(student.first_name || '').trim();
+  if (last && first) return `${last}, ${first}`;
+  return last || first || 'Student';
+}
+
+function paintTeacherProgressList(listId, students, emptyText, options = {}) {
+  const list = document.getElementById(listId);
+  if (!list) return;
+  const limit = Number(options.limit) || 0;
+  const rows = limit > 0 ? students.slice(0, limit) : students;
+  if (!rows.length) {
+    list.innerHTML = `<li class="page-subheading" style="list-style:none;">${escapeHtml(emptyText)}</li>`;
+    return;
+  }
+  list.innerHTML = rows.map((student) => teacherProgressPersonHtml(student, !!options.showLesson)).join('');
+}
+
+function teacherProgressPersonHtml(student, showLesson) {
+  const lesson = showLesson && student.weakest_lesson
+    ? ` <span class="page-subheading">· Weakest: ${escapeHtml(student.weakest_lesson)}</span>`
+    : '';
+  const pct = student.avg_percent == null ? '' : ` <span class="page-subheading">(${student.avg_percent}%)</span>`;
+  return `<li>${escapeHtml(teacherProgressName(student))}${pct}${lesson}</li>`;
+}
+
+function renderTeacherProgressGroups(data) {
+  const box = document.getElementById('teacher-progress-all');
+  if (!box) return;
+  const block = (title, students, emptyText) => {
+    const body = students.length
+      ? `<ul>${students.map((student) => teacherProgressPersonHtml(student, true)).join('')}</ul>`
+      : `<p class="page-subheading" style="margin:0;">${escapeHtml(emptyText)}</p>`;
+    return `<div><h4>${escapeHtml(title)}</h4>${body}</div>`;
+  };
+  const unscored = data.unscored || [];
+  const none = unscored.length
+    ? `<ul>${unscored.map((student) => `<li>${escapeHtml(teacherProgressName(student))}</li>`).join('')}</ul>`
+    : '<p class="page-subheading" style="margin:0;">None</p>';
+  box.innerHTML = `
+    <div class="teacher-progress-lists teacher-progress-all-grid">
+      ${block('Excelling', data.excels || [], 'None yet')}
+      ${block('On track', data.on_track || [], 'None')}
+      ${block('Left behind', data.behind || [], 'None')}
+      <div><h4>No scores yet</h4>${none}</div>
+    </div>`;
+}
+
+function paintTeacherProgressChart(counts) {
+  const wrap = document.getElementById('teacher-progress-chart-wrap');
+  if (!wrap) return;
+  if (teacherProgressChart) {
+    teacherProgressChart.destroy();
+    teacherProgressChart = null;
+  }
+  const values = [counts.excels || 0, counts.on_track || 0, counts.behind || 0];
+  if (!values.some((n) => n > 0)) {
+    wrap.innerHTML = '<p class="parent-chart-empty">No scores yet.</p>';
+    return;
+  }
+  const ChartLib = typeof window !== 'undefined' ? window.Chart : null;
+  if (!ChartLib) {
+    wrap.innerHTML = '<p class="parent-chart-empty">Chart is unavailable right now.</p>';
+    return;
+  }
+  if (!document.getElementById('teacher-progress-chart')?.isConnected) {
+    wrap.innerHTML = '<canvas id="teacher-progress-chart" aria-label="Students by progress group" role="img"></canvas>';
+  }
+  const target = document.getElementById('teacher-progress-chart');
+  teacherProgressChart = new ChartLib(target, {
+    type: 'doughnut',
+    data: {
+      labels: ['Excelling', 'On track', 'Most at risk'],
+      datasets: [{
+        data: values,
+        backgroundColor: ['#2e7d32', '#f39c12', '#c62828'],
+        borderWidth: 2,
+        borderColor: '#fff'
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '58%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              const n = Number(item.raw) || 0;
+              const total = values.reduce((sum, v) => sum + v, 0);
+              const pct = total ? Math.round((n / total) * 100) : 0;
+              return ` ${item.label}: ${n} (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+async function loadTeacherClassProgress(grade, section) {
+  const summaryEl = document.getElementById('teacher-performance-text');
+  const hintEl = document.getElementById('teacher-progress-hint');
+  if (!grade || !section) {
+    if (summaryEl) summaryEl.textContent = 'Select a class to see how the class is doing.';
+    return;
+  }
+  const subjectId = teacherCurrentClass?.subjectId;
+  const params = new URLSearchParams();
+  if (subjectId) params.set('subject_id', String(subjectId));
+  const qs = params.toString();
+  try {
+    const res = await fetch(
+      `${API_URL}/teacher/class-progress/${encodeURIComponent(grade)}/${encodeURIComponent(String(section).trim())}${qs ? `?${qs}` : ''}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load class progress');
+    if (summaryEl) summaryEl.textContent = data.summary || 'No scores yet.';
+    const lessonEl = document.getElementById('teacher-lesson-line');
+    if (lessonEl) lessonEl.textContent = data.lesson_line || '';
+    if (hintEl) {
+      const scope = teacherCurrentClass?.subjectName
+        ? teacherCurrentClass.subjectName
+        : 'this class';
+      hintEl.textContent = data.scored_students
+        ? `${data.scored_students} of ${data.total_students} students have scores in ${scope}.`
+        : `No scores yet for ${scope}.`;
+    }
+    paintTeacherProgressChart(data.counts || {});
+    paintTeacherProgressList('teacher-excels-list', data.excels || [], 'None yet', { limit: 3 });
+    paintTeacherProgressList('teacher-behind-list', data.behind || [], 'None', { limit: 3 });
+    renderTeacherProgressGroups(data);
+  } catch (err) {
+    console.error('Class progress error:', err);
+    if (summaryEl) summaryEl.textContent = 'Could not load class progress.';
+    const lessonEl = document.getElementById('teacher-lesson-line');
+    if (lessonEl) lessonEl.textContent = '';
+  }
+}
+
+document.getElementById('teacher-progress-see-all')?.addEventListener('click', () => {
+  const box = document.getElementById('teacher-progress-all');
+  const btn = document.getElementById('teacher-progress-see-all');
+  if (!box || !btn) return;
+  box.hidden = !box.hidden;
+  btn.textContent = box.hidden ? 'See all students' : 'Hide full list';
+});
 
 function attendanceActionButtons(studentId, status) {
   const current = String(status || '').toLowerCase();
@@ -6009,6 +6917,13 @@ window.markAttendance = async function(studentId, status, opts = {}) {
       showToast('Select a subject to mark attendance.', 'error');
       return;
     }
+    if (!subjectMode && (attendanceCurrentSession || 'AM') !== currentManilaSessionClient()) {
+      const openSession = currentManilaSessionClient();
+      showToast(openSession === 'AM'
+        ? 'Morning attendance is open. Afternoon attendance starts at 12:00.'
+        : 'Afternoon attendance is open. Morning attendance is closed after 12:00.', 'error');
+      return;
+    }
 
     const payload = {
       student_id: studentId,
@@ -6054,6 +6969,20 @@ window.markAttendance = async function(studentId, status, opts = {}) {
 document.getElementById('open-attendance-sheet-btn')?.addEventListener('click', () => {
   goToTeacherPanel('attendance-sheet');
 });
+
+function showAttendanceInnerPage(page) {
+  const today = document.getElementById('attendance-today-page');
+  const week = document.getElementById('attendance-week-page');
+  if (today) today.hidden = page !== 'today';
+  if (week) week.hidden = page !== 'week';
+  if (page === 'week') {
+    paintAttendanceRangeFilters();
+    loadAttendanceSheet();
+  }
+}
+
+document.getElementById('attendance-open-week')?.addEventListener('click', () => showAttendanceInnerPage('week'));
+document.getElementById('attendance-week-back')?.addEventListener('click', () => showAttendanceInnerPage('today'));
 
 const notifyBtn = document.getElementById('notify-all-btn');
 if (notifyBtn) {
@@ -6257,16 +7186,29 @@ function letterClass(letter) {
   return 'att-mark att-mark-empty';
 }
 
+function attendanceRangeLabel(sheet) {
+  const range = sheet?.range || attendanceSheetRange || 'week';
+  if (range === 'day') return formatAttendanceShortDate(sheet.weekStart);
+  if (range === 'month') {
+    const [y, m] = String(sheet.weekStart || '').split('-').map(Number);
+    const names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${names[(m || 1) - 1] || ''} ${y || ''}`.trim();
+  }
+  if (range === 'year') return `School Year ${sheet.schoolYear || ''}`.trim();
+  return formatWeekLabel(sheet.weekStart, sheet.weekEnd);
+}
+
 function updateAttendanceSheetSummary(sheet) {
   const box = document.getElementById('attendance-sheet-summary');
   if (!box || !sheet) return;
   box.hidden = false;
   const totalEl = document.getElementById('att-sheet-total');
   const rangeEl = document.getElementById('att-sheet-week-range');
+  const label = attendanceRangeLabel(sheet);
   if (totalEl) totalEl.textContent = (sheet.students || []).length;
-  if (rangeEl) rangeEl.textContent = formatWeekLabel(sheet.weekStart, sheet.weekEnd);
+  if (rangeEl) rangeEl.textContent = label;
   const weekLabel = document.getElementById('attendance-week-label');
-  if (weekLabel) weekLabel.textContent = formatWeekLabel(sheet.weekStart, sheet.weekEnd);
+  if (weekLabel) weekLabel.textContent = label;
 }
 
 function renderAttendanceSheet(students, sheetMeta) {
@@ -6281,8 +7223,8 @@ function renderAttendanceSheet(students, sheetMeta) {
   const hint = document.getElementById('attendance-sheet-hint');
   if (hint) {
     hint.textContent = mode === 'subject'
-      ? `Weekly ${sheetMeta.subject_name || 'subject'} attendance (Grades 4–6). Marks are saved from Dashboard before each subject starts.`
-      : 'Weekly class attendance with Morning (AM) and Afternoon (PM). Marks are saved from Dashboard. Sheet renews each Monday–Friday week.';
+      ? `${sheetMeta.subject_name || 'Subject'} attendance (Grades 4–6). One mark per day. Marks are saved in Today.`
+      : 'Morning (AM) and Afternoon (PM) attendance under each date.';
   }
 
   if (!dates.length) {
@@ -6384,8 +7326,9 @@ async function loadAttendanceSheet() {
   const meta = document.getElementById('attendance-sheet-meta');
   const summaryBox = document.getElementById('attendance-sheet-summary');
 
+  if (!attendanceSheetAnchor) attendanceSheetAnchor = localISODate();
   if (!attendanceSheetWeekStart) {
-    attendanceSheetWeekStart = weekStartMondayClient(localISODate());
+    attendanceSheetWeekStart = weekStartMondayClient(attendanceSheetAnchor);
   }
 
   if (!teacherCurrentClass) {
@@ -6415,11 +7358,16 @@ async function loadAttendanceSheet() {
       ? `Grade ${grade} – ${section} · ${teacherCurrentClass.subjectName || 'Subject'}`
       : `Grade ${grade} – ${section}`;
   }
+  const todayMeta = document.getElementById('attendance-today-meta');
+  if (todayMeta && meta) todayMeta.textContent = meta.textContent;
   if (tbody) tbody.innerHTML = '<tr><td class="empty-cell">Loading…</td></tr>';
 
   try {
     const sectionEnc = encodeURIComponent(String(section).trim());
-    const params = new URLSearchParams({ week: attendanceSheetWeekStart });
+    const params = new URLSearchParams({
+      range: attendanceSheetRange || 'week',
+      date: attendanceSheetAnchor || attendanceSheetWeekStart
+    });
     if (subjectMode && teacherCurrentClass.subjectId) {
       params.set('subject_id', String(teacherCurrentClass.subjectId));
     }
@@ -6437,6 +7385,7 @@ async function loadAttendanceSheet() {
     if (!res.ok) throw new Error(data.error || data.details || `Request failed (${res.status})`);
 
     attendanceSheetWeekStart = data.weekStart || attendanceSheetWeekStart;
+    if (data.weekStart) attendanceSheetAnchor = data.weekStart;
     attendanceSheetData = { students: data.students || [], _meta: data };
     updateAttendanceSheetSummary(data);
     filterAttendanceSheet();
@@ -6460,13 +7409,15 @@ async function exportAttendanceSheet(format) {
     showToast('Select a subject first.', 'error');
     return;
   }
+  if (!attendanceSheetAnchor) attendanceSheetAnchor = localISODate();
   if (!attendanceSheetWeekStart) {
-    attendanceSheetWeekStart = weekStartMondayClient(localISODate());
+    attendanceSheetWeekStart = weekStartMondayClient(attendanceSheetAnchor);
   }
 
   const sectionEnc = encodeURIComponent(String(section).trim());
   const params = new URLSearchParams({
-    week: attendanceSheetWeekStart,
+    range: attendanceSheetRange || 'week',
+    date: attendanceSheetAnchor || attendanceSheetWeekStart,
     format: format === 'pdf' ? 'pdf' : 'xlsx'
   });
   if (teacherCurrentClass.subjectId && isSubjectAttendanceGrade(grade)) {
@@ -6512,15 +7463,43 @@ async function exportAttendanceSheet(format) {
   }
 }
 
+function shiftAttendanceAnchor(dir) {
+  if (!attendanceSheetAnchor) attendanceSheetAnchor = localISODate();
+  const anchor = attendanceSheetAnchor;
+  if (attendanceSheetRange === 'month') {
+    const [y, m] = anchor.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, (m - 1) + dir, 1));
+    attendanceSheetAnchor = dt.toISOString().slice(0, 10);
+  } else if (attendanceSheetRange === 'year') {
+    const [y, mo] = anchor.split('-').map(Number);
+    const startYear = mo >= 6 ? y : y - 1;
+    attendanceSheetAnchor = `${startYear + dir}-06-01`;
+  } else {
+    attendanceSheetAnchor = addDaysISOClient(anchor, dir * 7);
+  }
+  attendanceSheetWeekStart = attendanceSheetAnchor;
+}
+
+function paintAttendanceRangeFilters() {
+  if (attendanceSheetRange === 'day') attendanceSheetRange = 'week';
+  paintParentChipFilters('attendance-range-filters', [
+    { value: 'week', label: 'Week' },
+    { value: 'month', label: 'Month' },
+    { value: 'year', label: 'School Year' }
+  ], attendanceSheetRange, (value) => {
+    attendanceSheetRange = value || 'week';
+    paintAttendanceRangeFilters();
+    loadAttendanceSheet();
+  });
+}
+
 document.getElementById('attendance-week-prev')?.addEventListener('click', () => {
-  if (!attendanceSheetWeekStart) attendanceSheetWeekStart = weekStartMondayClient(localISODate());
-  attendanceSheetWeekStart = addDaysISOClient(attendanceSheetWeekStart, -7);
+  shiftAttendanceAnchor(-1);
   loadAttendanceSheet();
 });
 
 document.getElementById('attendance-week-next')?.addEventListener('click', () => {
-  if (!attendanceSheetWeekStart) attendanceSheetWeekStart = weekStartMondayClient(localISODate());
-  attendanceSheetWeekStart = addDaysISOClient(attendanceSheetWeekStart, 7);
+  shiftAttendanceAnchor(1);
   loadAttendanceSheet();
 });
 
@@ -6551,7 +7530,15 @@ document.getElementById('attendance-download-btn')?.addEventListener('click', (e
 
 document.querySelectorAll('.session-chip').forEach((chip) => {
   chip.addEventListener('click', () => {
-    attendanceCurrentSession = chip.dataset.session === 'PM' ? 'PM' : 'AM';
+    const openSession = currentManilaSessionClient();
+    const picked = chip.dataset.session === 'PM' ? 'PM' : 'AM';
+    if (picked !== openSession) {
+      showToast(openSession === 'AM'
+        ? 'Morning attendance is open. Afternoon attendance starts at 12:00.'
+        : 'Afternoon attendance is open. Morning attendance is closed after 12:00.', 'error');
+      return;
+    }
+    attendanceCurrentSession = picked;
     document.querySelectorAll('.session-chip').forEach((c) => {
       c.classList.toggle('active', c.dataset.session === attendanceCurrentSession);
     });
@@ -6647,11 +7634,45 @@ function showProgressCreateForm(show) {
         );
         if (opt) progressSelect.value = opt.value;
       }
+      fillProgressLessonSelect();
     });
   } else {
     modal.hidden = true;
   }
 }
+
+let progressLessonPlansCache = null;
+
+/** Populate the optional lesson picker in New Record from the teacher's lesson plans. */
+async function fillProgressLessonSelect() {
+  const sel = document.getElementById('progress-lesson');
+  if (!sel) return;
+  const prev = sel.value;
+  if (!progressLessonPlansCache) {
+    try {
+      const res = await fetch(`${API_URL}/teacher/lesson-plans`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      progressLessonPlansCache = res.ok && Array.isArray(data) ? data : [];
+    } catch {
+      progressLessonPlansCache = [];
+    }
+  }
+  const grade = Number(teacherCurrentClass?.grade);
+  const subjectId = document.getElementById('progress-subject')?.value || '';
+  const plans = progressLessonPlansCache.filter((lp) => {
+    if (Number.isFinite(grade) && grade > 0 && Number(lp.grade_level) !== grade) return false;
+    if (subjectId && lp.subject_id != null && String(lp.subject_id) !== String(subjectId)) return false;
+    return true;
+  });
+  sel.innerHTML = `<option value="">-- No specific lesson --</option>${plans
+    .map((lp) => `<option value="${lp.id}">${escapeHtml(lp.title || `Lesson #${lp.id}`)}</option>`)
+    .join('')}`;
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+}
+
+document.getElementById('progress-subject')?.addEventListener('change', () => {
+  if (!document.getElementById('progress-create-modal')?.hidden) fillProgressLessonSelect();
+});
 
 function renderProgressCards(records) {
   const listEl = document.getElementById('progress-list');
@@ -7329,6 +8350,11 @@ function renderProgressScoresTable(mode, assessment, students) {
     tbody.querySelectorAll('.progress-rubric-cat-input').forEach((input) => {
       if (input.disabled) return;
       input.addEventListener('input', () => {
+        if (rejectNegativeScoreInput(input)) {
+          syncProgressRowRubricTotal(input.closest('tr'));
+          return;
+        }
+        input.dataset.negToast = '';
         markRubricCategoryOverMax(input);
         syncProgressRowRubricTotal(input.closest('tr'));
       });
@@ -7351,7 +8377,10 @@ function bindProgressScoreCellKeys(tbody) {
 
   const refreshAfterValueChange = (input) => {
     if (input.classList.contains('progress-rubric-cat-input')) {
-      markRubricCategoryOverMax(input);
+      if (!rejectNegativeScoreInput(input)) {
+        input.dataset.negToast = '';
+        markRubricCategoryOverMax(input);
+      }
       syncProgressRowRubricTotal(input.closest('tr'));
       return;
     }
@@ -7372,6 +8401,14 @@ function bindProgressScoreCellKeys(tbody) {
   tbody.addEventListener('keydown', (e) => {
     const input = isScoreInput(e.target) ? e.target : null;
     if (!input) return;
+    if (e.key === '-' || e.key === 'Subtract') {
+      e.preventDefault();
+      if (input.dataset.negToast !== '1') {
+        input.dataset.negToast = '1';
+        showToast("Scores can't be negative.", 'error');
+      }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       refreshAfterValueChange(input);
@@ -7834,6 +8871,7 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
   const title = document.getElementById('progress-title')?.value.trim();
   const type = document.getElementById('progress-type')?.value;
   const subjectId = document.getElementById('progress-subject')?.value;
+  const lessonPlanId = document.getElementById('progress-lesson')?.value || '';
   const maxScore = document.getElementById('progress-max')?.value;
   if (!title) {
     if (msg) msg.textContent = 'Please enter a title.';
@@ -7851,7 +8889,8 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
         grade_level: teacherCurrentClass.grade,
         section: teacherCurrentClass.section,
         max_score: maxScore,
-        quarter: teacherCurrentQuarter
+        quarter: teacherCurrentQuarter,
+        lesson_plan_id: lessonPlanId ? Number(lessonPlanId) : null
       })
     });
     const data = await res.json();
@@ -8421,6 +9460,16 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     return;
   }
 
+  const hasNegative = [...rows].some((tr) =>
+    [...tr.querySelectorAll('.progress-score-input, .progress-rubric-cat-input')].some((inp) =>
+      inp.value !== '' && (String(inp.value).includes('-') || Number(inp.value) < 0)
+    )
+  );
+  if (hasNegative) {
+    showToast("Scores can't be negative.", 'error');
+    return;
+  }
+
   const overMax = [...rows].some((tr) => {
     const inp = tr.querySelector('.progress-score-input');
     if (!inp || inp.readOnly || inp.value === '') return false;
@@ -8464,7 +9513,7 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast('Scores saved. Parents can see them in Progress Tracking.');
+    showToast('Scores saved. Parents can see them in Records.');
     loadProgressList();
     const openFn = window.openProgressEditor || window.loadProgressEditor;
     if (typeof openFn === 'function') {
@@ -11267,6 +12316,7 @@ document.getElementById('upload-material-form')?.addEventListener('submit', asyn
 
     if (msg) msg.textContent = '';
     e.target.reset();
+    progressLessonPlansCache = null;
     fillLessonPlanGradeOptions();
     fillTeacherSubjectSelects();
     const modal = document.getElementById('upload-material-modal');
@@ -11400,6 +12450,10 @@ function updateParentChildName(text) {
     onPick: () => {
       const selected = parentCurrentChild;
       if (!selected) return;
+      parentProgressCache = null;
+      parentAttendanceCache = [];
+      parentAttPage = 1;
+      parentProgressPage = 1;
       updateParentChildName(`${selected.first_name} ${selected.last_name}`);
       const activeTab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab;
       if (activeTab === 'overview') renderParentOverview(selected);
@@ -11464,17 +12518,18 @@ async function buildParentReportHtml(student, tab) {
       records = await fetchParentAttendance(student.id);
       parentAttendanceCache = records;
     }
-    if (!parentAttendanceMonth) {
-      const now = new Date();
-      parentAttendanceMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    if (!parentAttPeriodInitialized) {
+      parentAttPeriod = parentPeriodKey(new Date(), parentAttPeriodMode || 'month');
+      parentAttPeriodInitialized = true;
     }
     if (!parentAttendanceStatus) parentAttendanceStatus = 'all';
     const filtered = filterParentAttendanceRecords(records, {
-      month: parentAttendanceMonth,
+      mode: parentAttPeriodMode,
+      period: parentAttPeriod,
       status: parentAttendanceStatus
     });
     const statusBit = parentAttendanceStatus === 'all' ? 'All statuses' : parentAttendanceStatus;
-    const monthBit = parentAttendanceMonthLabel(parentAttendanceMonth) || 'Selected month';
+    const monthBit = parentPeriodLabel(parentAttPeriod, parentAttPeriodMode);
     const rows = filtered.map((r) => {
       const when = parentAttendanceWhenLabel(r);
       const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
@@ -11494,10 +12549,29 @@ async function buildParentReportHtml(student, tab) {
   }
 
   if (tab === 'progress') {
-    const res = await fetch(`${API_URL}/parent/child/${student.id}/progress`, { headers: getAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load progress');
-    const records = data.records || [];
+    let all = parentProgressCache;
+    let overallAvg = parentProgressAverageAll;
+    if (!Array.isArray(all)) {
+      const res = await fetch(`${API_URL}/parent/child/${student.id}/progress`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load progress');
+      all = data.records || [];
+      overallAvg = Number(data.average) || 0;
+      parentProgressCache = all;
+      parentProgressAverageAll = overallAvg;
+    }
+    const records = filterParentProgressRecords(all, {
+      subject: parentProgressSubject,
+      type: parentProgressType,
+      mode: parentProgressPeriodMode,
+      period: parentProgressPeriod
+    });
+    const filterBits = [
+      parentProgressSubject === 'all' ? 'All subjects' : (parentProgressSubject === '__none__' ? 'No subject' : parentProgressSubject),
+      parentProgressType === 'all' ? 'All types' : parentProgressTypeLabel(parentProgressType),
+      parentPeriodLabel(parentProgressPeriod, parentProgressPeriodMode)
+    ];
+    const shownAvg = parentProgressAverage(records);
     const rows = records.map((r) => {
       const typeLabel = r.type === 'quiz' ? 'Quiz' : r.type === 'activity' ? 'Activity' : 'Exam';
       const dateStr = r.created_at ? new Date(r.created_at).toLocaleDateString() : '-';
@@ -11511,10 +12585,11 @@ async function buildParentReportHtml(student, tab) {
       </tr>`;
     }).join('');
     return `
-      <h2>Progress Tracking</h2>
+      <h2>Records</h2>
+      <p>${escapeHtml(filterBits.join(' · '))}</p>
       <p>${records.length
-        ? `Average across recorded items: ${escapeHtml(String(data.average))}% · ${records.length} item(s)`
-        : 'No quiz, activity, or exam scores yet.'}</p>
+        ? `Average across shown items: ${escapeHtml(String(shownAvg))}% · ${records.length} item(s)${records.length !== all.length ? ` · Overall average ${escapeHtml(String(overallAvg))}% across ${all.length} item(s)` : ''}`
+        : (all.length ? 'No items match the selected filters.' : 'No quiz, activity, or exam scores yet.')}</p>
       ${records.length ? `<table>
         <thead><tr><th>Date</th><th>Type</th><th>Title</th><th>Subject</th><th>Score</th><th>%</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -11547,6 +12622,8 @@ async function buildParentReportHtml(student, tab) {
     </tr>`;
   }).join('');
 
+  const analyticsHtml = await buildParentAnalyticsReportHtml(student);
+
   return `
     <h2>Student Information</h2>
     <table>
@@ -11566,11 +12643,123 @@ async function buildParentReportHtml(student, tab) {
         <tr><th>Today's Status</th><td>${escapeHtml(stats.todayStatus || 'Not recorded')}</td></tr>
       </tbody>
     </table>
+    ${analyticsHtml}
     <h2>Recent Attendance</h2>
     ${recent.length ? `<table>
       <thead><tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr></thead>
       <tbody>${attRows}</tbody>
     </table>` : '<p>No attendance records yet.</p>'}`;
+}
+
+function parentChartImageHtml(chartKey, alt) {
+  const chart = parentCharts[chartKey];
+  if (!chart || !chart.canvas) return '';
+  try {
+    const src = chart.toBase64Image('image/png', 1);
+    if (!src) return '';
+    return `<img src="${src}" alt="${escapeHtml(alt)}" style="display:block;max-width:100%;max-height:320px;margin:6px 0 10px;">`;
+  } catch {
+    return '';
+  }
+}
+
+/** Analytics section of the Overview print report: tables + chart snapshots (when rendered). */
+async function buildParentAnalyticsReportHtml(student) {
+  const headers = getAuthHeaders();
+  const parts = [];
+
+  // Lesson performance
+  let lessonData = parentLessonData;
+  if (!lessonData) {
+    try {
+      const res = await fetch(`${API_URL}/parent/child/${student.id}/analytics/lessons`, { headers });
+      const data = await res.json();
+      if (res.ok) lessonData = data;
+    } catch { /* ignore */ }
+  }
+  const lessons = lessonData?.lessons || [];
+  const subjName = lessonData?.subjects?.find((s) => String(s.id) === String(parentLessonSubject))?.name;
+  const filteredLessons = parentLessonSubject === 'all'
+    ? lessons
+    : lessons.filter((l) => String(l.subject_id) === String(parentLessonSubject));
+  const statusLabel = (st) => st === 'excels' ? 'Excels' : st === 'on_track' ? 'On track' : 'Needs improvement';
+  parts.push(`
+    <h2>Lesson Performance</h2>
+    <p>${escapeHtml(subjName ? `Subject: ${subjName}` : 'All subjects')} · ${filteredLessons.length} lesson(s)</p>
+    ${parentChartImageHtml('lessons', 'Lesson performance chart')}
+    ${filteredLessons.length ? `<table>
+      <thead><tr><th>Subject</th><th>Lesson</th><th>Items</th><th>Average</th><th>Status</th></tr></thead>
+      <tbody>${filteredLessons.map((l) => `<tr>
+        <td>${escapeHtml(l.subject_name)}</td>
+        <td>${escapeHtml(l.lesson)}</td>
+        <td>${l.items}</td>
+        <td>${l.avg_percent}%</td>
+        <td>${statusLabel(l.status)}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<p>No quiz, activity, or exam scores recorded yet.</p>'}`);
+
+  // Weekly classwork
+  let weekData = parentClassworkData;
+  if (!weekData) {
+    try {
+      const res = await fetch(
+        `${API_URL}/parent/child/${student.id}/analytics/classwork?week=${encodeURIComponent(parentClassworkWeek || parentTodayISO())}`,
+        { headers }
+      );
+      const data = await res.json();
+      if (res.ok) weekData = data;
+    } catch { /* ignore */ }
+  }
+  const items = weekData?.items || [];
+  parts.push(`
+    <h2>Weekly Classwork Results</h2>
+    <p>${escapeHtml(weekData ? parentFmtRangeLabel(weekData.weekStart, weekData.weekEnd) : 'This week')}${items.length ? ` · Average ${weekData.average}% · ${items.length} item(s)` : ''}</p>
+    ${parentChartImageHtml('classwork', 'Weekly classwork chart')}
+    ${items.length ? `<table>
+      <thead><tr><th>Date</th><th>Name</th><th>Type</th><th>Subject</th><th>Score</th><th>%</th></tr></thead>
+      <tbody>${items.map((it) => `<tr>
+        <td>${escapeHtml(it.date ? parentFmtShortDate(it.date) : '-')}</td>
+        <td>${escapeHtml(it.title)}</td>
+        <td>${it.type === 'quiz' ? 'Quiz' : it.type === 'activity' ? 'Activity' : 'Exam'}</td>
+        <td>${escapeHtml(it.subject_name || '—')}</td>
+        <td>${it.score} / ${it.max_score}</td>
+        <td>${it.percent}%</td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<p>No classwork recorded this week.</p>'}`);
+
+  // Attendance summary
+  let attData = parentAttSummaryData;
+  if (!attData) {
+    try {
+      const res = await fetch(
+        `${API_URL}/parent/child/${student.id}/analytics/attendance?range=${encodeURIComponent(parentAttRange)}&date=${encodeURIComponent(parentTodayISO())}`,
+        { headers }
+      );
+      const data = await res.json();
+      if (res.ok) attData = data;
+    } catch { /* ignore */ }
+  }
+  if (attData) {
+    const rangeLabel = attData.range === 'year'
+      ? `School Year ${attData.schoolYear || ''}`.trim()
+      : parentFmtRangeLabel(attData.from, attData.to);
+    parts.push(`
+      <h2>Attendance Summary</h2>
+      <p>${escapeHtml(rangeLabel)}</p>
+      ${parentChartImageHtml('attendance', 'Attendance summary chart')}
+      <table>
+        <tbody class="kpi-row">
+          <tr><th>Present</th><td>${attData.present}</td></tr>
+          <tr><th>Late</th><td>${attData.late}</td></tr>
+          <tr><th>Absent</th><td>${attData.absent}</td></tr>
+          <tr><th>Excused</th><td>${attData.excused}</td></tr>
+          <tr><th>Total school days</th><td>${attData.totalSchoolDays}</td></tr>
+          <tr><th>Attendance rate</th><td>${attData.attendanceRate}%</td></tr>
+        </tbody>
+      </table>`);
+  }
+
+  return parts.join('');
 }
 
 async function printParentReport() {
@@ -11664,13 +12853,59 @@ async function renderParentOverview(student) {
         </div>
       </div>
 
-      <div class="chart-card">
-        <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:12px;">Student Information</h3>
-        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:12px;font-size:0.85rem;">
-          <div><strong>Name:</strong> ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
-          <div><strong>LRN:</strong> ${student.lrn || 'N/A'}</div>
-          <div><strong>Grade & Section:</strong> Grade ${student.grade_level}-${student.section}</div>
-          <div><strong>Gender:</strong> ${student.gender === 'M' ? 'Male' : student.gender === 'F' ? 'Female' : 'N/A'}</div>
+      <div class="chart-card" id="parent-lesson-card">
+        <div class="teacher-header-row" style="align-items:center;">
+          <div>
+            <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Lesson Performance</h3>
+            <p class="page-subheading" style="margin:2px 0 0;">Where ${escapeHtml(student.first_name || 'your child')} excels or needs improvement, per lesson.</p>
+          </div>
+        </div>
+        <div class="parent-chart-filters" id="parent-lesson-filters" role="group" aria-label="Filter by subject"></div>
+        <div class="parent-chart-wrap parent-chart-wrap--lessons" id="parent-lesson-chart-wrap">
+          <canvas id="parent-lesson-chart" aria-label="Average score per lesson" role="img"></canvas>
+        </div>
+        <div class="parent-lesson-lists" id="parent-lesson-lists"></div>
+      </div>
+
+      <div class="parent-analytics-row">
+        <div class="chart-card" id="parent-classwork-card">
+          <div class="teacher-header-row" style="align-items:center;">
+            <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Weekly Classwork Results</h3>
+            <div class="parent-week-nav">
+              <button type="button" class="chip-ghost chip-icon" id="parent-week-prev" aria-label="Previous week">◀</button>
+              <span class="parent-week-label" id="parent-week-label">…</span>
+              <button type="button" class="chip-ghost chip-icon" id="parent-week-next" aria-label="Next week">▶</button>
+            </div>
+          </div>
+          <div class="parent-chart-wrap" id="parent-classwork-chart-wrap">
+            <canvas id="parent-classwork-chart" aria-label="Classwork results this week" role="img"></canvas>
+          </div>
+          <div id="parent-classwork-table" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="parent-analytics-col">
+          <div class="chart-card" id="parent-att-summary-card">
+            <div class="teacher-header-row" style="align-items:center;">
+              <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Attendance Summary</h3>
+            </div>
+            <div class="parent-chart-filters" id="parent-att-range-filters" role="group" aria-label="Attendance range"></div>
+            <div class="parent-att-summary">
+              <div class="parent-chart-wrap parent-chart-wrap--pie" id="parent-att-pie-wrap">
+                <canvas id="parent-attendance-pie" aria-label="Attendance breakdown" role="img"></canvas>
+              </div>
+              <div class="parent-att-stats" id="parent-att-stats"></div>
+            </div>
+          </div>
+
+          <div class="chart-card">
+            <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:12px;">Student Information</h3>
+            <div class="parent-student-info">
+              <div><strong>Name:</strong> ${escapeHtml(student.last_name)}, ${escapeHtml(student.first_name)}</div>
+              <div><strong>LRN:</strong> ${student.lrn || 'N/A'}</div>
+              <div><strong>Grade & Section:</strong> Grade ${student.grade_level}-${student.section}</div>
+              <div><strong>Gender:</strong> ${student.gender === 'M' ? 'Male' : student.gender === 'F' ? 'Female' : 'N/A'}</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -11693,11 +12928,468 @@ async function renderParentOverview(student) {
     </div>
   `;
 
+  destroyParentCharts();
   loadParentAttendanceTable(student.id);
   loadParentAiSummary(student.id);
+  loadParentLessonAnalytics(student.id);
+  wireParentWeekNav(student.id);
+  loadParentWeeklyClasswork(student.id);
+  loadParentAttendanceSummary(student.id);
   document.getElementById('parent-attendance-see-more')?.addEventListener('click', () => {
     document.querySelector('[data-parent-tab="attendance"]')?.click();
   });
+}
+
+/* ---------- Parent dashboard analytics (Chart.js) ---------- */
+
+const parentCharts = {};
+let parentLessonData = null;      // { subjects, lessons }
+let parentLessonSubject = 'all';  // 'all' | subject_id string
+let parentClassworkWeek = '';     // YYYY-MM-DD (Monday)
+let parentClassworkData = null;
+let parentAttRange = 'month';     // day | week | month | year
+let parentAttSummaryData = null;
+
+const PARENT_STATUS_COLORS = {
+  excels: '#2e7d32',
+  on_track: '#f39c12',
+  needs_improvement: '#c62828'
+};
+const PARENT_ATT_COLORS = {
+  present: '#2e7d32',
+  late: '#f39c12',
+  absent: '#c62828',
+  excused: '#1565c0'
+};
+
+function destroyParentCharts() {
+  for (const key of Object.keys(parentCharts)) {
+    try { parentCharts[key]?.destroy(); } catch { /* ignore */ }
+    delete parentCharts[key];
+  }
+}
+
+function parentChartLib() {
+  return typeof window !== 'undefined' ? window.Chart : null;
+}
+
+function parentChartUnavailable(wrapId, text = 'Charts are unavailable right now.') {
+  const wrap = document.getElementById(wrapId);
+  if (wrap) wrap.innerHTML = `<p class="parent-chart-empty">${escapeHtml(text)}</p>`;
+}
+
+function parentFmtShortDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function parentFmtRangeLabel(from, to) {
+  if (!from) return '';
+  if (from === to) {
+    const [y, m, d] = from.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  const yr = to ? to.slice(0, 4) : from.slice(0, 4);
+  return `${parentFmtShortDate(from)} – ${parentFmtShortDate(to)}, ${yr}`;
+}
+
+function parentTodayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function parentShiftISO(iso, days) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+function paintParentChipFilters(containerId, options, current, onPick) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  wrap.innerHTML = options.map((o) =>
+    `<button type="button" class="chip-ghost${String(o.value) === String(current) ? ' is-pressed' : ''}" data-value="${escapeHtml(String(o.value))}" aria-pressed="${String(o.value) === String(current)}">${escapeHtml(o.label)}</button>`
+  ).join('');
+  wrap.querySelectorAll('button[data-value]').forEach((btn) => {
+    btn.addEventListener('click', () => onPick(btn.dataset.value));
+  });
+}
+
+/* --- Lesson performance --- */
+
+async function loadParentLessonAnalytics(studentId) {
+  const wrapId = 'parent-lesson-chart-wrap';
+  try {
+    const res = await fetch(`${API_URL}/parent/child/${studentId}/analytics/lessons`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load lesson analytics');
+    parentLessonData = data;
+    const subjectIds = (data.subjects || []).map((s) => String(s.id));
+    if (parentLessonSubject !== 'all' && !subjectIds.includes(String(parentLessonSubject))) {
+      parentLessonSubject = 'all';
+    }
+    paintParentLessonFilters();
+    paintParentLessonChart();
+  } catch (err) {
+    console.error('Lesson analytics error:', err);
+    parentLessonData = null;
+    parentChartUnavailable(wrapId, 'Could not load lesson performance.');
+    const lists = document.getElementById('parent-lesson-lists');
+    if (lists) lists.innerHTML = '';
+  }
+}
+
+function paintParentLessonFilters() {
+  const subjects = parentLessonData?.subjects || [];
+  const options = [{ value: 'all', label: 'All subjects' }, ...subjects.map((s) => ({ value: String(s.id), label: s.name }))];
+  paintParentChipFilters('parent-lesson-filters', options, parentLessonSubject, (v) => {
+    parentLessonSubject = v || 'all';
+    paintParentLessonFilters();
+    paintParentLessonChart();
+  });
+  const wrap = document.getElementById('parent-lesson-filters');
+  if (wrap && !subjects.length) wrap.hidden = true;
+  else if (wrap) wrap.hidden = false;
+}
+
+function parentFilteredLessons() {
+  const lessons = parentLessonData?.lessons || [];
+  if (parentLessonSubject === 'all') return lessons;
+  return lessons.filter((l) => String(l.subject_id) === String(parentLessonSubject));
+}
+
+function paintParentLessonChart() {
+  const wrap = document.getElementById('parent-lesson-chart-wrap');
+  const lists = document.getElementById('parent-lesson-lists');
+  if (!wrap) return;
+
+  const lessons = parentFilteredLessons();
+  const showSubject = parentLessonSubject === 'all';
+
+  if (!lessons.length) {
+    if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
+    wrap.style.height = '';
+    wrap.innerHTML = '<p class="parent-chart-empty">No quiz, activity, or exam scores recorded yet.</p>';
+    if (lists) lists.innerHTML = '';
+    return;
+  }
+
+  const Chart = parentChartLib();
+  if (!Chart) {
+    parentChartUnavailable('parent-lesson-chart-wrap');
+  } else {
+    if (!document.getElementById('parent-lesson-chart')) {
+      wrap.innerHTML = '<canvas id="parent-lesson-chart" aria-label="Average score per lesson" role="img"></canvas>';
+    }
+    // Horizontal bars: one row per lesson, grow card height with the list
+    wrap.style.height = `${Math.max(180, Math.min(520, 44 * lessons.length + 60))}px`;
+    const canvas = document.getElementById('parent-lesson-chart');
+    const labels = lessons.map((l) => (showSubject ? `${l.subject_name} · ${l.lesson}` : l.lesson));
+    const values = lessons.map((l) => l.avg_percent);
+    const colors = lessons.map((l) => PARENT_STATUS_COLORS[l.status] || '#8a726b');
+
+    if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
+    parentCharts.lessons = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Average %',
+          data: values,
+          backgroundColor: colors,
+          borderRadius: 6,
+          maxBarThickness: 26
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { min: 0, max: 100, ticks: { callback: (v) => `${v}%` }, grid: { color: 'rgba(93,17,13,0.08)' } },
+          y: { ticks: { autoSkip: false, font: { size: 11 } }, grid: { display: false } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => lessons[items[0].dataIndex]?.lesson || '',
+              label: (item) => {
+                const l = lessons[item.dataIndex];
+                const st = l.status === 'excels' ? 'Excels' : l.status === 'on_track' ? 'On track' : 'Needs improvement';
+                return [`${l.subject_name}`, `Average: ${l.avg_percent}% (${l.items} item${l.items === 1 ? '' : 's'})`, st];
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  if (lists) {
+    const excels = lessons.filter((l) => l.status === 'excels');
+    const needs = lessons.filter((l) => l.status === 'needs_improvement');
+    const partLine = (label, ends) => {
+      if (!ends?.strong_part) return '';
+      const strong = `${ends.strong_part.name} ${ends.strong_part.avg_percent}%`;
+      const text = ends.weak_part
+        ? `${label}: ${strong}, ${ends.weak_part.name} ${ends.weak_part.avg_percent}%`
+        : `${label}: ${strong}`;
+      return `<span class="page-subheading parent-lesson-parts">${escapeHtml(text)}</span>`;
+    };
+    const partBits = (l) => `${partLine('Quiz', l.quiz_parts)}${partLine('Activity', l.activity_parts)}`;
+    const li = (l) => `<li><span class="parent-lesson-subject">${escapeHtml(l.subject_name)}</span> · ${escapeHtml(l.lesson)} <strong>${l.avg_percent}%</strong>${partBits(l)}</li>`;
+    lists.innerHTML = `
+      <div class="parent-lesson-list parent-lesson-list--good">
+        <h4>Excels</h4>
+        ${excels.length ? `<ul>${excels.map(li).join('')}</ul>` : '<p class="parent-chart-empty">No lessons at 85% or higher yet.</p>'}
+      </div>
+      <div class="parent-lesson-list parent-lesson-list--bad">
+        <h4>Needs improvement</h4>
+        ${needs.length ? `<ul>${needs.map(li).join('')}</ul>` : '<p class="parent-chart-empty">No lessons below 75%. Keep it up!</p>'}
+      </div>`;
+  }
+}
+
+/* --- Weekly classwork --- */
+
+function wireParentWeekNav(studentId) {
+  if (!parentClassworkWeek) parentClassworkWeek = parentTodayISO();
+  document.getElementById('parent-week-prev')?.addEventListener('click', () => {
+    parentClassworkWeek = parentShiftISO(parentClassworkData?.weekStart || parentClassworkWeek, -7);
+    loadParentWeeklyClasswork(studentId);
+  });
+  document.getElementById('parent-week-next')?.addEventListener('click', () => {
+    parentClassworkWeek = parentShiftISO(parentClassworkData?.weekStart || parentClassworkWeek, 7);
+    loadParentWeeklyClasswork(studentId);
+  });
+}
+
+async function loadParentWeeklyClasswork(studentId) {
+  const label = document.getElementById('parent-week-label');
+  const tableWrap = document.getElementById('parent-classwork-table');
+  if (label) label.textContent = 'Loading…';
+  try {
+    const res = await fetch(
+      `${API_URL}/parent/child/${studentId}/analytics/classwork?week=${encodeURIComponent(parentClassworkWeek || parentTodayISO())}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load weekly classwork');
+    parentClassworkData = data;
+    parentClassworkWeek = data.weekStart;
+    if (label) label.textContent = parentFmtRangeLabel(data.weekStart, data.weekEnd);
+    paintParentClassworkChart();
+  } catch (err) {
+    console.error('Weekly classwork error:', err);
+    if (label) label.textContent = parentFmtRangeLabel(parentClassworkWeek, parentShiftISO(parentClassworkWeek, 6));
+    parentChartUnavailable('parent-classwork-chart-wrap', 'Could not load classwork results.');
+    if (tableWrap) tableWrap.innerHTML = '';
+  }
+}
+
+function paintParentClassworkChart() {
+  const wrap = document.getElementById('parent-classwork-chart-wrap');
+  const tableWrap = document.getElementById('parent-classwork-table');
+  if (!wrap) return;
+  const items = parentClassworkData?.items || [];
+
+  if (!items.length) {
+    if (parentCharts.classwork) { parentCharts.classwork.destroy(); delete parentCharts.classwork; }
+    wrap.innerHTML = '<p class="parent-chart-empty">No classwork recorded this week.</p>';
+    if (tableWrap) tableWrap.innerHTML = '';
+    return;
+  }
+
+  const Chart = parentChartLib();
+  if (!Chart) {
+    parentChartUnavailable('parent-classwork-chart-wrap');
+  } else {
+    if (!document.getElementById('parent-classwork-chart')) {
+      wrap.innerHTML = '<canvas id="parent-classwork-chart" aria-label="Classwork results this week" role="img"></canvas>';
+    }
+    const canvas = document.getElementById('parent-classwork-chart');
+    const typeColor = { quiz: '#2e7d32', activity: '#e67e22', exam: '#60100b' };
+    if (parentCharts.classwork) { parentCharts.classwork.destroy(); delete parentCharts.classwork; }
+    parentCharts.classwork = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: items.map((it) => it.title),
+        datasets: [{
+          label: 'Score %',
+          data: items.map((it) => it.percent),
+          backgroundColor: items.map((it) => typeColor[it.type] || '#8a726b'),
+          borderRadius: 6,
+          maxBarThickness: 40
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { min: 0, max: 100, ticks: { callback: (v) => `${v}%` }, grid: { color: 'rgba(93,17,13,0.08)' } },
+          x: {
+            grid: { display: false },
+            ticks: {
+              font: { size: 11 },
+              callback(value) {
+                const s = String(this.getLabelForValue(value));
+                return s.length > 18 ? `${s.slice(0, 17)}…` : s;
+              }
+            }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (item) => {
+                const it = items[item.dataIndex];
+                const type = it.type === 'quiz' ? 'Quiz' : it.type === 'activity' ? 'Activity' : 'Exam';
+                return [`${type}${it.subject_name ? ` · ${it.subject_name}` : ''}`, `Score: ${it.score} / ${it.max_score} (${it.percent}%)`];
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  if (tableWrap) {
+    tableWrap.innerHTML = `
+      <p class="page-subheading" style="margin:0 0 6px;">Average this week: <strong>${parentClassworkData.average}%</strong> · ${items.length} item${items.length === 1 ? '' : 's'}</p>
+      <table class="parent-mini-table">
+        <thead><tr><th>Name</th><th>Type</th><th>Subject</th><th>Score</th><th>%</th></tr></thead>
+        <tbody>
+          ${items.map((it) => `
+            <tr>
+              <td>${escapeHtml(it.title)}</td>
+              <td><span class="badge type-${escapeHtml(it.type)}">${it.type === 'quiz' ? 'Quiz' : it.type === 'activity' ? 'Activity' : 'Exam'}</span></td>
+              <td>${escapeHtml(it.subject_name || '—')}</td>
+              <td>${it.score} / ${it.max_score}</td>
+              <td>${it.percent}%</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+}
+
+/* --- Attendance summary (pie) --- */
+
+const PARENT_ATT_RANGE_OPTS = [
+  { value: 'day', label: 'Day' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'School Year' }
+];
+
+function paintParentAttRangeFilters(studentId) {
+  paintParentChipFilters('parent-att-range-filters', PARENT_ATT_RANGE_OPTS, parentAttRange, (v) => {
+    parentAttRange = v || 'month';
+    paintParentAttRangeFilters(studentId);
+    loadParentAttendanceSummary(studentId);
+  });
+}
+
+async function loadParentAttendanceSummary(studentId) {
+  paintParentAttRangeFilters(studentId);
+  const stats = document.getElementById('parent-att-stats');
+  try {
+    const res = await fetch(
+      `${API_URL}/parent/child/${studentId}/analytics/attendance?range=${encodeURIComponent(parentAttRange)}&date=${encodeURIComponent(parentTodayISO())}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load attendance summary');
+    parentAttSummaryData = data;
+    paintParentAttendancePie();
+  } catch (err) {
+    console.error('Attendance summary error:', err);
+    parentAttSummaryData = null;
+    if (parentCharts.attendance) { parentCharts.attendance.destroy(); delete parentCharts.attendance; }
+    parentChartUnavailable('parent-att-pie-wrap', 'Could not load attendance summary.');
+    if (stats) stats.innerHTML = '';
+  }
+}
+
+function paintParentAttendancePie() {
+  const data = parentAttSummaryData;
+  const stats = document.getElementById('parent-att-stats');
+  const wrap = document.getElementById('parent-att-pie-wrap');
+  if (!data || !wrap) return;
+
+  const rangeLabel = data.range === 'year'
+    ? `School Year ${data.schoolYear || ''}`.trim()
+    : parentFmtRangeLabel(data.from, data.to);
+
+  if (!data.totalMarks) {
+    if (parentCharts.attendance) { parentCharts.attendance.destroy(); delete parentCharts.attendance; }
+    wrap.innerHTML = '<p class="parent-chart-empty">No attendance recorded for this period.</p>';
+    if (stats) {
+      stats.innerHTML = `
+        <div class="parent-att-range">${escapeHtml(rangeLabel)}</div>
+        <div class="parent-att-stat"><span>Total school days</span><strong>0</strong></div>`;
+    }
+    return;
+  }
+
+  const Chart = parentChartLib();
+  if (!Chart) {
+    wrap.innerHTML = '<p class="parent-chart-empty">Charts are unavailable right now.</p>';
+  } else {
+    if (!document.getElementById('parent-attendance-pie')) {
+      wrap.innerHTML = '<canvas id="parent-attendance-pie" aria-label="Attendance breakdown" role="img"></canvas>';
+    }
+    const canvas = document.getElementById('parent-attendance-pie');
+    if (parentCharts.attendance) { parentCharts.attendance.destroy(); delete parentCharts.attendance; }
+    parentCharts.attendance = new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels: ['Present', 'Late', 'Absent', 'Excused'],
+        datasets: [{
+          data: [data.present, data.late, data.absent, data.excused],
+          backgroundColor: [PARENT_ATT_COLORS.present, PARENT_ATT_COLORS.late, PARENT_ATT_COLORS.absent, PARENT_ATT_COLORS.excused],
+          borderWidth: 2,
+          borderColor: '#fff'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '58%',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (item) => {
+                const n = Number(item.raw) || 0;
+                const pct = data.totalMarks ? Math.round((n / data.totalMarks) * 100) : 0;
+                return ` ${item.label}: ${n} (${pct}%)`;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  if (stats) {
+    const row = (key, label) => `
+      <div class="parent-att-stat">
+        <span><i class="parent-att-dot" style="background:${PARENT_ATT_COLORS[key]}"></i>${label}</span>
+        <strong>${Number(data[key]) || 0}</strong>
+      </div>`;
+    stats.innerHTML = `
+      <div class="parent-att-range">${escapeHtml(rangeLabel)}</div>
+      ${row('present', 'Present')}
+      ${row('late', 'Late')}
+      ${row('absent', 'Absent')}
+      ${row('excused', 'Excused')}
+      <div class="parent-att-stat parent-att-stat--total"><span>Total school days</span><strong>${data.totalSchoolDays}</strong></div>
+      <div class="parent-att-stat"><span>Attendance rate</span><strong>${data.attendanceRate}%</strong></div>`;
+  }
 }
 
 async function loadParentAiSummary(studentId) {
@@ -11719,10 +13411,197 @@ async function loadParentAiSummary(studentId) {
 }
 
 let parentAttendanceCache = [];
-let parentAttendanceMonth = ''; // YYYY-MM
+let parentAttPeriodMode = 'month';   // week | month | year
+let parentAttPeriod = '';            // period key for the mode, '' = all
+let parentAttPeriodInitialized = false;
+let parentAttPage = 1;
+
+// Records tab state
+let parentProgressCache = null;      // records from /progress (null = not loaded)
+let parentProgressAverageAll = 0;
+let parentProgressSubject = 'all';   // 'all' | subject name
+let parentProgressType = 'all';      // all | quiz | activity | exam
+let parentProgressPeriodMode = 'month';
+let parentProgressPeriod = '';       // '' = all
+let parentProgressPage = 1;
+let parentProgressSubjectMenuApi = null;
+let parentProgressTypeMenuApi = null;
+let parentProgressPeriodFilterApi = null;
 let parentAttendanceStatus = 'all'; // all | Late | Absent | Present
 let parentAttStatusMenuApi = null;
-let parentAttMonthMenuApi = null;
+let parentAttPeriodFilterApi = null;
+
+const PARENT_PAGE_SIZE = 10;
+
+/* ---------- Shared period / pagination helpers (parent tabs) ---------- */
+
+function parentDateFromAny(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const s = String(value);
+  // Plain YYYY-MM-DD: build local date (avoid UTC day shift)
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function parentLocalISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Bucket key for a date: week -> Monday ISO, month -> YYYY-MM, year -> school year 'YYYY-YYYY' (Jun–May). */
+function parentPeriodKey(value, mode) {
+  const d = parentDateFromAny(value);
+  if (!d) return '';
+  if (mode === 'week') {
+    const dow = d.getDay(); // 0 Sun .. 6 Sat
+    const offset = dow === 0 ? -6 : 1 - dow;
+    const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() + offset);
+    return parentLocalISO(mon);
+  }
+  if (mode === 'year') {
+    const y1 = d.getMonth() + 1 >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+    return `${y1}-${y1 + 1}`;
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function parentPeriodModeLabel(mode, plural = false) {
+  if (mode === 'week') return plural ? 'weeks' : 'week';
+  if (mode === 'year') return plural ? 'school years' : 'school year';
+  return plural ? 'months' : 'month';
+}
+
+function parentPeriodLabel(key, mode) {
+  if (!key) return `All ${parentPeriodModeLabel(mode, true)}`;
+  if (mode === 'week') {
+    const start = parentDateFromAny(key);
+    if (!start) return key;
+    const endD = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+    const fmt = (dt) => dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `${fmt(start)} – ${fmt(endD)}, ${endD.getFullYear()}`;
+  }
+  if (mode === 'year') return `SY ${key}`;
+  return parentAttendanceMonthLabel(key);
+}
+
+/** Dropdown options for a mode: 'All' first, then periods found in records (plus the current one), newest first. */
+function parentPeriodOptions(records, mode, dateGetter) {
+  const keys = new Set();
+  (records || []).forEach((r) => {
+    const k = parentPeriodKey(dateGetter(r), mode);
+    if (k) keys.add(k);
+  });
+  keys.add(parentPeriodKey(new Date(), mode));
+  const sorted = [...keys].sort((a, b) => b.localeCompare(a));
+  return [
+    { value: '', label: parentPeriodLabel('', mode) },
+    ...sorted.map((k) => ({ value: k, label: parentPeriodLabel(k, mode) }))
+  ];
+}
+
+const PARENT_PERIOD_MODES = [
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'year', label: 'School Year' }
+];
+
+/**
+ * Week / Month / School Year chips + one dropdown of periods for the active mode.
+ * Picking a mode jumps to the current period of that mode.
+ */
+function wireParentPeriodFilter({ chipsId, menuId, btnId, panelId, getMode, setMode, getPeriod, setPeriod, onChange }) {
+  const chips = document.getElementById(chipsId);
+  const menuApi = wireDownloadSelectMenu({
+    menuId,
+    btnId,
+    panelId,
+    options: [],
+    getValue: () => getPeriod(),
+    setValue: (v) => setPeriod(v || ''),
+    emptyLabel: 'No periods',
+    onPick: () => onChange()
+  });
+
+  function paintChips() {
+    if (!chips) return;
+    chips.innerHTML = PARENT_PERIOD_MODES.map((m) => {
+      const active = m.value === getMode();
+      return `<button type="button" class="chip-ghost${active ? ' is-pressed' : ''}" data-mode="${m.value}" aria-pressed="${active}">${m.label}</button>`;
+    }).join('');
+    chips.querySelectorAll('button[data-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.mode === getMode()) return;
+        setMode(btn.dataset.mode);
+        setPeriod(parentPeriodKey(new Date(), btn.dataset.mode));
+        paintChips();
+        onChange();
+      });
+    });
+  }
+
+  paintChips();
+  return {
+    setOptions(opts) {
+      if (menuApi) menuApi.setOptions(opts);
+    },
+    sync() {
+      paintChips();
+      if (menuApi) menuApi.sync();
+    }
+  };
+}
+
+function paginate(list, page, size = PARENT_PAGE_SIZE) {
+  const arr = Array.isArray(list) ? list : [];
+  const total = arr.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const p = Math.min(Math.max(1, Number(page) || 1), pages);
+  const start = (p - 1) * size;
+  return {
+    rows: arr.slice(start, start + size),
+    page: p,
+    pages,
+    total,
+    from: total ? start + 1 : 0,
+    to: Math.min(total, start + size)
+  };
+}
+
+function parentPagerHtml(id, pager) {
+  if (!pager || pager.pages <= 1) return '';
+  const nums = [];
+  const win = 2;
+  for (let i = 1; i <= pager.pages; i += 1) {
+    if (i === 1 || i === pager.pages || Math.abs(i - pager.page) <= win) nums.push(i);
+    else if (nums[nums.length - 1] !== '…') nums.push('…');
+  }
+  const btn = (label, page, { disabled = false, active = false, aria = '' } = {}) =>
+    `<button type="button" class="chip-ghost parent-pager-btn${active ? ' is-pressed' : ''}" data-page="${page}"${disabled ? ' disabled' : ''}${aria ? ` aria-label="${aria}"` : ''}${active ? ' aria-current="page"' : ''}>${label}</button>`;
+  return `
+    <div class="parent-pager" id="${id}">
+      <span class="parent-pager-info">Showing ${pager.from}–${pager.to} of ${pager.total}</span>
+      <div class="parent-pager-btns">
+        ${btn('‹', pager.page - 1, { disabled: pager.page <= 1, aria: 'Previous page' })}
+        ${nums.map((n) => (n === '…'
+          ? '<span class="parent-pager-ellipsis">…</span>'
+          : btn(String(n), n, { active: n === pager.page }))).join('')}
+        ${btn('›', pager.page + 1, { disabled: pager.page >= pager.pages, aria: 'Next page' })}
+      </div>
+    </div>`;
+}
+
+function wireParentPager(id, onPage) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.querySelectorAll('button[data-page]').forEach((b) => {
+    b.addEventListener('click', () => {
+      if (b.disabled) return;
+      onPage(Number(b.dataset.page));
+    });
+  });
+}
 
 function parentAttendanceWhenLabel(r) {
   return r.subject_name
@@ -11761,7 +13640,7 @@ function parentAttendanceMonthLabel(ym) {
   return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
-function filterParentAttendanceRecords(records, { month = '', status = 'all', limit = null } = {}) {
+function filterParentAttendanceRecords(records, { month = '', mode = '', period = '', status = 'all', limit = null } = {}) {
   let list = Array.isArray(records) ? [...records] : [];
   list.sort((a, b) => {
     const da = new Date(a.date || 0).getTime();
@@ -11778,6 +13657,7 @@ function filterParentAttendanceRecords(records, { month = '', status = 'all', li
     return subA.localeCompare(subB);
   });
   if (month) list = list.filter((r) => parentAttendanceMonthKey(r) === month);
+  if (mode && period) list = list.filter((r) => parentPeriodKey(r.date, mode) === period);
   if (status && status !== 'all') {
     list = list.filter((r) => String(r.status || '').toLowerCase() === String(status).toLowerCase());
   }
@@ -11891,9 +13771,11 @@ function renderParentAttendance(student) {
   const contentEl = document.getElementById('parent-content');
   if (!contentEl) return;
 
-  const now = new Date();
-  if (!parentAttendanceMonth) {
-    parentAttendanceMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  if (!parentAttPeriodMode) parentAttPeriodMode = 'month';
+  if (!parentAttPeriodInitialized) {
+    // First visit: show the current period (matches the old "current month" default)
+    parentAttPeriod = parentPeriodKey(new Date(), parentAttPeriodMode);
+    parentAttPeriodInitialized = true;
   }
   if (!parentAttendanceStatus) parentAttendanceStatus = 'all';
 
@@ -11911,7 +13793,7 @@ function renderParentAttendance(student) {
         <div class="teacher-header-row">
           <div>
             <h3 class="page-heading font-heading">Attendance Records</h3>
-            <p class="page-subheading">Newest first. Filter by status or month.</p>
+            <p class="page-subheading">Newest first. Filter by status, week, month, or school year.</p>
           </div>
         </div>
         <div class="parent-att-toolbar">
@@ -11919,14 +13801,18 @@ function renderParentAttendance(student) {
             <button type="button" class="chip-ghost" id="parent-att-status-btn" aria-haspopup="true" aria-expanded="false">All Statuses ▾</button>
             <div class="download-menu-panel" id="parent-att-status-panel" hidden></div>
           </div>
-          <div class="download-menu parent-att-menu--right" id="parent-att-month-menu">
-            <button type="button" class="chip-ghost" id="parent-att-month-btn" aria-haspopup="true" aria-expanded="false">Month ▾</button>
-            <div class="download-menu-panel download-menu-panel--scroll" id="parent-att-month-panel" hidden></div>
+          <div class="parent-period-filter parent-att-menu--right">
+            <div class="parent-period-chips" id="parent-att-period-chips" role="group" aria-label="Period type"></div>
+            <div class="download-menu" id="parent-att-period-menu">
+              <button type="button" class="chip-ghost" id="parent-att-period-btn" aria-haspopup="true" aria-expanded="false">Period ▾</button>
+              <div class="download-menu-panel download-menu-panel--scroll" id="parent-att-period-panel" hidden></div>
+            </div>
           </div>
         </div>
         <div id="parent-attendance-full" style="margin-top:8px;">
           <p style="color:var(--text-muted);">Loading…</p>
         </div>
+        <div id="parent-attendance-pager-wrap"></div>
       </div>
     </div>`;
 
@@ -11937,18 +13823,19 @@ function renderParentAttendance(student) {
     options: statusOpts,
     getValue: () => parentAttendanceStatus,
     setValue: (v) => { parentAttendanceStatus = v || 'all'; },
-    onPick: () => paintParentAttendanceFull()
+    onPick: () => { parentAttPage = 1; paintParentAttendanceFull(); }
   });
 
-  parentAttMonthMenuApi = wireDownloadSelectMenu({
-    menuId: 'parent-att-month-menu',
-    btnId: 'parent-att-month-btn',
-    panelId: 'parent-att-month-panel',
-    options: [],
-    getValue: () => parentAttendanceMonth,
-    setValue: (v) => { parentAttendanceMonth = v || ''; },
-    emptyLabel: 'No months',
-    onPick: () => paintParentAttendanceFull()
+  parentAttPeriodFilterApi = wireParentPeriodFilter({
+    chipsId: 'parent-att-period-chips',
+    menuId: 'parent-att-period-menu',
+    btnId: 'parent-att-period-btn',
+    panelId: 'parent-att-period-panel',
+    getMode: () => parentAttPeriodMode,
+    setMode: (m) => { parentAttPeriodMode = m; },
+    getPeriod: () => parentAttPeriod,
+    setPeriod: (p) => { parentAttPeriod = p; },
+    onChange: () => { parentAttPage = 1; paintParentAttendanceFull(); }
   });
 
   loadParentAttendanceFull(student.id);
@@ -11956,30 +13843,36 @@ function renderParentAttendance(student) {
 
 function paintParentAttendanceFull() {
   const wrap = document.getElementById('parent-attendance-full');
+  const pagerWrap = document.getElementById('parent-attendance-pager-wrap');
   if (!wrap) return;
 
-  const months = parentAttendanceMonthOptions(parentAttendanceCache);
-  const selected = months.includes(parentAttendanceMonth)
-    ? parentAttendanceMonth
-    : (months[0] || parentAttendanceMonth);
-  parentAttendanceMonth = selected;
-
-  if (parentAttMonthMenuApi) {
-    parentAttMonthMenuApi.setOptions(months.map((ym) => ({
-      value: ym,
-      label: parentAttendanceMonthLabel(ym)
-    })));
+  const options = parentPeriodOptions(parentAttendanceCache, parentAttPeriodMode, (r) => r.date);
+  if (parentAttPeriod && !options.some((o) => o.value === parentAttPeriod)) parentAttPeriod = '';
+  if (parentAttPeriodFilterApi) {
+    parentAttPeriodFilterApi.setOptions(options);
+    parentAttPeriodFilterApi.sync();
   }
 
   const filtered = filterParentAttendanceRecords(parentAttendanceCache, {
-    month: parentAttendanceMonth,
+    mode: parentAttPeriodMode,
+    period: parentAttPeriod,
     status: parentAttendanceStatus
   });
 
-  const statusBit = parentAttendanceStatus === 'all' ? '' : ` (${parentAttendanceStatus})`;
-  wrap.innerHTML = parentAttendanceTableHtml(filtered, {
-    emptyText: `No${statusBit} records for ${parentAttendanceMonthLabel(parentAttendanceMonth) || 'this month'}.`
+  const pager = paginate(filtered, parentAttPage);
+  parentAttPage = pager.page;
+
+  const statusBit = parentAttendanceStatus === 'all' ? '' : ` ${parentAttendanceStatus.toLowerCase()}`;
+  const periodBit = parentAttPeriod
+    ? `for ${parentPeriodLabel(parentAttPeriod, parentAttPeriodMode)}`
+    : 'yet';
+  wrap.innerHTML = parentAttendanceTableHtml(pager.rows, {
+    emptyText: `No${statusBit} attendance records ${periodBit}.`
   });
+  if (pagerWrap) {
+    pagerWrap.innerHTML = parentPagerHtml('parent-attendance-pager', pager);
+    wireParentPager('parent-attendance-pager', (p) => { parentAttPage = p; paintParentAttendanceFull(); });
+  }
 }
 
 async function loadParentAttendanceFull(studentId) {
@@ -11999,55 +13892,282 @@ function renderParentProgress(student) {
   contentEl.innerHTML = `
     <div class="parent-main">
       <div class="chart-card">
-        <h3 class="page-heading font-heading">Progress Tracking</h3>
-        <p class="page-subheading" id="parent-progress-avg">Loading scores…</p>
-        <div id="parent-progress-table-wrap" style="margin-top:12px;"></div>
+        <div class="teacher-header-row">
+          <div>
+            <h3 class="page-heading font-heading">Records</h3>
+            <p class="page-subheading" id="parent-progress-avg">Loading scores…</p>
+          </div>
+        </div>
+        <div class="parent-att-toolbar">
+          <div class="download-menu" id="parent-progress-subject-menu">
+            <button type="button" class="chip-ghost" id="parent-progress-subject-btn" aria-haspopup="true" aria-expanded="false">All subjects ▾</button>
+            <div class="download-menu-panel download-menu-panel--scroll" id="parent-progress-subject-panel" hidden></div>
+          </div>
+          <div class="download-menu" id="parent-progress-type-menu">
+            <button type="button" class="chip-ghost" id="parent-progress-type-btn" aria-haspopup="true" aria-expanded="false">All types ▾</button>
+            <div class="download-menu-panel" id="parent-progress-type-panel" hidden></div>
+          </div>
+          <div class="parent-period-filter parent-att-menu--right">
+            <div class="parent-period-chips" id="parent-progress-period-chips" role="group" aria-label="Date taken"></div>
+            <div class="download-menu" id="parent-progress-period-menu">
+              <button type="button" class="chip-ghost" id="parent-progress-period-btn" aria-haspopup="true" aria-expanded="false">Period ▾</button>
+              <div class="download-menu-panel download-menu-panel--scroll" id="parent-progress-period-panel" hidden></div>
+            </div>
+          </div>
+        </div>
+        <div id="parent-progress-table-wrap" style="margin-top:8px;"></div>
+        <div id="parent-progress-pager-wrap"></div>
       </div>
     </div>`;
+
+  parentProgressSubjectMenuApi = wireDownloadSelectMenu({
+    menuId: 'parent-progress-subject-menu',
+    btnId: 'parent-progress-subject-btn',
+    panelId: 'parent-progress-subject-panel',
+    options: [{ value: 'all', label: 'All subjects' }],
+    getValue: () => parentProgressSubject,
+    setValue: (v) => { parentProgressSubject = v || 'all'; },
+    onPick: () => { parentProgressPage = 1; paintParentProgress(); }
+  });
+
+  parentProgressTypeMenuApi = wireDownloadSelectMenu({
+    menuId: 'parent-progress-type-menu',
+    btnId: 'parent-progress-type-btn',
+    panelId: 'parent-progress-type-panel',
+    options: [
+      { value: 'all', label: 'All types' },
+      { value: 'quiz', label: 'Quiz' },
+      { value: 'activity', label: 'Activity' },
+      { value: 'exam', label: 'Exam' }
+    ],
+    getValue: () => parentProgressType,
+    setValue: (v) => { parentProgressType = v || 'all'; },
+    onPick: () => { parentProgressPage = 1; paintParentProgress(); }
+  });
+
+  parentProgressPeriodFilterApi = wireParentPeriodFilter({
+    chipsId: 'parent-progress-period-chips',
+    menuId: 'parent-progress-period-menu',
+    btnId: 'parent-progress-period-btn',
+    panelId: 'parent-progress-period-panel',
+    getMode: () => parentProgressPeriodMode,
+    setMode: (m) => { parentProgressPeriodMode = m; },
+    getPeriod: () => parentProgressPeriod,
+    setPeriod: (p) => { parentProgressPeriod = p; },
+    onChange: () => { parentProgressPage = 1; paintParentProgress(); }
+  });
+
   loadParentProgress(student.id);
+}
+
+function renderParentQuizTakenItem(item) {
+  const n = Number(item.n) || 1;
+  const choices = Array.isArray(item.choices) ? item.choices : [];
+  const given = formatQuizTakenAnswer(item.given, choices);
+  const mark = item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
+  const markHtml = mark ? ` <span class="page-subheading">${escapeHtml(mark)}</span>` : '';
+  const choiceHtml = choices.length
+    ? `<p class="page-subheading" style="margin:0 0 4px;"><strong>Choices:</strong></p>
+       <ul class="progress-quiz-choices">${choices.map((c, i) => {
+         const body = stripMcqChoicePrefix(c) || String(c || '');
+         return `<li>${escapeHtml(mcqLetterAt(i))}. ${escapeHtml(body)}</li>`;
+       }).join('')}</ul>`
+    : '';
+  return `<div class="progress-work-item">
+    <p class="page-subheading" style="margin:0 0 8px;"><strong>Item ${n}</strong>${markHtml}</p>
+    <p style="margin:0 0 8px;font-size:0.86rem;"><strong>Question:</strong> ${escapeHtml(item.question || '')}</p>
+    ${choiceHtml}
+    <p class="progress-activity-work" style="margin-bottom:0;"><strong>Your child's answer:</strong> ${given ? escapeHtml(given) : '—'}</p>
+  </div>`;
+}
+
+function renderParentActivityWorkItem(item, index) {
+  const url = String(item.file?.url || '');
+  const safeUrl = url.startsWith('/uploads/') ? url : '';
+  const fileHtml = safeUrl
+    ? `<p style="margin:0;"><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener">${escapeHtml(item.file.name || 'Open file')}</a></p>`
+    : '';
+  const text = String(item.text || '').trim();
+  return `<div class="progress-work-item">
+    <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${index + 1}</strong></p>
+    ${item.question ? `<p style="margin:0 0 8px;font-size:0.86rem;">${escapeHtml(item.question)}</p>` : ''}
+    ${text ? `<p class="progress-activity-work">${escapeHtml(text)}</p>` : '<p class="page-subheading">No written answer.</p>'}
+    ${fileHtml}
+  </div>`;
+}
+
+window.viewParentWork = async function (assessmentId) {
+  const student = parentCurrentChild;
+  if (!student?.id) return;
+  const titleEl = document.getElementById('progress-activity-work-title');
+  const subEl = document.getElementById('progress-activity-work-sub');
+  const bodyEl = document.getElementById('progress-activity-work-body');
+  if (titleEl) titleEl.textContent = 'Submitted work';
+  if (subEl) subEl.textContent = 'Loading…';
+  if (bodyEl) bodyEl.innerHTML = '';
+  openAdminModal('progress-activity-work-modal');
+  try {
+    const res = await fetch(
+      `${API_URL}/parent/child/${student.id}/progress/${assessmentId}/work`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load submitted work');
+    const kind = String(data.type || '').toLowerCase();
+    const quiz = Array.isArray(data.quiz_taken) ? data.quiz_taken : [];
+    const work = Array.isArray(data.activity_work) ? data.activity_work : [];
+    if (titleEl) titleEl.textContent = data.title || 'Submitted work';
+    if (subEl) {
+      subEl.textContent = kind === 'activity'
+        ? 'Submitted from the live activity link.'
+        : kind === 'exam'
+          ? 'Submitted from the live exam link.'
+          : 'Submitted from the live quiz link.';
+    }
+    if (!bodyEl) return;
+    const parts = [];
+    if (quiz.length) parts.push(quiz.map((item) => renderParentQuizTakenItem(item)).join(''));
+    if (work.length) parts.push(work.map((item, i) => renderParentActivityWorkItem(item, i)).join(''));
+    bodyEl.innerHTML = parts.join('') || '<p class="page-subheading">No submitted work.</p>';
+  } catch (err) {
+    if (subEl) subEl.textContent = '';
+    if (bodyEl) bodyEl.innerHTML = `<p class="page-subheading">${escapeHtml(err.message || 'Could not load submitted work')}</p>`;
+  }
+};
+
+function parentProgressTypeLabel(type) {
+  return type === 'quiz' ? 'Quiz' : type === 'activity' ? 'Activity' : 'Exam';
+}
+
+function parentProgressSubjectOptions(records) {
+  const names = new Set();
+  (records || []).forEach((r) => {
+    const n = String(r.subject_name || '').trim();
+    if (n) names.add(n);
+  });
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+  const opts = [{ value: 'all', label: 'All subjects' }, ...sorted.map((n) => ({ value: n, label: n }))];
+  if ((records || []).some((r) => !String(r.subject_name || '').trim())) {
+    opts.push({ value: '__none__', label: 'No subject' });
+  }
+  return opts;
+}
+
+function filterParentProgressRecords(records, { subject = 'all', type = 'all', mode = '', period = '' } = {}) {
+  let list = Array.isArray(records) ? [...records] : [];
+  list.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  if (subject && subject !== 'all') {
+    list = subject === '__none__'
+      ? list.filter((r) => !String(r.subject_name || '').trim())
+      : list.filter((r) => String(r.subject_name || '').trim() === subject);
+  }
+  if (type && type !== 'all') list = list.filter((r) => String(r.type || '').toLowerCase() === type);
+  if (mode && period) list = list.filter((r) => parentPeriodKey(r.created_at, mode) === period);
+  return list;
+}
+
+function parentProgressAverage(records) {
+  if (!records.length) return 0;
+  return Math.round(records.reduce((s, r) => s + (Number(r.percent) || 0), 0) / records.length);
 }
 
 async function loadParentProgress(studentId) {
   const wrap = document.getElementById('parent-progress-table-wrap');
-  const avgEl = document.getElementById('parent-progress-avg');
   if (!wrap) return;
-
+  wrap.innerHTML = '<p style="color:var(--text-muted);">Loading…</p>';
   try {
     const res = await fetch(`${API_URL}/parent/child/${studentId}/progress`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-
-    const records = data.records || [];
-    if (avgEl) {
-      avgEl.textContent = records.length
-        ? `Average across recorded items: ${data.average}%`
-        : 'No quiz, activity, or exam scores yet.';
-    }
-    if (!records.length) {
-      wrap.innerHTML = '<p style="color:var(--text-muted);">Teachers have not published scores for this student yet.</p>';
-      return;
-    }
-
-    wrap.innerHTML = `
-      <table style="width:100%;font-size:0.85rem;">
-        <thead style="background:var(--maroon-header);color:#fff;">
-          <tr><th>Date</th><th>Type</th><th>Title</th><th>Subject</th><th>Score</th><th>%</th></tr>
-        </thead>
-        <tbody>
-          ${records.map(r => `
-            <tr>
-              <td>${new Date(r.created_at).toLocaleDateString()}</td>
-              <td><span class="badge type-${r.type}">${r.type === 'quiz' ? 'Quiz' : r.type === 'activity' ? 'Activity' : 'Exam'}</span></td>
-              <td>${r.title}</td>
-              <td>${r.subject_name || '—'}</td>
-              <td>${r.score} / ${r.max_score}</td>
-              <td>${r.percent}%</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`;
+    parentProgressCache = data.records || [];
+    parentProgressAverageAll = Number(data.average) || 0;
+    paintParentProgress();
   } catch (err) {
     wrap.innerHTML = '<p style="color:#b71c1c;">Failed to load progress</p>';
+    const avgEl = document.getElementById('parent-progress-avg');
+    if (avgEl) avgEl.textContent = 'Could not load scores.';
+  }
+}
+
+function paintParentProgress() {
+  const wrap = document.getElementById('parent-progress-table-wrap');
+  const pagerWrap = document.getElementById('parent-progress-pager-wrap');
+  const avgEl = document.getElementById('parent-progress-avg');
+  if (!wrap) return;
+  const records = parentProgressCache || [];
+
+  // Refresh filter options from the data
+  const subjectOpts = parentProgressSubjectOptions(records);
+  if (parentProgressSubject !== 'all' && !subjectOpts.some((o) => o.value === parentProgressSubject)) {
+    parentProgressSubject = 'all';
+  }
+  if (parentProgressSubjectMenuApi) parentProgressSubjectMenuApi.setOptions(subjectOpts);
+
+  const periodOpts = parentPeriodOptions(records, parentProgressPeriodMode, (r) => r.created_at);
+  if (parentProgressPeriod && !periodOpts.some((o) => o.value === parentProgressPeriod)) parentProgressPeriod = '';
+  if (parentProgressPeriodFilterApi) {
+    parentProgressPeriodFilterApi.setOptions(periodOpts);
+    parentProgressPeriodFilterApi.sync();
+  }
+
+  if (!records.length) {
+    if (avgEl) avgEl.textContent = 'No quiz, activity, or exam scores yet.';
+    wrap.innerHTML = '<p style="color:var(--text-muted);">Teachers have not published scores for this student yet.</p>';
+    if (pagerWrap) pagerWrap.innerHTML = '';
+    return;
+  }
+
+  const filtered = filterParentProgressRecords(records, {
+    subject: parentProgressSubject,
+    type: parentProgressType,
+    mode: parentProgressPeriodMode,
+    period: parentProgressPeriod
+  });
+  const isFiltered = parentProgressSubject !== 'all' || parentProgressType !== 'all' || !!parentProgressPeriod;
+
+  if (avgEl) {
+    if (!filtered.length) {
+      avgEl.textContent = `No items match these filters. Overall average: ${parentProgressAverageAll}% across ${records.length} item${records.length === 1 ? '' : 's'}.`;
+    } else if (isFiltered) {
+      avgEl.textContent = `Average across ${filtered.length} shown item${filtered.length === 1 ? '' : 's'}: ${parentProgressAverage(filtered)}% (overall ${parentProgressAverageAll}%)`;
+    } else {
+      avgEl.textContent = `Average across ${records.length} recorded item${records.length === 1 ? '' : 's'}: ${parentProgressAverageAll}%`;
+    }
+  }
+
+  if (!filtered.length) {
+    wrap.innerHTML = '<p style="color:var(--text-muted);">No quiz, activity, or exam matches the selected subject, type, or period.</p>';
+    if (pagerWrap) pagerWrap.innerHTML = '';
+    return;
+  }
+
+  const pager = paginate(filtered, parentProgressPage);
+  parentProgressPage = pager.page;
+
+  wrap.innerHTML = `
+    <table style="width:100%;font-size:0.85rem;">
+      <thead style="background:var(--maroon-header);color:#fff;">
+        <tr><th>Date</th><th>Type</th><th>Title</th><th>Subject</th><th>Score</th><th>%</th><th>Work</th></tr>
+      </thead>
+      <tbody>
+        ${pager.rows.map(r => `
+          <tr>
+            <td>${r.created_at ? new Date(r.created_at).toLocaleDateString() : '-'}</td>
+            <td><span class="badge type-${escapeHtml(r.type)}">${parentProgressTypeLabel(r.type)}</span></td>
+            <td>${escapeHtml(r.title || '')}</td>
+            <td>${escapeHtml(r.subject_name || '—')}</td>
+            <td>${r.score} / ${r.max_score}</td>
+            <td>${r.percent}%</td>
+            <td>${r.has_submission
+              ? `<button type="button" class="chip-ghost" onclick="viewParentWork(${Number(r.id)})">View Work</button>`
+              : '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+  if (pagerWrap) {
+    pagerWrap.innerHTML = parentPagerHtml('parent-progress-pager', pager);
+    wireParentPager('parent-progress-pager', (p) => { parentProgressPage = p; paintParentProgress(); });
   }
 }
 
@@ -12397,40 +14517,80 @@ if (subjectForm) {
   });
 }
 
-async function loadSubjectsTable() {
+let lastSubjectsData = [];
+let currentSubjectGradeFilter = '';
+let currentSubjectSearch = '';
+
+function subjectDisplayName(s) {
+  return s.name || s.subject_name || s.Name || 'Subject';
+}
+
+function subjectCoversGrade(applicableGrades, gradeLevel) {
+  if (!gradeLevel) return true;
+  if (!applicableGrades) return false;
+  const grade = parseInt(gradeLevel, 10);
+  if (Number.isNaN(grade)) return false;
+  const str = String(applicableGrades).trim();
+  const rangeMatch = str.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    return grade >= Math.min(start, end) && grade <= Math.max(start, end);
+  }
+  if (str.includes(',')) {
+    return str.split(',').map((part) => parseInt(part.trim(), 10)).filter((n) => !Number.isNaN(n)).includes(grade);
+  }
+  return parseInt(str, 10) === grade;
+}
+
+function getFilteredSubjects() {
+  const q = currentSubjectSearch.trim().toLowerCase();
+  return lastSubjectsData.filter((s) => {
+    if (!subjectCoversGrade(s.applicable_grades, currentSubjectGradeFilter)) return false;
+    if (!q) return true;
+    const name = subjectDisplayName(s).toLowerCase();
+    const code = String(s.code || s.subject_code || s.Code || '').toLowerCase();
+    return name.includes(q) || code.includes(q);
+  });
+}
+
+function renderSubjectsTable() {
   const tbody = document.getElementById('admin-subjects-tbody');
   if (!tbody) return;
 
-  try {
-    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-    const subjects = await res.json();
+  if (!lastSubjectsData.length) {
+    selectedSubjectIds.clear();
+    updateSubjectsBulkBar();
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No subjects yet</td></tr>';
+    paintAdminPager('admin-subjects-pager', null, () => {});
+    return;
+  }
 
-    console.log('[Subjects] Raw response:', subjects);
-    if (subjects.length > 0) {
-      console.log('[Subjects] First object keys:', Object.keys(subjects[0]));
-      console.log('[Subjects] First object:', subjects[0]);
-    }
+  const filtered = getFilteredSubjects();
+  if (!filtered.length) {
+    selectedSubjectIds.clear();
+    updateSubjectsBulkBar();
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No subjects match this filter</td></tr>';
+    paintAdminPager('admin-subjects-pager', null, () => {});
+    return;
+  }
 
-    if (!res.ok) throw new Error(subjects.error);
-    if (!Array.isArray(subjects)) throw new Error('Invalid data format');
+  const visibleIds = new Set(filtered.map((s) => Number(s.id)));
+  [...selectedSubjectIds].forEach((id) => {
+    if (!visibleIds.has(id)) selectedSubjectIds.delete(id);
+  });
 
-    if (!subjects.length) {
-      selectedSubjectIds.clear();
-      updateSubjectsBulkBar();
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No subjects yet</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = subjects.map(s => {
-      const id = Number(s.id);
-      const checked = selectedSubjectIds.has(id) ? 'checked' : '';
-      return `
+  const subjectPager = paginate(filtered, subjectPage, ADMIN_PAGE_SIZE);
+  subjectPage = subjectPager.page;
+  tbody.innerHTML = subjectPager.rows.map((s) => {
+    const checked = selectedSubjectIds.has(Number(s.id)) ? 'checked' : '';
+    return `
       <tr data-subject-id="${s.id || ''}">
         <td class="col-check">
           <input type="checkbox" class="admin-subject-check" data-subject-id="${s.id}" ${checked} aria-label="Select subject" />
         </td>
         <td class="sub-code">${escapeHtml(s.code || s.subject_code || s.Code || '—')}</td>
-        <td class="sub-name">${escapeHtml(s.name || s.subject_name || s.Name || '—')}</td>
+        <td class="sub-name">${escapeHtml(subjectDisplayName(s))}</td>
         <td class="sub-desc">${escapeHtml(s.description || '')}</td>
         <td class="sub-grades">${escapeHtml(s.applicable_grades || '')}</td>
         <td class="row-actions">
@@ -12443,14 +14603,129 @@ async function loadSubjectsTable() {
           </div>
         </td>
       </tr>`;
-    }).join('');
-    updateSubjectsBulkBar();
+  }).join('');
+  paintAdminPager('admin-subjects-pager', subjectPager, (p) => {
+    subjectPage = p;
+    renderSubjectsTable();
+  });
+  updateSubjectsBulkBar();
+}
 
+async function loadSubjectsTable() {
+  const tbody = document.getElementById('admin-subjects-tbody');
+  if (!tbody) return;
+
+  try {
+    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
+    const subjects = await res.json();
+    if (!res.ok) throw new Error(subjects.error);
+    if (!Array.isArray(subjects)) throw new Error('Invalid data format');
+    lastSubjectsData = subjects;
+    renderSubjectsTable();
   } catch (err) {
     console.error('Load subjects error:', err);
     tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Failed to load subjects: ${escapeHtml(err.message)}</td></tr>`;
+    paintAdminPager('admin-subjects-pager', null, () => {});
   }
 }
+
+function subjectExportRows() {
+  return getFilteredSubjects();
+}
+
+function exportSubjectsExcel() {
+  const rows = subjectExportRows();
+  if (!rows.length) {
+    showToast('No subjects to export for the current filter.', 'error');
+    return;
+  }
+  const esc = (v) => {
+    const s = String(v ?? '');
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [['Code', 'Name', 'Description', 'Grades'].join(',')];
+  rows.forEach((s) => {
+    lines.push([
+      s.code || s.subject_code || '',
+      subjectDisplayName(s),
+      s.description || '',
+      s.applicable_grades || ''
+    ].map(esc).join(','));
+  });
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `subjects-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${rows.length} subject(s) to Excel.`);
+}
+
+function exportSubjectsPdf() {
+  const rows = subjectExportRows();
+  if (!rows.length) {
+    showToast('No subjects to export for the current filter.', 'error');
+    return;
+  }
+  const bodyRows = rows.map((s) => `<tr>
+      <td>${escapeHtml(s.code || s.subject_code || '')}</td>
+      <td>${escapeHtml(subjectDisplayName(s))}</td>
+      <td>${escapeHtml(s.description || '')}</td>
+      <td>${escapeHtml(s.applicable_grades || '')}</td>
+    </tr>`).join('');
+  openPrintHtmlDocument('', `
+    <h1>Subject List</h1>
+    <p>Exported ${rows.length} subject(s) · ${escapeHtml(new Date().toLocaleString())}</p>
+    <table>
+      <thead><tr><th>Code</th><th>Name</th><th>Description</th><th>Grades</th></tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>`);
+}
+
+document.getElementById('admin-subject-search')?.addEventListener('input', (e) => {
+  currentSubjectSearch = e.target.value || '';
+  subjectPage = 1;
+  renderSubjectsTable();
+});
+
+wireDownloadSelectMenu({
+  menuId: 'admin-subject-grade-menu',
+  btnId: 'admin-subject-grade-btn',
+  panelId: 'admin-subject-grade-panel',
+  options: STUDENT_GRADE_FILTER_OPTS,
+  getValue: () => currentSubjectGradeFilter,
+  setValue: (v) => { currentSubjectGradeFilter = v || ''; },
+  onPick: () => {
+    subjectPage = 1;
+    renderSubjectsTable();
+  }
+});
+
+function closeSubjectsExportMenu() {
+  closeDownloadMenu(
+    document.getElementById('admin-subjects-export-panel'),
+    document.getElementById('admin-subjects-export-btn')
+  );
+}
+
+document.getElementById('admin-subjects-export-btn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  toggleDownloadMenu(
+    document.getElementById('admin-subjects-export-btn'),
+    document.getElementById('admin-subjects-export-panel')
+  );
+});
+document.getElementById('admin-subjects-export-excel')?.addEventListener('click', () => {
+  closeSubjectsExportMenu();
+  exportSubjectsExcel();
+});
+document.getElementById('admin-subjects-export-pdf')?.addEventListener('click', () => {
+  closeSubjectsExportMenu();
+  exportSubjectsPdf();
+});
 
 function updateSubjectsBulkBar() {
   const bar = document.getElementById('admin-subjects-bulk-bar');
@@ -12531,7 +14806,6 @@ function updateSubjectsBulkBar() {
       if (shouldSelectAll) selectedSubjectIds.add(id);
       else selectedSubjectIds.delete(id);
     });
-    if (!shouldSelectAll) selectedSubjectIds.clear();
 
     selectAll.indeterminate = false;
     selectAll.checked = shouldSelectAll;
@@ -12828,6 +15102,7 @@ loadAdminAnnouncements = function() {
 // Student table search & filters
 document.getElementById('admin-student-search')?.addEventListener('input', (e) => {
   currentStudentFilter = e.target.value.trim();
+  studentPage = 1;
   filterStudentsTable();
 });
 
@@ -12841,6 +15116,7 @@ studentGradeMenuApi = wireDownloadSelectMenu({
   onPick: async () => {
     currentStudentSectionFilter = '';
     await loadStudentFilterSections(currentStudentGradeFilter);
+    studentPage = 1;
     filterStudentsTable();
   }
 });
@@ -12853,7 +15129,7 @@ studentSectionMenuApi = wireDownloadSelectMenu({
   getValue: () => currentStudentSectionFilter,
   setValue: (v) => { currentStudentSectionFilter = v || ''; },
   disabled: true,
-  onPick: () => filterStudentsTable()
+  onPick: () => { studentPage = 1; filterStudentsTable(); }
 });
 
 document.getElementById('admin-student-filter-clear')?.addEventListener('click', clearStudentFilters);

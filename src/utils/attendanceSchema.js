@@ -159,6 +159,67 @@ function addDaysISO(isoDate, days) {
   return dt.toISOString().slice(0, 10);
 }
 
+function lastDayOfMonth(ym) {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  const d = new Date(Date.UTC(y, m, 0));
+  return d.toISOString().slice(0, 10);
+}
+
+function weekdaysBetween(from, to) {
+  const out = [];
+  let cursor = from;
+  let guard = 0;
+  while (cursor && cursor <= to && guard < 400) {
+    const [y, m, d] = cursor.split('-').map(Number);
+    const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    if (dow >= 1 && dow <= 5) out.push(cursor);
+    cursor = addDaysISO(cursor, 1);
+    guard += 1;
+  }
+  return out;
+}
+
+function schoolYearBounds(sy, anchorISO) {
+  const anchor = /^\d{4}-\d{2}-\d{2}$/.test(String(anchorISO || '')) ? String(anchorISO) : manilaISODate();
+  const match = String(sy || '').match(/^(\d{4})\s*-\s*(\d{4})$/);
+  let y1 = match ? Number(match[1]) : null;
+  let y2 = match ? Number(match[2]) : null;
+  if (y1 == null || y2 == null || anchor < `${y1}-06-01` || anchor > `${y2}-05-31`) {
+    const [ay, am] = anchor.split('-').map(Number);
+    y1 = am >= 6 ? ay : ay - 1;
+    y2 = y1 + 1;
+  }
+  return { from: `${y1}-06-01`, to: `${y2}-05-31`, label: `${y1}-${y2}` };
+}
+
+/** Weekday columns for the teacher attendance grid. Day keeps that calendar date. */
+function attendanceRangeBounds(range, anchorISO, schoolYearLabel) {
+  const anchor = /^\d{4}-\d{2}-\d{2}$/.test(String(anchorISO || '')) ? String(anchorISO) : manilaISODate();
+  const kind = ['day', 'week', 'month', 'year'].includes(range) ? range : 'week';
+  if (kind === 'day') {
+    return { range: kind, from: anchor, to: anchor, dates: [anchor] };
+  }
+  if (kind === 'week') {
+    const dates = weekdaysMonFri(weekStartMonday(anchor));
+    return { range: kind, from: dates[0], to: dates[dates.length - 1], dates };
+  }
+  if (kind === 'month') {
+    const from = `${anchor.slice(0, 7)}-01`;
+    const to = lastDayOfMonth(anchor.slice(0, 7));
+    const dates = weekdaysBetween(from, to);
+    return { range: kind, from, to, dates: dates.length ? dates : [from] };
+  }
+  const sy = schoolYearBounds(schoolYearLabel, anchor);
+  const dates = weekdaysBetween(sy.from, sy.to);
+  return {
+    range: 'year',
+    from: sy.from,
+    to: sy.to,
+    dates: dates.length ? dates : [sy.from],
+    schoolYear: sy.label
+  };
+}
+
 function isSubjectGrade(grade) {
   return Number(grade) >= 4;
 }
@@ -196,6 +257,7 @@ module.exports = {
   weekStartMonday,
   weekdaysMonFri,
   addDaysISO,
+  attendanceRangeBounds,
   isSubjectGrade,
   normalizeSession,
   currentManilaSession,

@@ -2,22 +2,58 @@ const db = require('../../db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { plainText } = require('../utils/plainText');
+const { routingV2Enabled } = require('../auth/flags');
+const { setAuthCookie, clearAuthCookie, readAuthToken } = require('../auth/cookies');
 
 let authColumnsReady = null;
+function ignoreDupColumn(error) {
+  if (error && (error.code === 'ER_DUP_FIELDNAME' || error.errno === 1060)) return;
+  throw error;
+}
 function ensureAuthColumns() {
   if (!authColumnsReady) {
-    authColumnsReady = db.query(
-      'ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0'
-    ).catch((e) => {
-      if (e && (e.code === 'ER_DUP_FIELDNAME' || e.errno === 1060)) return;
+    authColumnsReady = (async () => {
+      await db.query(
+        'ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0'
+      ).catch(ignoreDupColumn);
+      await db.query(
+        'ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0'
+      ).catch(ignoreDupColumn);
+    })().catch((error) => {
       authColumnsReady = null;
-      throw e;
+      throw error;
     });
   }
   return authColumnsReady;
 }
 
 ensureAuthColumns().catch((e) => console.error('[auth] schema:', e.message));
+
+exports.ensureAuthColumns = ensureAuthColumns;
+
+exports.logout = async (req, res) => {
+  try {
+    clearAuthCookie(res);
+    if (!routingV2Enabled()) return res.json({ ok: true });
+    await ensureAuthColumns();
+    const token = readAuthToken(req);
+    if (!token) return res.json({ ok: true });
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.json({ ok: true });
+    }
+    await db.query(
+      'UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?',
+      [decoded.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Server error during logout' });
+  }
+};
 
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
@@ -124,11 +160,18 @@ exports.login = async (req, res) => {
     }
 
     const staySignedIn = remember === true || remember === 'true' || remember === 1 || remember === '1';
+    const claims = { id: user.id, role: user.role, email: user.email };
+    if (routingV2Enabled()) claims.tv = Number(user.token_version) || 0;
     const token = jwt.sign(
-      { id: user.id, role: user.role, email: user.email },
+      claims,
       process.env.JWT_SECRET,
       { expiresIn: staySignedIn ? '30d' : '8h' }
     );
+
+    if (routingV2Enabled()) {
+      setAuthCookie(res, token, staySignedIn);
+      return res.json({ user: formatUser(user) });
+    }
 
     res.json({
       token,

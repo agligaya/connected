@@ -20,6 +20,8 @@ const {
   QUARTERS
 } = require('../utils/schoolSettings');
 const { logActivity, getRecentActivity } = require('../utils/activityLog');
+const { sendAccountDetails } = require('../utils/mail');
+const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const {
   ensureTeachingModeEnum,
   resolveTeachingMode,
@@ -60,7 +62,10 @@ function gradeMatchesApplicableGrades(gradeLevel, applicableGrades) {
 // Get all subjects applicable to a specific grade level
 async function getSubjectsForGrade(conn, gradeLevel) {
   try {
-    const [subjects] = await conn.query('SELECT id, applicable_grades FROM subjects');
+    await ensureSoftDeleteSchema(conn);
+    const [subjects] = await conn.query(
+      'SELECT id, applicable_grades FROM subjects WHERE deleted_at IS NULL'
+    );
     return subjects.filter(s => gradeMatchesApplicableGrades(gradeLevel, s.applicable_grades));
   } catch (err) {
     console.error('[getSubjectsForGrade] Error fetching subjects:', err);
@@ -71,7 +76,10 @@ async function getSubjectsForGrade(conn, gradeLevel) {
 // GET /api/admin/subjects
 exports.getSubjects = async (req, res) => {
   try {
-    const [subjects] = await db.query("SELECT id, CODE AS code, NAME AS name FROM subjects ORDER BY NAME");
+    await ensureSoftDeleteSchema();
+    const [subjects] = await db.query(
+      "SELECT id, CODE AS code, NAME AS name FROM subjects WHERE deleted_at IS NULL ORDER BY NAME"
+    );
     res.json(subjects);
   } catch (error) {
     console.error('Get subjects error:', error);
@@ -277,46 +285,44 @@ exports.createAnnouncement = async (req, res) => {
 };
 
 // POST /api/admin/accounts
-exports.createAccount = async (req, res) => {
+function accountError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+async function createAccountRecord(body, actorId) {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
     const {
       first_name, last_name, email, phone, password, role,
-      // New teacher fields
       is_class_adviser, class_adviser_grade, class_adviser_section,
       is_subject_teacher, subject_assignments,
-      // Parent fields
       address, emergency_contact
-    } = req.body;
+    } = body || {};
 
     // Validation
     const firstName = plainText(first_name);
     const lastName = plainText(last_name);
     if (!firstName || !lastName || !email || !password || !role) {
-      return res.status(400).json({ error: 'First name, last name, email, password, and role are required' });
+      throw accountError(400, 'First name, last name, email, password, and role are required');
     }
 
     const { isValidPhMobile, normalizePhMobile } = require('../utils/sms');
     let normalizedPhone = phone || null;
     if (phone) {
       if (!isValidPhMobile(phone)) {
-        return res.status(400).json({
-          error: 'Phone must be a valid PH mobile (e.g. 09171234567)'
-        });
+        throw accountError(400, 'Phone must be a valid PH mobile (e.g. 09171234567)');
       }
       normalizedPhone = normalizePhMobile(phone);
     }
     if (role === 'parent' && emergency_contact && !isValidPhMobile(emergency_contact)) {
-      return res.status(400).json({
-        error: 'Emergency contact must be a valid PH mobile (e.g. 09171234567)'
-      });
+      throw accountError(400, 'Emergency contact must be a valid PH mobile (e.g. 09171234567)');
     }
     if (role === 'parent' && !normalizedPhone && !normalizePhMobile(emergency_contact)) {
-      return res.status(400).json({
-        error: 'Parents need a valid mobile number (phone or emergency contact) for SMS alerts'
-      });
+      throw accountError(400, 'Parents need a valid mobile number (phone or emergency contact) for SMS alerts');
     }
 
     // Teacher-specific validation
@@ -325,16 +331,16 @@ exports.createAccount = async (req, res) => {
       const hasSubjectTeacher = is_subject_teacher === true || is_subject_teacher === 'true';
 
       if (!hasClassAdviser && !hasSubjectTeacher) {
-        return res.status(400).json({ error: 'Teacher must have at least one teaching role (Class Adviser or Subject Teacher)' });
+        throw accountError(400, 'Teacher must have at least one teaching role (Class Adviser or Subject Teacher)');
       }
       if (hasClassAdviser && (!class_adviser_grade || !class_adviser_section)) {
-        return res.status(400).json({ error: 'Class Adviser must have a grade level and section assigned' });
+        throw accountError(400, 'Class Adviser must have a grade level and section assigned');
       }
       // Subject Teacher = Grades 4-6 subject rows (independent of 1-3 class adviser auto-subjects)
       if (hasSubjectTeacher) {
         const stRows = normalizeSubjectAssignments(subject_assignments).filter(a => isUpperGradeLevel(a.grade_level));
         if (!stRows.length) {
-          return res.status(400).json({ error: 'Subject Teacher must have at least one Grades 4–6 subject assignment' });
+          throw accountError(400, 'Subject Teacher must have at least one Grades 4–6 subject assignment');
         }
       }
     }
@@ -342,7 +348,7 @@ exports.createAccount = async (req, res) => {
     // Check duplicate email
     const [existing] = await conn.query('SELECT id FROM users WHERE email = ?', [email]);
     if (existing.length > 0) {
-      return res.status(409).json({ error: 'Email already registered' });
+      throw accountError(409, 'Email already registered');
     }
 
     // Hash password
@@ -371,10 +377,7 @@ exports.createAccount = async (req, res) => {
       if (hasClassAdviser && class_adviser_grade && class_adviser_section) {
         const existing = await getExistingClassAdviser(conn, class_adviser_grade, class_adviser_section);
         if (existing) {
-          await conn.rollback();
-          return res.status(409).json({ 
-            error: `Grade ${class_adviser_grade}-${class_adviser_section} already has a Class Adviser: ${existing.first_name} ${existing.last_name} (${existing.email})`
-          });
+          throw accountError(409, `Grade ${class_adviser_grade}-${class_adviser_section} already has a Class Adviser: ${existing.first_name} ${existing.last_name} (${existing.email})`);
         }
       }
 
@@ -385,13 +388,12 @@ exports.createAccount = async (req, res) => {
           hasSubjectTeacher,
           class_adviser_grade,
           class_adviser_section,
-          class_adviser_subjects: req.body.class_adviser_subjects,
+          class_adviser_subjects: body.class_adviser_subjects,
           subject_assignments
         });
         await assertSubjectAssignmentUnique(conn, effectiveSubjectAssignments);
       } catch (assignErr) {
-        await conn.rollback();
-        return res.status(assignErr.status || 400).json({ error: assignErr.message });
+        throw accountError(assignErr.status || 400, assignErr.message);
       }
 
       let teaching_mode = resolveTeachingMode({
@@ -455,17 +457,120 @@ exports.createAccount = async (req, res) => {
       );
     }
 
-    await logActivity(conn, (req.user?.id || req.user?.userId), 'Created account', req.body.role, `${firstName} ${lastName}`, req.body.email);
+    await logActivity(conn, actorId, 'Created account', role, `${firstName} ${lastName}`, email);
 
     await conn.commit();
-    res.status(201).json({ message: 'Account created successfully', userId });
+    return { userId };
 
   } catch (error) {
     await conn.rollback();
+    if (error.status) throw error;
     console.error('Create account error:', error);
-    res.status(500).json({ error: 'Server error creating account' });
+    throw accountError(500, 'Server error creating account');
   } finally {
     conn.release();
+  }
+}
+
+exports.createAccount = async (req, res) => {
+  try {
+    const { userId } = await createAccountRecord(req.body, req.user?.id || req.user?.userId);
+    const mail = await sendAccountDetails({
+      firstName: plainText(req.body?.first_name),
+      lastName: plainText(req.body?.last_name),
+      email: String(req.body?.email || '').trim(),
+      role: req.body?.role,
+      password: String(req.body?.password || '')
+    });
+    const message = mail.sent
+      ? 'Account created successfully. Sign-in details were sent to the email address.'
+      : `Account created successfully. The email was not sent: ${mail.error}`;
+    res.status(201).json({ message, userId, emailSent: mail.sent });
+  } catch (error) {
+    const status = error.status || 500;
+    if (status >= 500) console.error('Create account error:', error);
+    res.status(status).json({ error: error.message || 'Server error creating account' });
+  }
+};
+
+function yesFlag(value) {
+  const s = String(value || '').trim().toLowerCase();
+  return s === 'yes' || s === 'y' || s === 'true' || s === '1';
+}
+
+async function subjectAssignmentsFromCell(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  await ensureSoftDeleteSchema();
+  const out = [];
+  for (const part of text.split(';').map((s) => s.trim()).filter(Boolean)) {
+    const bits = part.split(':').map((s) => s.trim());
+    if (bits.length < 3 || !bits[0] || !bits[1] || !bits[2]) {
+      throw accountError(400, `Subject assignment "${part}" must look like CODE:grade:section`);
+    }
+    const [code, grade, section] = bits;
+    const [rows] = await db.query(
+      'SELECT id FROM subjects WHERE UPPER(CODE) = UPPER(?) AND deleted_at IS NULL LIMIT 1',
+      [code]
+    );
+    if (!rows.length) throw accountError(400, `Unknown subject code "${code}"`);
+    out.push({ subject_id: rows[0].id, grade_level: grade, section });
+  }
+  return out;
+}
+
+exports.bulkCreateAccounts = async (req, res) => {
+  try {
+    const { parseUpload } = require('../utils/tabularUpload');
+    const rows = await parseUpload(req.file);
+    if (!rows.length) return res.status(400).json({ error: 'The file has no data rows' });
+
+    const actorId = req.user?.id || req.user?.userId;
+    const failed = [];
+    let created = 0;
+    let emailed = 0;
+    for (const row of rows) {
+      const email = String(row.email || '').trim();
+      try {
+        const role = String(row.role || '').trim().toLowerCase();
+        if (role === 'admin') throw accountError(400, 'Admin accounts cannot be imported');
+        const subject_assignments = await subjectAssignmentsFromCell(row.subject_assignments);
+        await createAccountRecord({
+          first_name: row.first_name,
+          last_name: row.last_name,
+          email,
+          phone: row.phone,
+          password: row.password,
+          role,
+          address: row.address,
+          emergency_contact: row.emergency_contact,
+          is_class_adviser: yesFlag(row.is_class_adviser),
+          class_adviser_grade: row.class_adviser_grade,
+          class_adviser_section: row.class_adviser_section,
+          is_subject_teacher: yesFlag(row.is_subject_teacher),
+          subject_assignments
+        }, actorId);
+        created += 1;
+        const mail = await sendAccountDetails({
+          firstName: plainText(row.first_name),
+          lastName: plainText(row.last_name),
+          email,
+          role,
+          password: String(row.password || '')
+        });
+        if (mail.sent) emailed += 1;
+      } catch (error) {
+        failed.push({
+          row: row.__row,
+          email,
+          error: error.status ? error.message : 'Server error creating account'
+        });
+      }
+    }
+    res.json({ created, failed, emailed });
+  } catch (error) {
+    console.error('Bulk create accounts error:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Server error importing accounts' });
   }
 };
 
@@ -826,6 +931,129 @@ exports.updateAssignments = async (req, res) => {
   }
 };
 
+async function listTeacherDuties(teacherId) {
+  const [rows] = await db.query(
+    `SELECT ta.grade_level, ta.section, ta.subject_id, s.NAME AS subject_name
+     FROM teacher_assignments ta
+     LEFT JOIN subjects s ON s.id = ta.subject_id
+     WHERE ta.teacher_id = ? AND ta.school_year = ?
+     ORDER BY ta.grade_level, ta.section, ta.subject_id`,
+    [teacherId, schoolYear]
+  );
+  const adviserKeys = new Set(
+    rows
+      .filter((row) => row.subject_id == null)
+      .map((row) => `${row.grade_level}|${String(row.section || '').trim()}`)
+  );
+  const duties = [];
+  for (const row of rows) {
+    if (row.subject_id != null) continue;
+    const section = String(row.section || '').trim();
+    duties.push({
+      kind: 'adviser',
+      grade_level: row.grade_level,
+      section,
+      subject_id: null,
+      label: `Class adviser — Grade ${row.grade_level}-${section}`
+    });
+  }
+  for (const row of rows) {
+    if (row.subject_id == null) continue;
+    const section = String(row.section || '').trim();
+    if (adviserKeys.has(`${row.grade_level}|${section}`)) continue;
+    duties.push({
+      kind: 'subject',
+      grade_level: row.grade_level,
+      section,
+      subject_id: row.subject_id,
+      subject_name: row.subject_name || 'Subject',
+      label: `${row.subject_name || 'Subject'} — Grade ${row.grade_level}-${section}`
+    });
+  }
+  return duties;
+}
+
+async function attachTransferChoices(teacherId, duties) {
+  for (const duty of duties) {
+    if (duty.kind === 'adviser') {
+      duty.candidates = [];
+      continue;
+    }
+    const [rows] = await db.query(
+      `SELECT DISTINCT u.id, u.first_name, u.last_name
+       FROM teacher_assignments ta
+       JOIN users u ON u.id = ta.teacher_id
+       WHERE ta.subject_id = ? AND ta.school_year = ?
+         AND ta.teacher_id <> ?
+         AND u.role = 'teacher' AND u.status = 'active'
+       ORDER BY u.last_name, u.first_name`,
+      [duty.subject_id, schoolYear, teacherId]
+    );
+    duty.candidates = rows;
+  }
+  return duties;
+}
+
+async function refreshTeacherClassProfile(conn, teacherId) {
+  const [rows] = await conn.query(
+    `SELECT subject_id, grade_level, section
+     FROM teacher_assignments
+     WHERE teacher_id = ? AND school_year = ?`,
+    [teacherId, schoolYear]
+  );
+  const adviser = rows.find((row) => row.subject_id == null);
+  const subjectCount = rows.filter((row) => row.subject_id != null).length;
+  const hasSubjectTeacher = rows.some((row) => row.subject_id != null && Number(row.grade_level) >= 4);
+  const teachingMode = resolveTeachingMode({
+    hasClassAdviser: !!adviser,
+    hasSubjectTeacher: hasSubjectTeacher || subjectCount > 0,
+    subjectCount
+  });
+  const [[profile]] = await conn.query(
+    'SELECT user_id FROM teacher_profiles WHERE user_id = ?',
+    [teacherId]
+  );
+  if (profile) {
+    await conn.query(
+      `UPDATE teacher_profiles
+       SET teaching_mode = ?, homeroom_grade = ?, homeroom_section = ?
+       WHERE user_id = ?`,
+      [teachingMode, adviser ? adviser.grade_level : null, adviser ? adviser.section : null, teacherId]
+    );
+    return;
+  }
+  await conn.query(
+    `INSERT INTO teacher_profiles (user_id, teaching_mode, homeroom_grade, homeroom_section)
+     VALUES (?, ?, ?, ?)`,
+    [teacherId, teachingMode, adviser ? adviser.grade_level : null, adviser ? adviser.section : null]
+  );
+}
+
+async function moveAssignmentRow(conn, rowId, fromId, toId, grade, section, subjectId) {
+  const matchParams = [toId, grade, section, schoolYear];
+  let subjectSql = 'subject_id IS NULL';
+  if (subjectId != null) {
+    subjectSql = 'subject_id = ?';
+    matchParams.push(subjectId);
+  }
+  const [existing] = await conn.query(
+    `SELECT id FROM teacher_assignments
+     WHERE teacher_id = ? AND grade_level = ? AND TRIM(section) = TRIM(?)
+       AND school_year = ? AND ${subjectSql}
+     LIMIT 1`,
+    matchParams
+  );
+  if (existing.length) {
+    await conn.query('DELETE FROM teacher_assignments WHERE id = ? AND teacher_id = ?', [rowId, fromId]);
+    return;
+  }
+  await conn.query('UPDATE teacher_assignments SET teacher_id = ? WHERE id = ? AND teacher_id = ?', [
+    toId,
+    rowId,
+    fromId
+  ]);
+}
+
 // PATCH /api/admin/accounts/:id/status
 exports.toggleStatus = async (req, res) => {
   try {
@@ -836,12 +1064,202 @@ exports.toggleStatus = async (req, res) => {
       return res.status(400).json({ error: 'Status must be active or inactive' });
     }
 
+    if (status === 'inactive') {
+      const [[user]] = await db.query('SELECT id, role FROM users WHERE id = ?', [id]);
+      if (!user) return res.status(404).json({ error: 'Account not found' });
+      if (user.role === 'teacher') {
+        const classes = await attachTransferChoices(id, await listTeacherDuties(id));
+        if (classes.length) {
+          return res.status(409).json({
+            error: 'Assign another teacher to each class before deactivating this account.',
+            classes
+          });
+        }
+      }
+    }
+
     await db.query('UPDATE users SET status = ? WHERE id = ?', [status, id]);
     await logActivity(db, (req.user?.id || req.user?.userId), `${status === 'active' ? 'Activated' : 'Deactivated'} account`, 'user', `User ID ${id}`, null);
     res.json({ message: `Account ${status}` });
   } catch (error) {
     console.error('Toggle status error:', error);
     res.status(500).json({ error: 'Server error updating status' });
+  }
+};
+
+exports.transferAndDeactivate = async (req, res) => {
+  const { id } = req.params;
+  const transfers = Array.isArray(req.body?.transfers) ? req.body.transfers : [];
+  const conn = await db.getConnection();
+  try {
+    const [[user]] = await conn.query(
+      'SELECT id, role, first_name, last_name FROM users WHERE id = ?',
+      [id]
+    );
+    if (!user) return res.status(404).json({ error: 'Account not found' });
+    if (user.role !== 'teacher') {
+      return res.status(400).json({ error: 'Only a teacher with classes needs a transfer' });
+    }
+
+    const duties = await listTeacherDuties(id);
+    if (!duties.length) {
+      await conn.query('UPDATE users SET status = ? WHERE id = ?', ['inactive', id]);
+      await logActivity(conn, (req.user?.id || req.user?.userId), 'Deactivated account', 'user', `User ID ${id}`, null);
+      return res.json({ message: 'Account deactivated' });
+    }
+
+    const transfersNeedNew = transfers.some((item) => String(item.replacement_id) === 'new');
+    if (transfersNeedNew) {
+      try {
+        await db.query(
+          'ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0'
+        );
+      } catch (_) { /* column exists */ }
+    }
+
+    await conn.beginTransaction();
+    const replacementIds = new Set();
+    let newTeacherId = null;
+    let hiredMail = null;
+    const needsNewTeacher = transfersNeedNew;
+    if (needsNewTeacher) {
+      const hire = req.body?.new_teacher || {};
+      const firstName = plainText(hire.first_name);
+      const lastName = plainText(hire.last_name);
+      const email = String(hire.email || '').trim();
+      const password = String(hire.password || '');
+      if (!firstName || !lastName || !email || password.length < 6) {
+        await conn.rollback();
+        return res.status(400).json({
+          error: 'A newly hired teacher needs a first name, last name, email, and a temporary password of at least 6 characters.'
+        });
+      }
+      const [existingEmail] = await conn.query('SELECT id FROM users WHERE email = ?', [email]);
+      if (existingEmail.length) {
+        await conn.rollback();
+        return res.status(409).json({ error: 'That email is already registered.' });
+      }
+      const passwordHash = await bcrypt.hash(password, 10);
+      const [created] = await conn.query(
+        `INSERT INTO users (first_name, last_name, email, password_hash, phone, role, status, must_change_password)
+         VALUES (?, ?, ?, ?, NULL, 'teacher', 'active', 1)`,
+        [firstName, lastName, email, passwordHash]
+      );
+      newTeacherId = created.insertId;
+      replacementIds.add(newTeacherId);
+      hiredMail = { firstName, lastName, email, password, role: 'teacher' };
+    }
+
+    for (const duty of duties) {
+      const match = transfers.find((item) =>
+        Number(item.grade_level) === Number(duty.grade_level)
+        && String(item.section || '').trim() === duty.section
+        && (duty.subject_id == null
+          ? item.subject_id == null || item.subject_id === ''
+          : Number(item.subject_id) === Number(duty.subject_id))
+      );
+      const rawReplacement = match?.replacement_id;
+      if (duty.kind === 'adviser' && String(rawReplacement) !== 'new') {
+        await conn.rollback();
+        return res.status(400).json({
+          error: `${duty.label} can only transfer to a newly hired teacher.`
+        });
+      }
+      if (duty.kind === 'subject' && String(rawReplacement) === 'new') {
+        await conn.rollback();
+        return res.status(400).json({
+          error: `${duty.label} can only transfer to a teacher who already handles that subject.`
+        });
+      }
+      const replacementId = String(rawReplacement) === 'new'
+        ? newTeacherId
+        : Number(rawReplacement);
+      if (!replacementId) {
+        await conn.rollback();
+        return res.status(400).json({ error: `Choose a teacher for ${duty.label}.` });
+      }
+      if (replacementId === Number(id)) {
+        await conn.rollback();
+        return res.status(400).json({ error: 'Choose a different teacher for each class.' });
+      }
+      const [[replacement]] = await conn.query(
+        `SELECT id FROM users WHERE id = ? AND role = 'teacher' AND status = 'active'`,
+        [replacementId]
+      );
+      if (!replacement) {
+        await conn.rollback();
+        return res.status(400).json({ error: 'Each class must go to an active teacher.' });
+      }
+      if (duty.kind === 'subject') {
+        const [[sameSubject]] = await conn.query(
+          `SELECT id FROM teacher_assignments
+           WHERE teacher_id = ? AND subject_id = ? AND school_year = ?
+           LIMIT 1`,
+          [replacementId, duty.subject_id, schoolYear]
+        );
+        if (!sameSubject) {
+          await conn.rollback();
+          return res.status(400).json({
+            error: `${duty.label} can only transfer to a teacher who already handles that subject.`
+          });
+        }
+      }
+      replacementIds.add(replacementId);
+
+      const ownedParams = [id, duty.grade_level, duty.section, schoolYear];
+      let subjectSql = '1=1';
+      if (duty.subject_id != null) {
+        subjectSql = 'subject_id = ?';
+        ownedParams.push(duty.subject_id);
+      }
+      const [owned] = await conn.query(
+        `SELECT id, subject_id, grade_level, section
+         FROM teacher_assignments
+         WHERE teacher_id = ? AND grade_level = ? AND TRIM(section) = TRIM(?)
+           AND school_year = ? AND ${subjectSql}`,
+        ownedParams
+      );
+      for (const row of owned) {
+        await moveAssignmentRow(
+          conn,
+          row.id,
+          id,
+          replacementId,
+          row.grade_level,
+          row.section,
+          row.subject_id
+        );
+      }
+    }
+
+    await refreshTeacherClassProfile(conn, id);
+    for (const replacementId of replacementIds) {
+      await refreshTeacherClassProfile(conn, replacementId);
+    }
+    await conn.query('UPDATE users SET status = ? WHERE id = ?', ['inactive', id]);
+    await logActivity(
+      conn,
+      (req.user?.id || req.user?.userId),
+      'Transferred classes and deactivated teacher',
+      'teacher',
+      `${user.first_name} ${user.last_name}`,
+      `${duties.length} class${duties.length === 1 ? '' : 'es'}`
+    );
+    await conn.commit();
+    let hired = '';
+    if (newTeacherId) {
+      const mail = hiredMail ? await sendAccountDetails(hiredMail) : { sent: false, error: 'Mail is not configured.' };
+      hired = mail.sent
+        ? ' Sign-in details were sent to the new teacher’s email. They set their own password after signing in.'
+        : ` The new teacher account was created. The email was not sent: ${mail.error}`;
+    }
+    res.json({ message: `Classes transferred and account deactivated.${hired}` });
+  } catch (error) {
+    try { await conn.rollback(); } catch (_) { /* no transaction */ }
+    console.error('Transfer and deactivate error:', error);
+    res.status(500).json({ error: 'Server error transferring classes' });
+  } finally {
+    conn.release();
   }
 };
 
@@ -1311,5 +1729,161 @@ exports.updateCurrentQuarter = async (req, res) => {
   } catch (error) {
     console.error('Update current quarter error:', error);
     res.status(500).json({ error: 'Server error updating current quarter', details: error.message });
+  }
+};
+
+function classifyAttendanceRow(row) {
+  if (Number(row.present_n) > 0) return 'present';
+  if (Number(row.late_n) > 0) return 'late';
+  if (Number(row.excused_n) > 0) return 'excused';
+  return 'absent';
+}
+
+async function presentOverviewAnnouncement(raw) {
+  if (!raw) return null;
+  return {
+    id: raw.id,
+    title: plainText(raw.title),
+    body: plainText(raw.body),
+    priority: raw.priority || 'normal',
+    scope: raw.scope || 'school_wide',
+    target_grade: raw.target_grade,
+    target_section: raw.target_section,
+    audience: raw.audience || 'everyone',
+    created_at: raw.created_at,
+    sender_name: raw.sender_name || 'Admin',
+    sender_avatar: raw.sender_avatar || null,
+    reached: await announcementReachCount(raw)
+  };
+}
+
+async function announcementReachCount(ann) {
+  const audience = String(ann.audience || 'everyone');
+  const scope = String(ann.scope || 'school_wide');
+  const grade = ann.target_grade;
+  const section = ann.target_section;
+  let teacherSql = `SELECT COUNT(*) AS n FROM users WHERE role = 'teacher' AND STATUS = 'active'`;
+  let teacherParams = [];
+  if (scope === 'grade_wide' && grade) {
+    teacherSql = `
+      SELECT COUNT(DISTINCT u.id) AS n
+      FROM users u
+      LEFT JOIN teacher_assignments ta
+        ON ta.teacher_id = u.id AND ta.school_year = ? AND ta.grade_level = ?
+      LEFT JOIN teacher_profiles tp
+        ON tp.user_id = u.id AND tp.homeroom_grade = ?
+      WHERE u.role = 'teacher' AND u.STATUS = 'active'
+        AND (ta.teacher_id IS NOT NULL OR tp.user_id IS NOT NULL)`;
+    teacherParams = [schoolYear, grade, grade];
+  } else if (scope === 'class_specific' && grade && section) {
+    teacherSql = `
+      SELECT COUNT(DISTINCT u.id) AS n
+      FROM users u
+      LEFT JOIN teacher_assignments ta
+        ON ta.teacher_id = u.id AND ta.school_year = ? AND ta.grade_level = ? AND ta.section = ?
+      LEFT JOIN teacher_profiles tp
+        ON tp.user_id = u.id AND tp.homeroom_grade = ? AND tp.homeroom_section = ?
+      WHERE u.role = 'teacher' AND u.STATUS = 'active'
+        AND (ta.teacher_id IS NOT NULL OR tp.user_id IS NOT NULL)`;
+    teacherParams = [schoolYear, grade, section, grade, section];
+  }
+  const [[teachers]] = await db.query(teacherSql, teacherParams);
+
+  let parents = 0;
+  if (audience !== 'teachers') {
+    let parentSql = `
+      SELECT COUNT(DISTINCT u.id) AS n
+      FROM users u
+      JOIN parent_student_links psl ON psl.parent_id = u.id
+      JOIN students s ON s.id = psl.student_id AND s.STATUS = 'active'
+      WHERE u.role = 'parent' AND u.STATUS = 'active'`;
+    const parentParams = [];
+    if (scope === 'grade_wide' && grade) {
+      parentSql += ' AND s.grade_level = ?';
+      parentParams.push(grade);
+    } else if (scope === 'class_specific' && grade && section) {
+      parentSql += ' AND s.grade_level = ? AND s.section = ?';
+      parentParams.push(grade, section);
+    }
+    const [[parentRow]] = await db.query(parentSql, parentParams);
+    parents = Number(parentRow?.n) || 0;
+  }
+  return (Number(teachers?.n) || 0) + parents;
+}
+
+// GET /api/admin/overview-charts
+exports.getOverviewCharts = async (req, res) => {
+  try {
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    const [gradeRows] = await db.query(
+      `SELECT grade_level AS grade, COUNT(*) AS count
+       FROM students
+       WHERE \`STATUS\` = 'active'
+       GROUP BY grade_level`
+    );
+    const studentsByGrade = [1, 2, 3, 4, 5, 6].map((grade) => {
+      const row = gradeRows.find((r) => Number(r.grade) === grade);
+      return { grade, count: row ? Number(row.count) : 0 };
+    });
+
+    const [[studentCountRow]] = await db.query(
+      `SELECT COUNT(*) AS n FROM students WHERE \`STATUS\` = 'active'`
+    );
+    const [attRows] = await db.query(
+      `SELECT student_id,
+              SUM(\`STATUS\` = 'Present') AS present_n,
+              SUM(\`STATUS\` = 'Late') AS late_n,
+              SUM(\`STATUS\` = 'Absent') AS absent_n,
+              SUM(\`STATUS\` = 'Excused') AS excused_n
+       FROM attendance
+       WHERE \`DATE\` = ?
+       GROUP BY student_id`,
+      [date]
+    );
+    const attendance = { present: 0, late: 0, absent: 0, excused: 0 };
+    for (const row of attRows) attendance[classifyAttendanceRow(row)] += 1;
+    const recorded = attRows.length;
+    const activeStudents = Number(studentCountRow?.n) || 0;
+    attendance.unmarked = Math.max(0, activeStudents - recorded);
+    attendance.recorded = recorded;
+    attendance.activeStudents = activeStudents;
+
+    const announcementSelect = `
+      SELECT a.id, a.title,
+             COALESCE(NULLIF(TRIM(a.body), ''), a.content) AS body,
+             a.priority, a.scope, a.target_grade, a.target_section, a.audience, a.created_at,
+             CONCAT(u.first_name, ' ', u.last_name) AS sender_name,
+             u.avatar_url AS sender_avatar
+      FROM announcements a
+      JOIN users u ON a.sender_id = u.id`;
+    const [annRows] = await db.query(
+      `${announcementSelect}
+       WHERE DATE(a.created_at) = ?
+       ORDER BY a.created_at DESC
+       LIMIT 1`,
+      [date]
+    );
+    const raw = annRows[0] || null;
+    const [importantRows] = await db.query(
+      `${announcementSelect}
+       WHERE (? IS NULL OR a.id <> ?)
+       ORDER BY CASE COALESCE(a.priority, 'normal')
+         WHEN 'urgent' THEN 1
+         WHEN 'high' THEN 2
+         WHEN 'normal' THEN 3
+         ELSE 4
+       END, a.created_at DESC
+       LIMIT 1`,
+      [raw ? raw.id : null, raw ? raw.id : null]
+    );
+    const announcement = await presentOverviewAnnouncement(raw);
+    const importantAnnouncement = await presentOverviewAnnouncement(importantRows[0] || null);
+
+    res.json({ date, studentsByGrade, attendance, announcement, importantAnnouncement });
+  } catch (error) {
+    console.error('Get overview charts error:', error);
+    res.status(500).json({ error: 'Server error fetching overview charts' });
   }
 };

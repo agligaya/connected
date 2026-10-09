@@ -63,7 +63,25 @@ function describeSessionMarks(morning, afternoon, singular, pluralWord) {
 /**
  * Template NLG from attendance + Records grouped by subject. No LLM call.
  */
-function buildParentInsight({ firstName, stats, records, average }) {
+function typePartPhrase(label, ends) {
+  if (!ends?.strong_part) return '';
+  const strong = ends.strong_part;
+  if (!ends.weak_part) {
+    return `In the ${label}, ${strong.name} is ${strong.avg_percent}%.`;
+  }
+  const weak = ends.weak_part;
+  return `In the ${label}, ${strong.name} is the strongest part (${strong.avg_percent}%) and ${weak.name} is the weakest part (${weak.avg_percent}%).`;
+}
+
+function partPhrase(lesson) {
+  const bits = [
+    typePartPhrase('quiz', lesson.quiz_parts),
+    typePartPhrase('activity', lesson.activity_parts)
+  ].filter(Boolean);
+  return bits.length ? ` ${bits.join(' ')}` : '';
+}
+
+function buildParentInsight({ firstName, stats, records, average, lessons }) {
   const name = String(firstName || 'Your child').trim() || 'Your child';
   const attDays = Number(stats?.totalDays) || 0;
   const rate = Number(stats?.attendanceRate) || 0;
@@ -107,11 +125,22 @@ function buildParentInsight({ firstName, stats, records, average }) {
     bullets.push(`${joinList(labeledSubjects(atRisk))} are at risk of failing.`);
   }
 
-  if (studyNames.length) {
+  const lessonRows = Array.isArray(lessons) ? lessons : [];
+  const lessonNeeds = lessonRows.filter((l) => Number(l.avg_percent) < PASSING);
+  const lessonStrengths = lessonRows.filter((l) => Number(l.avg_percent) >= STRONG);
+  lessonNeeds.slice(0, 3).forEach((l) => {
+    bullets.push(`${l.lesson} needs work (${l.avg_percent}%).${partPhrase(l)}`);
+  });
+  lessonStrengths.slice(0, 3).forEach((l) => {
+    bullets.push(`${l.lesson} is a strength (${l.avg_percent}%).${partPhrase(l)}`);
+  });
+  if (!lessonRows.length && studyNames.length) {
     bullets.push(`I recommend ${name} to study more in ${joinList(studyNames)}.`);
     if (study.some((s) => s.count < 2 && !atRisk.includes(s))) {
       bullets.push('Some of those subjects have only 1 recorded item so far.');
     }
+  } else if (lessonRows.length && study.some((s) => s.count < 2 && !atRisk.includes(s))) {
+    bullets.push('Some subjects have only 1 recorded item so far.');
   }
 
   if (strengths.length === 1) {
@@ -141,4 +170,4 @@ function buildParentInsight({ firstName, stats, records, average }) {
   return { ready: true, text: bullets.join(' '), bullets };
 }
 
-module.exports = { buildParentInsight };
+module.exports = { buildParentInsight, PASSING, STRONG };

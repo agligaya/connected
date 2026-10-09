@@ -69,10 +69,16 @@ function getSmsProvider() {
   const p = String(process.env.SMS_PROVIDER || 'itexmo').trim().toLowerCase();
   if (p === 'semaphore') return 'semaphore';
   if (p === 'philsms') return 'philsms';
+  if (p === 'smsgate') return 'smsgate';
   return 'itexmo';
 }
 
 function isSmsConfigured() {
+  if (getSmsProvider() === 'smsgate') {
+    const username = String(process.env.SMSGATE_USERNAME || '').trim();
+    const password = String(process.env.SMSGATE_PASSWORD || '').trim();
+    return !!(username && password);
+  }
   const key = String(process.env.SMS_API_KEY || '').trim();
   if (!key) return false;
   if (getSmsProvider() === 'itexmo') {
@@ -90,6 +96,20 @@ function toPhilsmsRecipient(phone) {
   return `63${local.slice(1)}`;
 }
 
+/** SMSGate wants E.164. Queue stores 09XXXXXXXXX. */
+function toSmsgateRecipient(phone) {
+  const local = normalizePhMobile(phone);
+  if (!local) return null;
+  return `+63${local.slice(1)}`;
+}
+
+function smsgateMessageUrl() {
+  const raw = String(process.env.SMSGATE_URL || 'https://api.sms-gate.app/3rdparty/v1').trim();
+  const base = raw.replace(/\/+$/, '');
+  if (/\/message$/i.test(base)) return base;
+  return `${base}/message`;
+}
+
 function isSmsDryRun() {
   const v = String(process.env.SMS_DRY_RUN || '').toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
@@ -103,11 +123,27 @@ function pickParentPhone(userPhone, emergencyContact) {
   return normalizePhMobile(userPhone) || normalizePhMobile(emergencyContact);
 }
 
+const ANNOUNCEMENT_SMS_BODY = 'ConnectED: New Announcement Posted!';
+
+function formatSmsScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  const rounded = Math.round(num * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function scoreNoticeBody({ firstName, lastName, score, maxScore, title }) {
+  const name = `${firstName || ''} ${lastName || ''}`.trim() || 'Your child';
+  const label = String(title || 'assessment').trim().slice(0, 80) || 'assessment';
+  return `ConnectED: ${name} scored ${formatSmsScore(score)}/${formatSmsScore(maxScore)} on ${label}.`;
+}
+
 async function enqueueSms({
   parentId = null,
   studentId = null,
   phone,
   body,
+  allowDuplicate = false,
   conn = db
 }) {
   await ensureSmsSchema(conn);
@@ -118,6 +154,15 @@ async function enqueueSms({
   const text = String(body || '').trim().slice(0, 480);
   if (!text) {
     return { queued: false, reason: 'empty_body' };
+  }
+
+  if (allowDuplicate) {
+    const [result] = await conn.query(
+      `INSERT INTO sms_queue (parent_id, student_id, phone, body, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+      [parentId, studentId, normalized, text]
+    );
+    return { queued: true, id: result.insertId };
   }
 
   const [dup] = await conn.query(
@@ -320,6 +365,61 @@ async function sendViaItexmo(phone, message) {
   return { provider: 'itexmo', version: 'v5', data };
 }
 
+/**
+ * SMSGate (https://sms-gate.app) cloud or local device API.
+ * POST {base}/message with Basic auth.
+ * Body: { textMessage: { text }, phoneNumbers: ["+639..."] }
+ * 200 or 202 means the gateway accepted the message.
+ */
+async function sendViaSmsgate(phone, message) {
+  const username = String(process.env.SMSGATE_USERNAME || '').trim();
+  const password = String(process.env.SMSGATE_PASSWORD || '').trim();
+  if (!username || !password) {
+    const err = new Error('SMSGATE_USERNAME and SMSGATE_PASSWORD are required');
+    err.code = 'NO_API_KEY';
+    throw err;
+  }
+
+  const recipient = toSmsgateRecipient(phone);
+  if (!recipient) {
+    throw new Error('Invalid Philippine mobile number for SMSGate');
+  }
+
+  const basic = Buffer.from(`${username}:${password}`).toString('base64');
+  const res = await fetch(smsgateMessageUrl(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({
+      textMessage: { text: message },
+      phoneNumbers: [recipient]
+    })
+  });
+
+  const raw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = { raw };
+  }
+
+  if (res.status !== 200 && res.status !== 202) {
+    const msg =
+      data?.message ||
+      data?.error ||
+      (typeof data?.raw === 'string' ? data.raw : null) ||
+      raw ||
+      `HTTP ${res.status}`;
+    throw new Error(String(msg).slice(0, 400));
+  }
+
+  return { provider: 'smsgate', data };
+}
+
 async function sendSms(phone, message) {
   const provider = getSmsProvider();
   if (provider === 'semaphore') {
@@ -327,6 +427,9 @@ async function sendSms(phone, message) {
   }
   if (provider === 'philsms') {
     return sendViaPhilsms(phone, message);
+  }
+  if (provider === 'smsgate') {
+    return sendViaSmsgate(phone, message);
   }
   return sendViaItexmo(phone, message);
 }
@@ -390,6 +493,102 @@ async function processSmsQueue({ limit = 20 } = {}) {
   return { processed: rows.length, sent, failed };
 }
 
+async function sendQueuedNow(ids) {
+  for (const id of ids) {
+    const [[row]] = await db.query(
+      `SELECT id, parent_id, student_id, phone, body, status, attempts
+       FROM sms_queue
+       WHERE id = ? AND status = 'pending'`,
+      [id]
+    );
+    if (row) await processOneSms(row);
+  }
+}
+
+async function queueParentSms(parents, { studentId = null, body, allowDuplicate = false }) {
+  const ids = [];
+  for (const parent of parents) {
+    const phone = pickParentPhone(parent.phone, parent.emergency_contact);
+    if (!phone) continue;
+    const result = await enqueueSms({
+      parentId: parent.parent_id,
+      studentId,
+      phone,
+      body,
+      allowDuplicate
+    });
+    if (result.queued && result.id) ids.push(result.id);
+  }
+  if (ids.length) {
+    try {
+      await sendQueuedNow(ids);
+    } catch (error) {
+      console.error('[sms] immediate send:', error.message);
+    }
+  }
+  return { queued: ids.length };
+}
+
+async function notifyStudentScore({
+  studentId,
+  firstName = null,
+  lastName = null,
+  score,
+  maxScore,
+  title
+}) {
+  let first = firstName;
+  let last = lastName;
+  if (!first && !last) {
+    const [[student]] = await db.query(
+      'SELECT first_name, last_name FROM students WHERE id = ?',
+      [studentId]
+    );
+    if (!student) return { queued: 0 };
+    first = student.first_name;
+    last = student.last_name;
+  }
+  const [parents] = await db.query(
+    `SELECT psl.parent_id, u.phone, pp.emergency_contact
+     FROM parent_student_links psl
+     JOIN users u ON u.id = psl.parent_id
+     LEFT JOIN parent_profiles pp ON pp.user_id = u.id
+     WHERE psl.student_id = ? AND u.role = 'parent'
+       AND COALESCE(u.STATUS, u.status, 'active') != 'inactive'`,
+    [studentId]
+  );
+  return queueParentSms(parents, {
+    studentId,
+    body: scoreNoticeBody({ firstName: first, lastName: last, score, maxScore, title })
+  });
+}
+
+async function notifyClassAnnouncement({ grade, section }) {
+  const [parents] = await db.query(
+    `SELECT u.id AS parent_id, u.phone, pp.emergency_contact, MIN(s.id) AS student_id
+     FROM students s
+     JOIN parent_student_links psl ON psl.student_id = s.id
+     JOIN users u ON u.id = psl.parent_id
+     LEFT JOIN parent_profiles pp ON pp.user_id = u.id
+     WHERE s.grade_level = ? AND TRIM(s.section) = TRIM(?)
+       AND s.\`STATUS\` = 'active' AND s.deleted_at IS NULL
+       AND u.role = 'parent'
+       AND COALESCE(u.STATUS, u.status, 'active') != 'inactive'
+     GROUP BY u.id, u.phone, pp.emergency_contact`,
+    [grade, section]
+  );
+  let queued = 0;
+  for (const parent of parents) {
+    const result = await queueParentSms([parent], {
+      studentId: parent.student_id,
+      body: ANNOUNCEMENT_SMS_BODY,
+      allowDuplicate: true
+    });
+    queued += result.queued;
+  }
+  return { queued };
+}
+
 function startSmsWorker() {
   if (workerStarted) return;
   workerStarted = true;
@@ -419,7 +618,9 @@ function startSmsWorker() {
           ? ''
           : provider === 'itexmo'
             ? ' (need SMS_API_KEY + ITEXMO_EMAIL + ITEXMO_PASSWORD — simulated)'
-            : ' (no SMS_API_KEY — simulated send)')
+            : provider === 'smsgate'
+              ? ' (need SMSGATE_USERNAME + SMSGATE_PASSWORD — simulated)'
+              : ' (no SMS_API_KEY — simulated send)')
   );
 }
 
@@ -427,11 +628,16 @@ module.exports = {
   ensureSmsSchema,
   normalizePhMobile,
   isValidPhMobile,
+  toSmsgateRecipient,
   getSmsProvider,
   isSmsConfigured,
   isSmsDryRun,
   pickParentPhone,
   enqueueSms,
   processSmsQueue,
-  startSmsWorker
+  startSmsWorker,
+  scoreNoticeBody,
+  ANNOUNCEMENT_SMS_BODY,
+  notifyStudentScore,
+  notifyClassAnnouncement
 };
