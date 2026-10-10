@@ -5295,7 +5295,7 @@ async function submitBulkImport({ url, fileInput, errorEl, resultEl, noun, refre
 document.getElementById('bulk-account-template')?.addEventListener('click', () => {
   downloadCsvTemplate(
     'account-import-template.csv',
-    'first_name,last_name,email,password,role,phone,address,emergency_contact,is_class_adviser,class_adviser_grade,class_adviser_section,is_subject_teacher,subject_assignments\n'
+    'first_name,last_name,email,role,phone,address,emergency_contact,is_class_adviser,class_adviser_grade,class_adviser_section,is_subject_teacher,subject_assignments\n'
   );
 });
 document.getElementById('bulk-student-template')?.addEventListener('click', () => {

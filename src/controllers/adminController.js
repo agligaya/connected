@@ -1,5 +1,6 @@
 const db = require('../../db');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { schoolYear } = require('../config');
 const { plainText } = require('../utils/plainText');
 const {
@@ -498,6 +499,14 @@ function yesFlag(value) {
   return s === 'yes' || s === 'y' || s === 'true' || s === '1';
 }
 
+function generateTempPassword(length = 10) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
 async function subjectAssignmentsFromCell(raw) {
   const text = String(raw || '').trim();
   if (!text) return [];
@@ -534,13 +543,14 @@ exports.bulkCreateAccounts = async (req, res) => {
       try {
         const role = String(row.role || '').trim().toLowerCase();
         if (role === 'admin') throw accountError(400, 'Admin accounts cannot be imported');
+        const password = String(row.password || '').trim() || generateTempPassword();
         const subject_assignments = await subjectAssignmentsFromCell(row.subject_assignments);
         await createAccountRecord({
           first_name: row.first_name,
           last_name: row.last_name,
           email,
           phone: row.phone,
-          password: row.password,
+          password,
           role,
           address: row.address,
           emergency_contact: row.emergency_contact,
@@ -556,7 +566,7 @@ exports.bulkCreateAccounts = async (req, res) => {
           lastName: plainText(row.last_name),
           email,
           role,
-          password: String(row.password || '')
+          password
         });
         if (mail.sent) emailed += 1;
       } catch (error) {

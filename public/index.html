@@ -1721,7 +1721,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261010m7" type="module"></script>
+  <script src="/js/app.js?v=20261010m8" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -1939,7 +1939,7 @@
 <div id="bulk-account-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:560px;">
     <h3 class="font-heading">Bulk Add Accounts</h3>
-    <p class="page-subheading">Upload an Excel (.xlsx) or CSV file. One row creates one teacher or parent. Download the template for the column names.</p>
+    <p class="page-subheading">Upload an Excel (.xlsx) or CSV file. One row creates one teacher or parent. Download the template for the column names. There is no password column: ConnectED creates a temporary password and emails it.</p>
     <p class="page-subheading">Teachers need <code>is_class_adviser</code> and/or <code>is_subject_teacher</code> set to yes. Subject rows use <code>CODE:grade:section</code> separated by semicolons, for example <code>MATH:4:A;SCI:5:B</code>.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">
       <button type="button" class="chip-ghost" id="bulk-account-template">Download template</button>
