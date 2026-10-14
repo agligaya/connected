@@ -1,4 +1,5 @@
 const db = require('../../db');
+const { formatManilaSqlDatetime, normalizeSqlDatetime, ensureQuizAttendanceSchema } = require('./quizAttendance');
 
 let schemaPromise = null;
 let workerStarted = false;
@@ -37,6 +38,17 @@ async function ensureSmsSchema(conn = db) {
         KEY idx_sms_status_created (status, created_at),
         KEY idx_sms_parent (parent_id),
         KEY idx_sms_student (student_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS activity_due_notices (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        assessment_id INT NOT NULL,
+        student_id INT NOT NULL,
+        parent_id INT NOT NULL,
+        closes_at DATETIME NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_activity_due_notice (assessment_id, student_id, parent_id, closes_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   })().catch((e) => {
@@ -589,6 +601,155 @@ async function notifyClassAnnouncement({ grade, section }) {
   return { queued };
 }
 
+function formatActivityDueWhen(closesAt) {
+  const normalized = normalizeSqlDatetime(closesAt);
+  if (!normalized) return 'soon';
+  const [date, time] = normalized.split(' ');
+  const [, month, day] = date.split('-').map(Number);
+  const [hour, minute] = (time || '00:00:00').split(':').map(Number);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const hour12 = hour % 12 || 12;
+  const ampm = hour < 12 ? 'AM' : 'PM';
+  const year = date.slice(0, 4);
+  return `${months[(month || 1) - 1]} ${day}, ${year}, ${hour12}:${String(minute || 0).padStart(2, '0')} ${ampm}`;
+}
+
+function activityDueNoticeBody({ title, firstName, lastName, grade, section, closesAt }) {
+  const child = `${firstName || ''} ${lastName || ''}`.trim() || 'your child';
+  const label = String(title || 'Activity').trim().slice(0, 80) || 'Activity';
+  const gradeBit = `Grade ${grade}-${String(section || '').trim()}`;
+  return `ConnectED: Activity "${label}" for ${child} (${gradeBit}) is due ${formatActivityDueWhen(closesAt)}. It is not submitted yet.`.slice(0, 480);
+}
+
+function activityLinkSmsBody({ title, firstName, lastName, grade, section, url, closesAt }) {
+  const child = `${firstName || ''} ${lastName || ''}`.trim() || 'your child';
+  const label = String(title || 'Activity').trim().slice(0, 60) || 'Activity';
+  const gradeBit = `Grade ${grade}-${String(section || '').trim()}`;
+  const due = closesAt ? ` Due ${formatActivityDueWhen(closesAt)}.` : '';
+  return `ConnectED: Activity "${label}" for ${child} (${gradeBit}).${due} Open: ${url}`.slice(0, 480);
+}
+
+async function notifyTakeHomeLink({ title, grade, section, token, origin, closesAt }) {
+  const base = String(origin || '').replace(/\/+$/, '');
+  if (!base || !token) return { queued: 0 };
+  const url = `${base}/activity/${token}`;
+  const [parents] = await db.query(
+    `SELECT psl.parent_id, u.phone, pp.emergency_contact, s.id AS student_id, s.first_name, s.last_name
+     FROM students s
+     JOIN parent_student_links psl ON psl.student_id = s.id
+     JOIN users u ON u.id = psl.parent_id
+     LEFT JOIN parent_profiles pp ON pp.user_id = u.id
+     WHERE s.grade_level = ? AND TRIM(s.section) = TRIM(?)
+       AND s.\`STATUS\` = 'active' AND s.deleted_at IS NULL
+       AND u.role = 'parent'
+       AND COALESCE(u.STATUS, u.status, 'active') != 'inactive'`,
+    [grade, section]
+  );
+  let queued = 0;
+  for (const parent of parents) {
+    const result = await queueParentSms([parent], {
+      studentId: parent.student_id,
+      allowDuplicate: true,
+      body: activityLinkSmsBody({
+        title,
+        firstName: parent.first_name,
+        lastName: parent.last_name,
+        grade,
+        section,
+        url,
+        closesAt
+      })
+    });
+    queued += result.queued;
+  }
+  return { queued };
+}
+
+async function listActivitiesNearDue(now = new Date()) {
+  await ensureSmsSchema();
+  await ensureQuizAttendanceSchema();
+  const start = formatManilaSqlDatetime(now);
+  const end = formatManilaSqlDatetime(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+  const [rows] = await db.query(
+    `SELECT id, title, grade_level, section,
+            CASE
+              WHEN activity_mode = 'take_home' THEN activity_target_at
+              ELSE quiz_closes_at
+            END AS quiz_closes_at
+     FROM assessments
+     WHERE \`TYPE\` = 'activity'
+       AND share_enabled = 1
+       AND (
+         (activity_mode = 'take_home'
+           AND activity_target_at IS NOT NULL
+           AND activity_target_at > ?
+           AND activity_target_at <= ?)
+         OR (activity_mode IS NULL
+           AND quiz_closes_at IS NOT NULL
+           AND quiz_closes_at > ?
+           AND quiz_closes_at <= ?)
+       )`,
+    [start, end, start, end]
+  );
+  return rows;
+}
+
+async function notifyActivitiesNearDue(now = new Date()) {
+  const activities = await listActivitiesNearDue(now);
+  let queued = 0;
+  for (const activity of activities) {
+    const closesAt = normalizeSqlDatetime(activity.quiz_closes_at);
+    if (!closesAt) continue;
+    const [students] = await db.query(
+      `SELECT s.id, s.first_name, s.last_name
+       FROM students s
+       WHERE s.grade_level = ? AND TRIM(s.section) = TRIM(?)
+         AND s.\`STATUS\` = 'active' AND s.deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM quiz_submissions qs
+           WHERE qs.assessment_id = ? AND qs.student_id = s.id
+         )`,
+      [activity.grade_level, activity.section, activity.id]
+    );
+    for (const student of students) {
+      const [parents] = await db.query(
+        `SELECT psl.parent_id, u.phone, pp.emergency_contact
+         FROM parent_student_links psl
+         JOIN users u ON u.id = psl.parent_id
+         LEFT JOIN parent_profiles pp ON pp.user_id = u.id
+         WHERE psl.student_id = ? AND u.role = 'parent'
+           AND COALESCE(u.STATUS, u.status, 'active') != 'inactive'`,
+        [student.id]
+      );
+      for (const parent of parents) {
+        const phone = pickParentPhone(parent.phone, parent.emergency_contact);
+        if (!phone) continue;
+        const [inserted] = await db.query(
+          `INSERT IGNORE INTO activity_due_notices (assessment_id, student_id, parent_id, closes_at)
+           VALUES (?, ?, ?, ?)`,
+          [activity.id, student.id, parent.parent_id, closesAt]
+        );
+        if (!inserted.affectedRows) continue;
+        const result = await enqueueSms({
+          parentId: parent.parent_id,
+          studentId: student.id,
+          phone,
+          body: activityDueNoticeBody({
+            title: activity.title,
+            firstName: student.first_name,
+            lastName: student.last_name,
+            grade: activity.grade_level,
+            section: activity.section,
+            closesAt
+          })
+        });
+        if (result.queued) queued += 1;
+      }
+    }
+  }
+  return { queued, activities: activities.length };
+}
+
 function startSmsWorker() {
   if (workerStarted) return;
   workerStarted = true;
@@ -596,6 +757,14 @@ function startSmsWorker() {
   const provider = getSmsProvider();
 
   const tick = async () => {
+    try {
+      const due = await notifyActivitiesNearDue();
+      if (due.queued > 0) {
+        console.log(`[sms] activity due reminders queued=${due.queued}`);
+      }
+    } catch (e) {
+      console.error('[sms] activity due:', e.message);
+    }
     try {
       const result = await processSmsQueue({ limit: 25 });
       if (result.processed > 0) {
@@ -639,5 +808,8 @@ module.exports = {
   scoreNoticeBody,
   ANNOUNCEMENT_SMS_BODY,
   notifyStudentScore,
-  notifyClassAnnouncement
+  notifyClassAnnouncement,
+  notifyActivitiesNearDue,
+  notifyTakeHomeLink,
+  activityDueNoticeBody
 };

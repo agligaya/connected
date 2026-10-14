@@ -16,9 +16,10 @@ const {
   addDaysISO,
   sqlDateToISO
 } = require('../utils/attendanceSchema');
-const { buildParentInsight, PASSING, STRONG } = require('../utils/parentInsights');
-const { lessonName, partsByLesson, attachPartsToLessons } = require('../utils/lessonParts');
-const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission } = require('../utils/quizShare');
+const { buildParentInsight, topicInsightForStudent, lessonTopicLookup, PASSING, STRONG } = require('../utils/parentInsights');
+const { lessonName, lessonLookupKey, partsByLesson, attachPartsToLessons } = require('../utils/lessonParts');
+const { ensureAssignmentSlots } = require('../utils/teachingMode');
+const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission, identificationReviewBank } = require('../utils/quizShare');
 const { ensureQuestionBankSchema, formatBankRow } = require('../utils/questionBank');
 
 function cappedPercent(score, maxScore) {
@@ -270,6 +271,7 @@ exports.getChildSubmission = async (req, res) => {
       question: item.question,
       choices: item.choices,
       given: item.given,
+      expected: item.expected,
       correct: item.correct,
       points: item.points
     }));
@@ -286,7 +288,8 @@ exports.getChildSubmission = async (req, res) => {
       type: assessment.type,
       max_score: assessment.max_score,
       quiz_taken: quizTaken,
-      activity_work: activityWork
+      activity_work: activityWork,
+      identification_bank: identificationReviewBank(questions)
     });
   } catch (error) {
     console.error('Get child submission error:', error);
@@ -364,12 +367,20 @@ exports.getChildInsights = async (req, res) => {
       console.warn('[insights] lesson parts:', partErr.message);
     }
 
+    let topics = null;
+    try {
+      topics = await topicInsightForStudent(db, studentId);
+    } catch (topicErr) {
+      console.warn('[insights] topics:', topicErr.message);
+    }
+
     const insight = buildParentInsight({
       firstName: child?.first_name,
       stats,
       records: withPct,
       average,
-      lessons
+      lessons,
+      topics
     });
 
     res.json(insight);
@@ -385,6 +396,91 @@ function lessonStatus(avg) {
   if (avg >= STRONG) return 'excels';
   if (avg >= PASSING) return 'on_track';
   return 'needs_improvement';
+}
+
+function uniqueTopicNames(list) {
+  const out = [];
+  const seen = new Set();
+  for (const topic of list || []) {
+    const text = String(topic || '').trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+function subjectTopicStats(infos) {
+  const map = new Map();
+  for (const info of infos) {
+    for (const row of info.topicCounts || []) {
+      const name = String(row.topic || '').trim();
+      const key = name.toLowerCase();
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, { name, hits: 0, misses: 0 });
+      const slot = map.get(key);
+      slot.hits += Number(row.hits) || 0;
+      slot.misses += Number(row.misses) || 0;
+    }
+  }
+  return [...map.values()].map((row) => {
+    const total = row.hits + row.misses;
+    const percent = total ? Math.round((row.hits / total) * 100) : 0;
+    return { name: row.name, percent, status: lessonStatus(percent) };
+  }).sort((a, b) => b.percent - a.percent || a.name.localeCompare(b.name));
+}
+
+function subjectKindStats(counts) {
+  const labels = { quiz: 'Quiz', activity: 'Activity', exam: 'Exam' };
+  return ['quiz', 'activity', 'exam'].flatMap((kind) => {
+    const list = counts?.[kind] || [];
+    if (!list.length) return [];
+    const percent = Math.round(list.reduce((sum, n) => sum + n, 0) / list.length);
+    return [{
+      kind,
+      name: labels[kind],
+      percent,
+      status: lessonStatus(percent),
+      items: list.length
+    }];
+  });
+}
+
+function subjectTopicLabel(infos, status) {
+  const weak = [];
+  const strong = [];
+  for (const info of infos) {
+    weak.push(...(info.weakTopics || []));
+    strong.push(...(info.strongTopics || []));
+  }
+  const primary = status === 'needs_improvement' ? weak : strong;
+  const secondary = status === 'needs_improvement' ? strong : weak;
+  let names = uniqueTopicNames(primary);
+  if (!names.length) names = uniqueTopicNames(secondary);
+  return names.join(', ');
+}
+
+function mergePartLists(lists) {
+  const map = new Map();
+  for (const part of lists) {
+    const name = String(part?.name || '').trim();
+    if (!name) continue;
+    if (!map.has(name)) map.set(name, { name, sum: 0, n: 0 });
+    const slot = map.get(name);
+    slot.sum += Number(part.avg_percent) || 0;
+    slot.n += 1;
+  }
+  return [...map.values()].map((part) => ({
+    name: part.name,
+    avg_percent: Math.round(part.sum / part.n)
+  }));
+}
+
+function rankedParts(parts) {
+  return [...parts].sort(
+    (a, b) => b.avg_percent - a.avg_percent || a.name.localeCompare(b.name)
+  );
 }
 
 function isISODate(s) {
@@ -454,35 +550,71 @@ exports.getChildLessonAnalytics = async (req, res) => {
       const subjectName = String(r.subject_name || '').trim() || 'General';
       if (!subjectsMap.has(subjectId)) subjectsMap.set(subjectId, { id: subjectId, name: subjectName });
       const lesson = lessonName(r.lesson_title, r.title);
-      const key = `${subjectId}|${lesson.toLowerCase()}`;
-      if (!groups.has(key)) {
-        groups.set(key, { subject_id: subjectId, subject_name: subjectName, lesson, percents: [] });
+      if (!groups.has(subjectId)) {
+        groups.set(subjectId, {
+          subject_id: subjectId,
+          subject_name: subjectName,
+          lessons: [],
+          percents: [],
+          kinds: { quiz: [], activity: [], exam: [] }
+        });
       }
-      groups.get(key).percents.push(cappedPercent(r.score, r.max_score));
+      const group = groups.get(subjectId);
+      const percent = cappedPercent(r.score, r.max_score);
+      group.percents.push(percent);
+      const kind = String(r.type || '').trim().toLowerCase();
+      if (group.kinds[kind]) group.kinds[kind].push(percent);
+      if (!group.lessons.some((name) => name.toLowerCase() === lesson.toLowerCase())) {
+        group.lessons.push(lesson);
+      }
     }
 
-    const lessons = [...groups.values()].map((g) => {
-      const avg = Math.round(g.percents.reduce((a, b) => a + b, 0) / g.percents.length);
-      return {
-        subject_id: g.subject_id,
-        subject_name: g.subject_name,
-        lesson: g.lesson,
-        items: g.percents.length,
-        avg_percent: avg,
-        status: lessonStatus(avg)
-      };
-    }).sort((a, b) => b.avg_percent - a.avg_percent || a.subject_name.localeCompare(b.subject_name));
-
-    const subjects = [...subjectsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
-    let lessonsWithParts = lessons;
+    let topicMap = new Map();
+    let partMap = new Map();
     try {
-      const partMap = await partsByLesson(db, studentId);
-      lessonsWithParts = attachPartsToLessons(lessons, partMap);
+      topicMap = await lessonTopicLookup(db, studentId);
+    } catch (topicErr) {
+      console.warn('[lessons] topics:', topicErr.message);
+    }
+    try {
+      partMap = await partsByLesson(db, studentId);
     } catch (partErr) {
       console.warn('[lessons] parts:', partErr.message);
     }
 
-    res.json({ subjects, lessons: lessonsWithParts, thresholds: { passing: PASSING, strong: STRONG } });
+    const lessons = [...groups.values()].map((g) => {
+      const avg = Math.round(g.percents.reduce((a, b) => a + b, 0) / g.percents.length);
+      const status = lessonStatus(avg);
+      const infos = g.lessons
+        .map((lesson) => topicMap.get(`${g.subject_name.trim().toLowerCase()}|${lesson.trim().toLowerCase()}`))
+        .filter(Boolean);
+      const quizParts = [];
+      const activityParts = [];
+      const examParts = [];
+      for (const lesson of g.lessons) {
+        const parts = partMap.get(lessonLookupKey(lesson)) || { quiz: [], activity: [], exam: [] };
+        quizParts.push(...(parts.quiz || []));
+        activityParts.push(...(parts.activity || []));
+        examParts.push(...(parts.exam || []));
+      }
+      return {
+        subject_id: g.subject_id,
+        subject_name: g.subject_name,
+        lesson: g.subject_name,
+        topic_label: subjectTopicLabel(infos, status),
+        topics: subjectTopicStats(infos),
+        kinds: subjectKindStats(g.kinds),
+        items: g.percents.length,
+        avg_percent: avg,
+        status,
+        quiz_parts: rankedParts(mergePartLists(quizParts)),
+        activity_parts: rankedParts(mergePartLists(activityParts)),
+        exam_parts: rankedParts(mergePartLists(examParts))
+      };
+    }).sort((a, b) => b.avg_percent - a.avg_percent || a.subject_name.localeCompare(b.subject_name));
+
+    const subjects = [...subjectsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ subjects, lessons, thresholds: { passing: PASSING, strong: STRONG } });
   } catch (error) {
     console.error('Get child lesson analytics error:', error);
     res.status(500).json({ error: 'Server error fetching lesson analytics', details: error.message });
@@ -755,9 +887,11 @@ exports.getChildTeachers = async (req, res) => {
     }
 
     const student = students[0];
+    await ensureAssignmentSlots();
     const [teachers] = await db.query(
       `SELECT u.id, u.first_name, u.last_name,
-              MAX(CASE WHEN ta.subject_id IS NULL THEN 1 ELSE 0 END) as is_adviser,
+              MAX(CASE WHEN ta.subject_id IS NULL AND ta.slot = 'assistant' THEN 1 ELSE 0 END) as is_assistant,
+              MAX(CASE WHEN ta.subject_id IS NULL AND ta.slot <> 'assistant' THEN 1 ELSE 0 END) as is_adviser,
               GROUP_CONCAT(DISTINCT s.NAME ORDER BY s.NAME SEPARATOR ', ') as subjects
        FROM teacher_assignments ta
        JOIN users u ON u.id = ta.teacher_id
@@ -768,17 +902,16 @@ exports.getChildTeachers = async (req, res) => {
          AND u.role = 'teacher'
          AND COALESCE(u.STATUS, u.status, 'active') != 'inactive'
        GROUP BY u.id, u.first_name, u.last_name
-       ORDER BY is_adviser DESC, u.last_name, u.first_name`,
+       ORDER BY is_adviser DESC, is_assistant DESC, u.last_name, u.first_name`,
       [student.grade_level, student.section]
     );
 
-    const grade = Number(student.grade_level);
     const labeled = teachers.map(t => {
       let role_label = 'Subject Teacher';
       if (t.is_adviser) {
-        role_label = grade >= 1 && grade <= 3
-          ? 'Class Adviser (all subjects)'
-          : 'Class Adviser';
+        role_label = t.subjects ? `Class Adviser · ${t.subjects}` : 'Class Adviser';
+      } else if (t.is_assistant) {
+        role_label = t.subjects ? `Assistant Teacher · ${t.subjects}` : 'Assistant Teacher';
       } else if (t.subjects) {
         role_label = `Subject Teacher · ${t.subjects}`;
       }
@@ -788,7 +921,8 @@ exports.getChildTeachers = async (req, res) => {
         last_name: t.last_name,
         role_label,
         subjects: t.subjects || null,
-        is_adviser: !!t.is_adviser
+        is_adviser: !!t.is_adviser,
+        is_assistant: !!t.is_assistant
       };
     });
 

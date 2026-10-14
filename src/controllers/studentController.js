@@ -2,6 +2,7 @@ const db = require('../../db');
 const { schoolYear } = require('../config');
 const { plainText } = require('../utils/plainText');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
+const { ensureAssignmentSlots } = require('../utils/teachingMode');
 
 function studentError(status, message) {
   const err = new Error(message);
@@ -56,12 +57,7 @@ async function enrollStudentRecord(body, { linkHomeroom = true } = {}) {
   }
 
   if (linkHomeroom && homeroom_teacher_id) {
-    await db.query(
-      `INSERT INTO teacher_assignments (teacher_id, grade_level, section, school_year)
-       VALUES (?, ?, ?, '${schoolYear}')
-       ON DUPLICATE KEY UPDATE teacher_id = VALUES(teacher_id)`,
-      [homeroom_teacher_id, grade_level, section]
-    );
+    await ensureAdviserSlot(homeroom_teacher_id, grade_level, section);
   }
 
   return { studentId };
@@ -127,9 +123,28 @@ exports.bulkEnrollStudents = async (req, res) => {
   }
 };
 
+async function ensureAdviserSlot(teacherId, gradeLevel, section) {
+  await ensureAssignmentSlots();
+  const [existing] = await db.query(
+    `SELECT id FROM teacher_assignments
+     WHERE teacher_id = ? AND grade_level = ?
+       AND TRIM(UPPER(section)) = TRIM(UPPER(?))
+       AND subject_id IS NULL AND slot = 'adviser' AND school_year = ?
+     LIMIT 1`,
+    [teacherId, gradeLevel, section, schoolYear]
+  );
+  if (existing.length) return;
+  await db.query(
+    `INSERT INTO teacher_assignments (teacher_id, grade_level, section, school_year, slot)
+     VALUES (?, ?, ?, ?, 'adviser')`,
+    [teacherId, gradeLevel, section, schoolYear]
+  );
+}
+
 exports.getStudents = async (req, res) => {
   try {
     await ensureSoftDeleteSchema();
+    await ensureAssignmentSlots();
     const [students] = await db.query(
       `SELECT s.id, s.lrn, s.first_name, s.middle_name, s.last_name, s.grade_level, s.section, s.gender, s.dob, s.STATUS as status,
         MAX(psl.parent_id) as parent_id,
@@ -141,7 +156,7 @@ exports.getStudents = async (req, res) => {
        LEFT JOIN (
          SELECT teacher_id, grade_level, section
          FROM teacher_assignments
-         WHERE subject_id IS NULL AND school_year = '${schoolYear}'
+         WHERE subject_id IS NULL AND slot = 'adviser' AND school_year = '${schoolYear}'
        ) ta ON s.grade_level = ta.grade_level AND s.section = ta.section
        LEFT JOIN users t ON ta.teacher_id = t.id
        WHERE s.deleted_at IS NULL
@@ -239,12 +254,7 @@ exports.updateStudent = async (req, res) => {
       }
 
       if (homeroom_teacher_id) {
-        await db.query(
-          `INSERT INTO teacher_assignments (teacher_id, grade_level, section, school_year)
-           VALUES (?, ?, ?, '${schoolYear}')
-           ON DUPLICATE KEY UPDATE teacher_id = VALUES(teacher_id)`,
-          [homeroom_teacher_id, grade_level, sectionNorm]
-        );
+        await ensureAdviserSlot(homeroom_teacher_id, grade_level, sectionNorm);
       }
     } else {
       if (parent_id) {

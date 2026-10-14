@@ -49,10 +49,13 @@ app.use('/api/subjects', require('./routes/subjects'));
 app.use('/api/quiz', require('./routes/quizPublic'));
 app.use('/api/inbox', require('./routes/inbox'));
 
-// Public shared quiz page (students — no login)
-app.get('/quiz/:token', (req, res) => {
+// Public shared classwork page (students — no login). /quiz/ stays so older links still open.
+function sendSharedClassworkPage(_req, res) {
   res.sendFile(path.join(__dirname, '../public/quiz.html'));
-});
+}
+app.get('/quiz/:token', sendSharedClassworkPage);
+app.get('/activity/:token', sendSharedClassworkPage);
+app.get('/exam/:token', sendSharedClassworkPage);
 
 // Path portals (/login, /admin, /teacher, /parent) when ROUTING_V2_ENABLED is on.
 app.use(portalPages(indexHtmlPath));

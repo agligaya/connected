@@ -600,10 +600,8 @@ function toggleRoleFields() {
     teacherFields.style.display = 'block';
     parentFields.style.display = 'none';
     // Reset checkboxes when switching to teacher
-    document.getElementById('teacher-role-class-adviser').checked = false;
-    document.getElementById('teacher-role-subject-teacher').checked = false;
+    document.querySelectorAll('input[name="teacher-home-role"]').forEach((el) => { el.checked = false; });
     toggleClassAdviserFields();
-    toggleSubjectTeacherFields();
   } else if (role === 'parent') {
     teacherFields.style.display = 'none';
     document.getElementById('class-adviser-fields').style.display = 'none';
@@ -617,21 +615,174 @@ function toggleRoleFields() {
   }
 }
 
-window.toggleClassAdviserFields = function() {
-  const checked = document.getElementById('teacher-role-class-adviser')?.checked;
-  const caFields = document.getElementById('class-adviser-fields');
-  if (caFields) caFields.style.display = checked ? 'grid' : 'none';
-  if (checked) loadClassAdviserSections();
-};
+function isUpperSchoolGrade(grade) {
+  return ['4', '5', '6'].includes(String(grade || ''));
+}
 
-window.toggleSubjectTeacherFields = function() {
-  const checked = document.getElementById('teacher-role-subject-teacher')?.checked;
-  const stFields = document.getElementById('subject-teacher-fields');
-  const container = document.getElementById('subject-assignments-container');
-  if (stFields) stFields.style.display = checked ? 'block' : 'none';
-  if (checked && container && container.children.length === 0) {
-    addSubjectAssignment();
+function isLowerSchoolGrade(grade) {
+  return ['1', '2', '3'].includes(String(grade || ''));
+}
+
+function otherClassAssignmentCopy(grade) {
+  const title = 'Also handles subjects in other grade levels or sections';
+  if (isUpperSchoolGrade(grade)) {
+    return {
+      title,
+      help: 'Add subjects this teacher handles in other Grade 4–6 sections. Subjects in this class are selected above. One teacher per subject per class.'
+    };
   }
+  if (isLowerSchoolGrade(grade)) {
+    return {
+      title,
+      help: 'Add subjects this teacher handles in Grades 4–6. Only the class adviser and assistant teacher cover Grades 1–3.'
+    };
+  }
+  return { title, help: '' };
+}
+
+function selectedHomeRole(inputName) {
+  return document.querySelector(`input[name="${inputName}"]:checked`)?.value || '';
+}
+
+function homeRoleTitle(role) {
+  return role === 'assistant' ? 'Assistant Teacher Assignment' : 'Class Adviser Assignment';
+}
+
+let subjectCatalogPromise = null;
+function loadSubjectCatalog() {
+  if (!subjectCatalogPromise) {
+    subjectCatalogPromise = fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load subjects');
+        return Array.isArray(data) ? data : [];
+      })
+      .catch((err) => {
+        subjectCatalogPromise = null;
+        throw err;
+      });
+  }
+  return subjectCatalogPromise;
+}
+
+function subjectAppliesToGrade(subject, grade) {
+  if (!subject?.applicable_grades) return false;
+  const ag = String(subject.applicable_grades).trim();
+  const g = parseInt(grade, 10);
+  if (Number.isNaN(g)) return false;
+  const rangeMatch = ag.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    return g >= start && g <= end;
+  }
+  if (ag.includes(',')) {
+    return ag.split(',').map((x) => parseInt(x.trim(), 10)).includes(g);
+  }
+  return parseInt(ag, 10) === g;
+}
+
+async function fetchClassSlots(grade, section, excludeTeacherId) {
+  if (!grade || !section) return { adviser: null, assistant: null, taken_subjects: [] };
+  const params = new URLSearchParams({
+    grade_level: String(grade),
+    section: String(section)
+  });
+  if (excludeTeacherId) params.set('exclude_teacher_id', String(excludeTeacherId));
+  const res = await fetch(`${API_URL}/admin/class-slots?${params}`, { headers: getAuthHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load class assignments');
+  return data;
+}
+
+function activeHomeForm() {
+  const editOpen = document.getElementById('edit-teacher-modal') && !document.getElementById('edit-teacher-modal').hasAttribute('hidden');
+  const prefix = editOpen ? 'edit-' : '';
+  const grade = document.getElementById(`${prefix}class-adviser-grade`)?.value || '';
+  const sectionSelect = document.getElementById(`${prefix}class-adviser-section`);
+  let section = sectionSelect?.value || '';
+  if (section === '__NEW__') {
+    section = (document.getElementById(`${prefix}class-adviser-new-section`)?.value || '').trim();
+  }
+  const listId = prefix ? 'edit-class-adviser-subjects-list' : 'class-adviser-subjects-list';
+  const boxClass = prefix ? '.edit-ca-subject-checkbox' : '.ca-subject-checkbox';
+  const claimed = [...document.querySelectorAll(`#${listId} ${boxClass}:checked`)].map((cb) => String(cb.value));
+  const excludeId = prefix ? document.getElementById('edit-teacher-id')?.value : '';
+  return { grade, section, claimed, excludeId };
+}
+
+function subjectOptionLabel(subject) {
+  return subject.subject_name || subject.name || subject.NAME || 'Unnamed';
+}
+
+function collectSubjectAssignmentRows(containerSelector) {
+  const rows = document.querySelectorAll(`${containerSelector} > .form-row`);
+  const assignments = [];
+  for (const row of rows) {
+    const subjectId = row.querySelector('.subject-id-select')?.value;
+    const grade = row.querySelector('.subject-grade-select')?.value;
+    const sectionSelect = row.querySelector('.subject-section-select');
+    const sectionNew = row.querySelector('.subject-new-section');
+    const errorEl = row.querySelector('.subject-section-error');
+    let section = null;
+    if (sectionSelect?.value === '__NEW__') {
+      section = validateSectionName(sectionNew?.value || '', null, errorEl?.id);
+      if (sectionNew?.value?.trim() && !section) return null;
+    } else {
+      section = sectionSelect?.value || null;
+    }
+    const started = !!(subjectId || grade || section);
+    if (!started) continue;
+    if (!subjectId || !isUpperSchoolGrade(grade) || !section) {
+      alert('Each subject row needs a subject, a Grades 4–6 level, and a section.');
+      return null;
+    }
+    assignments.push({
+      subject_id: parseInt(subjectId, 10),
+      grade_level: parseInt(grade, 10),
+      section
+    });
+  }
+  return assignments;
+}
+
+function syncCreateSubjectPanel() {
+  const isCA = !!selectedHomeRole('teacher-home-role');
+  const also = document.getElementById('teacher-also-teaches');
+  const wrap = document.getElementById('teacher-also-teaches-wrap');
+  const grade = document.getElementById('class-adviser-grade')?.value;
+  if (!isCA && also) also.checked = false;
+  if (wrap) wrap.style.display = isCA ? 'flex' : 'none';
+  const copy = otherClassAssignmentCopy(grade);
+  const label = document.getElementById('teacher-also-teaches-label');
+  if (label) label.textContent = copy.title;
+  const showRows = !!(isCA && also?.checked);
+  const fields = document.getElementById('subject-teacher-fields');
+  if (fields) fields.style.display = showRows ? 'block' : 'none';
+  const title = document.getElementById('subject-teacher-title');
+  const help = document.getElementById('subject-teacher-help');
+  if (title) title.style.display = 'none';
+  if (help) help.textContent = copy.help;
+  const container = document.getElementById('subject-assignments-container');
+  if (showRows && container && container.children.length === 0) addSubjectAssignment();
+}
+window.syncCreateSubjectPanel = syncCreateSubjectPanel;
+
+window.toggleClassAdviserFields = function() {
+  const role = selectedHomeRole('teacher-home-role');
+  const checked = !!role;
+  const caFields = document.getElementById('class-adviser-fields');
+  const title = document.getElementById('class-adviser-fields-title');
+  if (title) title.textContent = homeRoleTitle(role);
+  if (caFields) caFields.style.display = checked ? 'grid' : 'none';
+  if (!checked) {
+    const wrap = document.getElementById('class-adviser-subjects-wrap');
+    const note = document.getElementById('class-adviser-auto-note');
+    if (wrap) wrap.style.display = 'none';
+    if (note) note.style.display = 'none';
+  }
+  if (checked) loadClassAdviserSections();
+  syncCreateSubjectPanel();
 };
 
 window.loadClassAdviserSections = async function() {
@@ -641,14 +792,15 @@ window.loadClassAdviserSections = async function() {
   if (!gradeSelect || !sectionSelect) return;
 
   // Reset
-  sectionSelect.style.display = 'block';
-  if (newInput) { newInput.style.display = 'none'; newInput.value = ''; }
+  sectionSelect.style.display = '';
+  if (newInput) { newInput.hidden = true; newInput.style.display = ''; newInput.value = ''; }
 
   const grade = gradeSelect.value;
   if (!grade) {
     sectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
     sectionSelect.disabled = true;
     loadClassAdviserSubjects();
+    syncCreateSubjectPanel();
     return;
   }
 
@@ -671,9 +823,43 @@ window.loadClassAdviserSections = async function() {
     sectionSelect.disabled = false;
   }
   loadClassAdviserSubjects();
+  syncCreateSubjectPanel();
 };
 
-// Load subject checkboxes for Class Adviser (Grades 4-6 only)
+let createSubjectLoadGen = 0;
+
+function homeSectionValue(selectId, newInputId) {
+  const sectionSelect = document.getElementById(selectId);
+  const raw = sectionSelect?.value || '';
+  if (raw === '__NEW__') return { known: false, section: '' };
+  return { known: !!raw, section: raw };
+}
+
+async function renderHomeSubjectChecks({ grade, section, knownSection, list, checkboxClass, preselectedIds, excludeTeacherId, generation, generationRef }) {
+  const subjects = await loadSubjectCatalog();
+  if (generation !== generationRef()) return;
+  let taken = new Set();
+  if (knownSection && section) {
+    const slots = await fetchClassSlots(grade, section, excludeTeacherId);
+    if (generation !== generationRef()) return;
+    taken = new Set((slots.taken_subjects || []).map((row) => String(row.subject_id)));
+  }
+  const selected = new Set((preselectedIds || []).map((id) => String(id)));
+  const applicable = subjects.filter((subject) => subjectAppliesToGrade(subject, grade) && !taken.has(String(subject.id)));
+  if (!applicable.length) {
+    list.innerHTML = `<span style="color:var(--text-muted);font-size:0.8rem;">${taken.size ? 'Every subject in this class is already assigned.' : 'No subjects found for this grade.'}</span>`;
+    return;
+  }
+  list.innerHTML = applicable.map((subject) => `
+    <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+      <input type="checkbox" class="${checkboxClass}" value="${subject.id}" ${selected.has(String(subject.id)) ? 'checked' : ''} onchange="refreshOpenSubjectRows()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+      <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">${subjectOptionLabel(subject)}</span>
+    </label>
+  `).join('');
+  refreshOpenSubjectRows();
+}
+
+// Load subject checkboxes for the home class (Grades 1-6)
 window.loadClassAdviserSubjects = async function() {
   const gradeSelect = document.getElementById('class-adviser-grade');
   const wrap = document.getElementById('class-adviser-subjects-wrap');
@@ -681,57 +867,49 @@ window.loadClassAdviserSubjects = async function() {
   if (!gradeSelect || !wrap || !list) return;
 
   const grade = gradeSelect.value;
-  const isUpperGrade = ['4', '5', '6'].includes(grade);
-  const isLowerGrade = ['1', '2', '3'].includes(grade);
+  const hasGrade = ['1', '2', '3', '4', '5', '6'].includes(grade);
+  const isLowerGrade = isLowerSchoolGrade(grade);
   const autoNote = document.getElementById('class-adviser-auto-note');
   if (autoNote) autoNote.style.display = isLowerGrade ? 'block' : 'none';
 
-  if (!isUpperGrade) {
+  if (!hasGrade) {
     wrap.style.display = 'none';
     list.innerHTML = '';
     return;
   }
 
   wrap.style.display = 'block';
+  const sectionState = homeSectionValue('class-adviser-section', 'class-adviser-new-section');
+  if (!sectionState.known && document.getElementById('class-adviser-section')?.value !== '__NEW__') {
+    list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">Select a section to choose subjects.</span>';
+    return;
+  }
+
+  const generation = ++createSubjectLoadGen;
   list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">Loading subjects...</span>';
-
   try {
-    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-    const subjects = await res.json();
-    if (!res.ok) throw new Error(subjects.error);
-
-    const applicable = subjects.filter(s => {
-      if (!s.applicable_grades) return false;
-      const ag = String(s.applicable_grades).trim();
-      const g = parseInt(grade, 10);
-      const rangeMatch = ag.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (rangeMatch) {
-        const start = parseInt(rangeMatch[1], 10);
-        const end = parseInt(rangeMatch[2], 10);
-        return g >= start && g <= end;
-      }
-      if (ag.includes(',')) {
-        return ag.split(',').map(x => parseInt(x.trim(), 10)).includes(g);
-      }
-      return parseInt(ag, 10) === g;
+    await renderHomeSubjectChecks({
+      grade,
+      section: sectionState.section,
+      knownSection: sectionState.known,
+      list,
+      checkboxClass: 'ca-subject-checkbox',
+      preselectedIds: [],
+      excludeTeacherId: '',
+      generation,
+      generationRef: () => createSubjectLoadGen
     });
-
-    if (!applicable.length) {
-      list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">No subjects found for this grade.</span>';
-      return;
-    }
-
-    list.innerHTML = applicable.map(s => `
-      <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-        <input type="checkbox" class="ca-subject-checkbox" value="${s.id}" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
-        <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">${s.name || s.subject_name || s.NAME || 'Unnamed'}</span>
-      </label>
-    `).join('');
-
   } catch (err) {
+    if (generation !== createSubjectLoadGen) return;
     console.error('Load class adviser subjects error:', err);
     list.innerHTML = '<span style="color:#b71c1c;font-size:0.8rem;">Failed to load subjects.</span>';
   }
+};
+
+window.onClassAdviserSectionChange = function(selectEl, inputId, which) {
+  handleSectionSelect(selectEl, inputId);
+  if (which === 'edit') loadEditClassAdviserSubjects();
+  else loadClassAdviserSubjects();
 };
 
 // Hybrid section handler: toggles between dropdown and text input
@@ -742,11 +920,14 @@ window.handleSectionSelect = function(selectEl, inputId) {
 
   if (selectEl.value === '__NEW__') {
     selectEl.style.display = 'none';
-    input.style.display = 'block';
+    input.hidden = false;
+    input.style.display = '';
     input.focus();
     if (errorEl) errorEl.style.display = 'none';
   } else {
-    input.style.display = 'none';
+    selectEl.style.display = '';
+    input.hidden = true;
+    input.style.display = '';
     input.value = '';
     if (errorEl) errorEl.style.display = 'none';
   }
@@ -786,16 +967,12 @@ window.addSubjectAssignment = async function() {
 
   const rowId = `subject-row-${subjectCounter}`;
 
-  // Load subjects for dropdown
   let subjectOptions = '<option value="">-- Select Subject --</option>';
   try {
-    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-    const subjects = await res.json();
-    if (res.ok && Array.isArray(subjects)) {
-      subjectOptions += subjects.map(s => 
-        `<option value="${s.id}">${s.subject_name || s.name || 'Unnamed'}</option>`
-      ).join('');
-    }
+    const subjects = await loadSubjectCatalog();
+    subjectOptions += subjects.map((s) =>
+      `<option value="${s.id}">${subjectOptionLabel(s)}</option>`
+    ).join('');
   } catch (err) {
     console.error('Load subjects error:', err);
   }
@@ -807,13 +984,13 @@ window.addSubjectAssignment = async function() {
   row.innerHTML = `
     <div class="field-small" style="flex:1.5;">
       <label>Subject</label>
-      <select class="subject-id-select" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+      <select class="subject-id-select" >
         ${subjectOptions}
       </select>
     </div>
     <div class="field-small" style="flex:1;">
       <label>Grade Level</label>
-      <select class="subject-grade-select" onchange="loadSubjectSections(this)" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+      <select class="subject-grade-select" onchange="loadSubjectSections(this)" >
         <option value="">-- Select --</option>
         <option value="4">Grade 4</option>
         <option value="5">Grade 5</option>
@@ -823,11 +1000,11 @@ window.addSubjectAssignment = async function() {
     <div class="field-small" style="flex:1;">
       <label>Section</label>
       <div class="subject-section-wrap">
-        <select class="subject-section-select" disabled onchange="handleSubjectSectionSelect(this, '${rowId}')" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+        <select class="subject-section-select" disabled onchange="handleSubjectSectionSelect(this, '${rowId}')">
           <option value="">-- Select Grade First --</option>
         </select>
+        <input type="text" class="subject-new-section" placeholder="e.g., A, Bonifacio" hidden maxlength="10">
       </div>
-      <input type="text" class="subject-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
       <small class="subject-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
     </div>
     <button type="button" class="chip-ghost" onclick="removeSubjectAssignment('${rowId}')" style="color:#b71c1c;border-color:#b71c1c;height:fit-content;padding:6px 10px;">Remove</button>
@@ -847,8 +1024,8 @@ window.loadSubjectSections = async function(gradeSelect) {
   const grade = gradeSelect.value;
 
   // Reset
-  sectionSelect.style.display = 'block';
-  if (newInput) { newInput.style.display = 'none'; newInput.value = ''; }
+  sectionSelect.style.display = '';
+  if (newInput) { newInput.hidden = true; newInput.style.display = ''; newInput.value = ''; }
 
   if (!grade) {
     sectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
@@ -874,6 +1051,7 @@ window.loadSubjectSections = async function(gradeSelect) {
     sectionSelect.innerHTML = '<option value="">Failed to load</option><option value="__NEW__">— Add New Section —</option>';
     sectionSelect.disabled = false;
   }
+  await refreshSubjectRowOptions(row);
 };
 
 // Handle subject section select change
@@ -885,15 +1063,65 @@ window.handleSubjectSectionSelect = function(selectEl, rowId) {
 
   if (selectEl.value === '__NEW__') {
     selectEl.style.display = 'none';
-    input.style.display = 'block';
+    input.hidden = false;
+    input.style.display = '';
     input.focus();
     if (errorEl) errorEl.style.display = 'none';
   } else {
-    input.style.display = 'none';
+    selectEl.style.display = '';
+    input.hidden = true;
+    input.style.display = '';
     input.value = '';
     if (errorEl) errorEl.style.display = 'none';
   }
+  refreshSubjectRowOptions(row);
 };
+
+window.refreshOpenSubjectRows = async function() {
+  const rows = document.querySelectorAll('#subject-assignments-container > .form-row, #edit-subject-assignments-container > .form-row');
+  for (const row of rows) {
+    await refreshSubjectRowOptions(row);
+  }
+};
+
+async function refreshSubjectRowOptions(row) {
+  const subjectSelect = row?.querySelector('.subject-id-select');
+  if (!subjectSelect) return;
+  const grade = row.querySelector('.subject-grade-select')?.value || '';
+  const sectionSelect = row.querySelector('.subject-section-select');
+  const section = sectionSelect?.value && sectionSelect.value !== '__NEW__' ? sectionSelect.value : '';
+  const current = subjectSelect.value;
+  let taken = new Set();
+  const home = activeHomeForm();
+  if (grade && section) {
+    try {
+      const slots = await fetchClassSlots(grade, section, home.excludeId);
+      taken = new Set((slots.taken_subjects || []).map((item) => String(item.subject_id)));
+    } catch (err) {
+      console.error('Load taken subjects error:', err);
+    }
+  }
+  const sameHome = grade && section
+    && String(grade) === String(home.grade)
+    && String(section).trim().toUpperCase() === String(home.section || '').trim().toUpperCase();
+  if (sameHome) home.claimed.forEach((id) => taken.add(String(id)));
+  let subjects = [];
+  try {
+    subjects = await loadSubjectCatalog();
+  } catch (err) {
+    console.error('Load subjects error:', err);
+    return;
+  }
+  const options = ['<option value="">-- Select Subject --</option>'];
+  subjects.forEach((subject) => {
+    const id = String(subject.id);
+    if (taken.has(id)) return;
+    const selected = id === String(current) ? 'selected' : '';
+    options.push(`<option value="${subject.id}" ${selected}>${subjectOptionLabel(subject)}</option>`);
+  });
+  subjectSelect.innerHTML = options.join('');
+  if (current && !taken.has(String(current))) subjectSelect.value = current;
+}
 
 roleSelect?.addEventListener('change', toggleRoleFields);
 toggleRoleFields();
@@ -931,18 +1159,19 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
   }
 
   if (payload.role === 'teacher') {
-    const isClassAdviser = document.getElementById('teacher-role-class-adviser')?.checked;
-    const isSubjectTeacher = document.getElementById('teacher-role-subject-teacher')?.checked;
+    const homeRole = selectedHomeRole('teacher-home-role');
 
-    if (!isClassAdviser && !isSubjectTeacher) {
-      alert('Please select at least one teaching role (Class Adviser or Subject Teacher)');
+    if (!homeRole) {
+      alert('Choose Class Adviser or Assistant Teacher');
       return;
     }
 
-    payload.is_class_adviser = isClassAdviser;
-    payload.is_subject_teacher = isSubjectTeacher;
+    payload.home_role = homeRole;
+    payload.is_class_adviser = homeRole === 'adviser';
+    payload.is_assistant = homeRole === 'assistant';
+    payload.is_subject_teacher = false;
 
-    if (isClassAdviser) {
+    if (homeRole) {
       payload.class_adviser_grade = document.getElementById('class-adviser-grade')?.value;
       const caSectionSelect = document.getElementById('class-adviser-section');
       const caSectionNew = document.getElementById('class-adviser-new-section');
@@ -958,13 +1187,13 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
         payload.class_adviser_section = caSectionSelect?.value || null;
       }
 
-      // Collect selected subjects for Grades 4-6
-      const isUpperGrade = ['4', '5', '6'].includes(String(payload.class_adviser_grade));
-      if (isUpperGrade) {
-        const checkedSubjects = Array.from(document.querySelectorAll('#class-adviser-subjects-list .ca-subject-checkbox:checked')).map(cb => parseInt(cb.value, 10));
-        if (checkedSubjects.length > 0) {
-          payload.class_adviser_subjects = checkedSubjects;
-        }
+      const checkedSubjects = Array.from(document.querySelectorAll('#class-adviser-subjects-list .ca-subject-checkbox:checked')).map(cb => parseInt(cb.value, 10));
+      if (isLowerSchoolGrade(payload.class_adviser_grade) && !checkedSubjects.length) {
+        alert('Select at least one subject this teacher handles in Grades 1–3.');
+        return;
+      }
+      if (checkedSubjects.length > 0) {
+        payload.class_adviser_subjects = checkedSubjects;
       }
 
       if (!payload.class_adviser_grade || !payload.class_adviser_section) {
@@ -980,32 +1209,14 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
       }
     }
 
-    if (isSubjectTeacher) {
-      const rows = document.querySelectorAll('#subject-assignments-container > .form-row');
-      const assignments = [];
-      for (const row of rows) {
-        const subjectId = row.querySelector('.subject-id-select')?.value;
-        const grade = row.querySelector('.subject-grade-select')?.value;
-        const sectionSelect = row.querySelector('.subject-section-select');
-        const sectionNew = row.querySelector('.subject-new-section');
-        const errorEl = row.querySelector('.subject-section-error');
-
-        let section = null;
-        if (sectionSelect?.value === '__NEW__') {
-          section = validateSectionName(sectionNew?.value || '', null, errorEl?.id);
-        } else {
-          section = sectionSelect?.value || null;
-        }
-
-        if (subjectId && grade && section) {
-          assignments.push({ subject_id: parseInt(subjectId), grade_level: parseInt(grade), section });
-        }
-      }
-      if (assignments.length === 0) {
-        alert('Subject Teacher must have at least one Grades 4–6 subject assignment');
-        return;
-      }
-      payload.subject_assignments = assignments;
+    const alsoTeaches = document.getElementById('teacher-also-teaches')?.checked;
+    const otherAssignments = alsoTeaches
+      ? collectSubjectAssignmentRows('#subject-assignments-container')
+      : [];
+    if (otherAssignments === null) return;
+    if (otherAssignments.length > 0) {
+      payload.is_subject_teacher = true;
+      payload.subject_assignments = otherAssignments;
     }
   }
 
@@ -1025,7 +1236,7 @@ document.getElementById('admin-account-form')?.addEventListener('submit', async 
     // Reset hybrid section fields
     const caNewSection = document.getElementById('class-adviser-new-section');
     const caSectionSelect = document.getElementById('class-adviser-section');
-    if (caNewSection) { caNewSection.style.display = 'none'; caNewSection.value = ''; }
+    if (caNewSection) { caNewSection.hidden = true; caNewSection.style.display = ''; caNewSection.value = ''; }
     if (caSectionSelect) { caSectionSelect.style.display = 'block'; caSectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>'; caSectionSelect.disabled = true; }
     const caError = document.getElementById('class-adviser-section-error');
     if (caError) caError.style.display = 'none';
@@ -1187,18 +1398,8 @@ function applyAccountFilters() {
       <td>${escapeHtml(u.email)}</td>
       <td>${formatActivityRole(u.role)}</td>
       <td>
-        ${u.role === 'teacher' 
-          ? (u.teaching_mode === 'class_adviser' || (u.teaching_mode === 'homeroom')
-              ? `Class Adviser — Grade ${u.homeroom_grade || '?'}-${u.homeroom_section || '?'}` 
-              : u.teaching_mode === 'subject_teacher' || u.teaching_mode === 'subject'
-              ? 'Subject Teacher'
-              : u.teaching_mode === 'both'
-              ? `Both — Grade ${u.homeroom_grade || '?'}-${u.homeroom_section || '?'} + Subjects`
-              : (u.homeroom_grade && u.homeroom_section)
-              ? `Class Adviser — Grade ${u.homeroom_grade}-${u.homeroom_section}`
-              : (u.assignments && u.assignments.some(a => a.subject_id !== null))
-              ? 'Subject Teacher'
-              : 'Teacher — No assignments set')
+        ${u.role === 'teacher'
+          ? accountAssignmentLabel(u)
           : (u.emergency_contact
               ? `Emergency: ${u.emergency_contact}`
               : u.phone
@@ -1346,7 +1547,7 @@ window.openEditTeacherModal = async function(teacherId) {
   editSubjectCounter = 0;
   document.getElementById('edit-class-adviser-fields').style.display = 'none';
   document.getElementById('edit-subject-teacher-fields').style.display = 'none';
-  document.getElementById('edit-class-adviser-new-section').style.display = 'none';
+  document.getElementById('edit-class-adviser-new-section').hidden = true;
   document.getElementById('edit-class-adviser-section-error').style.display = 'none';
 
   try {
@@ -1357,56 +1558,45 @@ window.openEditTeacherModal = async function(teacherId) {
     nameEl.textContent = `Editing: ${teacher.first_name} ${teacher.last_name} (${teacher.email})`;
     document.getElementById('edit-teacher-id').value = teacherId;
 
-    // Determine roles from teaching_mode
     const mode = teacher.teaching_mode;
-    const isCA = mode === 'class_adviser' || mode === 'both' || mode === 'homeroom';
-    const isST = mode === 'subject_teacher' || mode === 'both' || mode === 'subject';
+    const hasHome = mode === 'class_adviser' || mode === 'both' || mode === 'homeroom' || !!teacher.homeroom_grade;
+    const homeRole = teacher.homeroom_role === 'assistant' ? 'assistant' : (hasHome ? 'adviser' : '');
+    const roleInput = document.querySelector(`input[name="edit-teacher-home-role"][value="${homeRole}"]`);
+    if (roleInput) roleInput.checked = true;
 
-    document.getElementById('edit-role-class-adviser').checked = isCA;
-    document.getElementById('edit-role-subject-teacher').checked = isST;
-
-    // Populate Class Adviser fields
-    if (isCA) {
+    if (homeRole) {
       document.getElementById('edit-class-adviser-fields').style.display = 'grid';
+      const title = document.getElementById('edit-class-adviser-fields-title');
+      if (title) title.textContent = homeRoleTitle(homeRole);
       if (teacher.homeroom_grade) {
         document.getElementById('edit-class-adviser-grade').value = teacher.homeroom_grade;
         await loadEditClassAdviserSections();
-        // Set section after sections load
-        setTimeout(() => {
-          const sectionSelect = document.getElementById('edit-class-adviser-section');
-          if (sectionSelect && teacher.homeroom_section) {
-            const exists = Array.from(sectionSelect.options).some(o => o.value === teacher.homeroom_section);
-            if (exists) {
-              sectionSelect.value = teacher.homeroom_section;
-            } else {
-              sectionSelect.value = '__NEW__';
-              handleSectionSelect(sectionSelect, 'edit-class-adviser-new-section');
-              document.getElementById('edit-class-adviser-new-section').value = teacher.homeroom_section;
-            }
+        const sectionSelect = document.getElementById('edit-class-adviser-section');
+        if (sectionSelect && teacher.homeroom_section) {
+          const exists = Array.from(sectionSelect.options).some(o => o.value === teacher.homeroom_section);
+          if (exists) {
+            sectionSelect.value = teacher.homeroom_section;
+          } else {
+            sectionSelect.value = '__NEW__';
+            handleSectionSelect(sectionSelect, 'edit-class-adviser-new-section');
+            document.getElementById('edit-class-adviser-new-section').value = teacher.homeroom_section;
           }
-        }, 100);
-        // Pre-select Class Adviser subjects for Grades 4-6
-        if (['4','5','6'].includes(String(teacher.homeroom_grade))) {
-          const caSubjectIds = (teacher.assignments || [])
-            .filter(a => a.subject_id !== null && String(a.grade_level) === String(teacher.homeroom_grade) && a.section === teacher.homeroom_section)
-            .map(a => a.subject_id);
-          setTimeout(() => loadEditClassAdviserSubjects(caSubjectIds), 150);
         }
+        const caSubjectIds = (teacher.assignments || [])
+          .filter(a => a.subject_id != null && String(a.grade_level) === String(teacher.homeroom_grade) && String(a.section || '').trim().toUpperCase() === String(teacher.homeroom_section || '').trim().toUpperCase())
+          .map(a => a.subject_id);
+        await loadEditClassAdviserSubjects(caSubjectIds);
       }
     }
 
-    // Populate Subject Teacher fields
-    if (isST && teacher.assignments) {
-      document.getElementById('edit-subject-teacher-fields').style.display = 'block';
-      // Filter out class adviser assignments (subject_id IS NULL)
-      const subjectAssignments = teacher.assignments.filter(a => a.subject_id !== null);
-      for (const assignment of subjectAssignments) {
-        await addEditSubjectAssignment(assignment);
-      }
-      if (subjectAssignments.length === 0) {
-        await addEditSubjectAssignment();
-      }
+    const outside = outsideClassAssignments(teacher, !!homeRole);
+    const also = document.getElementById('edit-teacher-also-teaches');
+    if (also) also.checked = outside.length > 0;
+    document.getElementById('edit-subject-assignments-container').innerHTML = '';
+    if (homeRole && outside.length) {
+      for (const assignment of outside) await addEditSubjectAssignment(assignment);
     }
+    syncEditSubjectPanel();
 
     modal.removeAttribute('hidden');
 
@@ -1415,23 +1605,58 @@ window.openEditTeacherModal = async function(teacherId) {
   }
 };
 
-window.toggleEditClassAdviser = function() {
-  const checked = document.getElementById('edit-role-class-adviser')?.checked;
-  const caFields = document.getElementById('edit-class-adviser-fields');
-  if (caFields) {
-    caFields.style.display = checked ? 'grid' : 'none';
-    if (checked) loadEditClassAdviserSections();
-  }
-};
-
-window.toggleEditSubjectTeacher = function() {
-  const checked = document.getElementById('edit-role-subject-teacher')?.checked;
-  const stFields = document.getElementById('edit-subject-teacher-fields');
+function syncEditSubjectPanel() {
+  const isCA = !!selectedHomeRole('edit-teacher-home-role');
+  const also = document.getElementById('edit-teacher-also-teaches');
+  const wrap = document.getElementById('edit-teacher-also-teaches-wrap');
+  const grade = document.getElementById('edit-class-adviser-grade')?.value;
+  if (!isCA && also) also.checked = false;
+  if (wrap) wrap.style.display = isCA ? 'flex' : 'none';
+  const copy = otherClassAssignmentCopy(grade);
+  const label = document.getElementById('edit-teacher-also-teaches-label');
+  if (label) label.textContent = copy.title;
+  const showRows = !!(isCA && also?.checked);
+  const fields = document.getElementById('edit-subject-teacher-fields');
+  if (fields) fields.style.display = showRows ? 'block' : 'none';
+  const title = document.getElementById('edit-subject-teacher-title');
+  const help = document.getElementById('edit-subject-teacher-help');
+  if (title) title.style.display = 'none';
+  if (help) help.textContent = copy.help;
   const container = document.getElementById('edit-subject-assignments-container');
-  if (stFields) stFields.style.display = checked ? 'block' : 'none';
-  if (checked && container && container.children.length === 0) {
-    addEditSubjectAssignment();
+  if (showRows && container && container.children.length === 0) addEditSubjectAssignment();
+}
+window.syncEditSubjectPanel = syncEditSubjectPanel;
+
+function outsideClassAssignments(teacher, isClassAdviser) {
+  const grade = String(teacher?.homeroom_grade || '');
+  const section = String(teacher?.homeroom_section || '').trim().toUpperCase();
+  return (teacher?.assignments || []).filter((assignment) => {
+    if (assignment.subject_id == null) return false;
+    if (!isUpperSchoolGrade(assignment.grade_level)) return false;
+    if (isClassAdviser && isUpperSchoolGrade(grade)) {
+      const sameClass = String(assignment.grade_level) === grade
+        && String(assignment.section || '').trim().toUpperCase() === section;
+      if (sameClass) return false;
+    }
+    return true;
+  });
+}
+
+window.toggleEditClassAdviser = function() {
+  const role = selectedHomeRole('edit-teacher-home-role');
+  const checked = !!role;
+  const caFields = document.getElementById('edit-class-adviser-fields');
+  const title = document.getElementById('edit-class-adviser-fields-title');
+  if (title) title.textContent = homeRoleTitle(role);
+  if (caFields) caFields.style.display = checked ? 'grid' : 'none';
+  if (!checked) {
+    const wrap = document.getElementById('edit-class-adviser-subjects-wrap');
+    const note = document.getElementById('edit-class-adviser-auto-note');
+    if (wrap) wrap.style.display = 'none';
+    if (note) note.style.display = 'none';
   }
+  if (checked) loadEditClassAdviserSections();
+  syncEditSubjectPanel();
 };
 
 window.loadEditClassAdviserSections = async function() {
@@ -1440,14 +1665,15 @@ window.loadEditClassAdviserSections = async function() {
   const newInput = document.getElementById('edit-class-adviser-new-section');
   if (!gradeSelect || !sectionSelect) return;
 
-  sectionSelect.style.display = 'block';
-  if (newInput) { newInput.style.display = 'none'; newInput.value = ''; }
+  sectionSelect.style.display = '';
+  if (newInput) { newInput.hidden = true; newInput.style.display = ''; newInput.value = ''; }
 
   const grade = gradeSelect.value;
   if (!grade) {
     sectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
     sectionSelect.disabled = true;
     loadEditClassAdviserSubjects();
+    syncEditSubjectPanel();
     return;
   }
 
@@ -1470,9 +1696,12 @@ window.loadEditClassAdviserSections = async function() {
     sectionSelect.disabled = false;
   }
   loadEditClassAdviserSubjects();
+  syncEditSubjectPanel();
 };
 
 // Load subject checkboxes for Edit Class Adviser (Grades 4-6 only)
+let editSubjectLoadGen = 0;
+
 window.loadEditClassAdviserSubjects = async function(preselectedIds = []) {
   const gradeSelect = document.getElementById('edit-class-adviser-grade');
   const wrap = document.getElementById('edit-class-adviser-subjects-wrap');
@@ -1480,54 +1709,40 @@ window.loadEditClassAdviserSubjects = async function(preselectedIds = []) {
   if (!gradeSelect || !wrap || !list) return;
 
   const grade = gradeSelect.value;
-  const isUpperGrade = ['4', '5', '6'].includes(grade);
-  const isLowerGrade = ['1', '2', '3'].includes(grade);
+  const hasGrade = ['1', '2', '3', '4', '5', '6'].includes(grade);
+  const isLowerGrade = isLowerSchoolGrade(grade);
   const autoNote = document.getElementById('edit-class-adviser-auto-note');
   if (autoNote) autoNote.style.display = isLowerGrade ? 'block' : 'none';
 
-  if (!isUpperGrade) {
+  if (!hasGrade) {
     wrap.style.display = 'none';
     list.innerHTML = '';
     return;
   }
 
   wrap.style.display = 'block';
+  const sectionState = homeSectionValue('edit-class-adviser-section', 'edit-class-adviser-new-section');
+  if (!sectionState.known && document.getElementById('edit-class-adviser-section')?.value !== '__NEW__') {
+    list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">Select a section to choose subjects.</span>';
+    return;
+  }
+
+  const generation = ++editSubjectLoadGen;
   list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">Loading subjects...</span>';
-
   try {
-    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-    const subjects = await res.json();
-    if (!res.ok) throw new Error(subjects.error);
-
-    const applicable = subjects.filter(s => {
-      if (!s.applicable_grades) return false;
-      const ag = String(s.applicable_grades).trim();
-      const g = parseInt(grade, 10);
-      const rangeMatch = ag.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (rangeMatch) {
-        const start = parseInt(rangeMatch[1], 10);
-        const end = parseInt(rangeMatch[2], 10);
-        return g >= start && g <= end;
-      }
-      if (ag.includes(',')) {
-        return ag.split(',').map(x => parseInt(x.trim(), 10)).includes(g);
-      }
-      return parseInt(ag, 10) === g;
+    await renderHomeSubjectChecks({
+      grade,
+      section: sectionState.section,
+      knownSection: sectionState.known,
+      list,
+      checkboxClass: 'edit-ca-subject-checkbox',
+      preselectedIds,
+      excludeTeacherId: document.getElementById('edit-teacher-id')?.value || '',
+      generation,
+      generationRef: () => editSubjectLoadGen
     });
-
-    if (!applicable.length) {
-      list.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">No subjects found for this grade.</span>';
-      return;
-    }
-
-    list.innerHTML = applicable.map(s => `
-      <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-        <input type="checkbox" class="edit-ca-subject-checkbox" value="${s.id}" ${preselectedIds.includes(s.id) ? 'checked' : ''} style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
-        <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">${s.name || s.subject_name || s.NAME || 'Unnamed'}</span>
-      </label>
-    `).join('');
-
   } catch (err) {
+    if (generation !== editSubjectLoadGen) return;
     console.error('Load edit class adviser subjects error:', err);
     list.innerHTML = '<span style="color:#b71c1c;font-size:0.8rem;">Failed to load subjects.</span>';
   }
@@ -1540,16 +1755,12 @@ window.addEditSubjectAssignment = async function(existing = null) {
 
   const rowId = `edit-subject-row-${editSubjectCounter}`;
 
-  // Load subjects for dropdown
   let subjectOptions = '<option value="">-- Select Subject --</option>';
   try {
-    const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-    const subjects = await res.json();
-    if (res.ok && Array.isArray(subjects)) {
-      subjectOptions += subjects.map(s => 
-        `<option value="${s.id}" ${existing && existing.subject_id == s.id ? 'selected' : ''}>${s.subject_name || s.name || 'Unnamed'}</option>`
-      ).join('');
-    }
+    const subjects = await loadSubjectCatalog();
+    subjectOptions += subjects.map((s) =>
+      `<option value="${s.id}" ${existing && existing.subject_id == s.id ? 'selected' : ''}>${subjectOptionLabel(s)}</option>`
+    ).join('');
   } catch (err) {
     console.error('Load subjects error:', err);
   }
@@ -1561,13 +1772,13 @@ window.addEditSubjectAssignment = async function(existing = null) {
   row.innerHTML = `
     <div class="field-small" style="flex:1.5;">
       <label>Subject</label>
-      <select class="subject-id-select" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+      <select class="subject-id-select" >
         ${subjectOptions}
       </select>
     </div>
     <div class="field-small" style="flex:1;">
       <label>Grade Level</label>
-      <select class="subject-grade-select" onchange="loadSubjectSections(this)" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+      <select class="subject-grade-select" onchange="loadSubjectSections(this)" >
         <option value="">-- Select --</option>
         <option value="4" ${existing && existing.grade_level == 4 ? 'selected' : ''}>Grade 4</option>
         <option value="5" ${existing && existing.grade_level == 5 ? 'selected' : ''}>Grade 5</option>
@@ -1577,11 +1788,11 @@ window.addEditSubjectAssignment = async function(existing = null) {
     <div class="field-small" style="flex:1;">
       <label>Section</label>
       <div class="subject-section-wrap">
-        <select class="subject-section-select" disabled onchange="handleSubjectSectionSelect(this, '${rowId}')" style="width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;">
+        <select class="subject-section-select" disabled onchange="handleSubjectSectionSelect(this, '${rowId}')">
           <option value="">-- Select Grade First --</option>
         </select>
+        <input type="text" class="subject-new-section" placeholder="e.g., A, Bonifacio" hidden maxlength="10">
       </div>
-      <input type="text" class="subject-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
       <small class="subject-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
     </div>
     <button type="button" class="chip-ghost" onclick="removeSubjectAssignment('${rowId}')" style="color:#b71c1c;border-color:#b71c1c;height:fit-content;padding:6px 10px;">Remove</button>
@@ -1625,20 +1836,21 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
   e.preventDefault();
 
   const teacherId = document.getElementById('edit-teacher-id').value;
-  const isClassAdviser = document.getElementById('edit-role-class-adviser')?.checked;
-  const isSubjectTeacher = document.getElementById('edit-role-subject-teacher')?.checked;
+  const homeRole = selectedHomeRole('edit-teacher-home-role');
 
-  if (!isClassAdviser && !isSubjectTeacher) {
-    alert('Please select at least one teaching role');
+  if (!homeRole) {
+    alert('Choose Class Adviser or Assistant Teacher');
     return;
   }
 
   const payload = {
-    is_class_adviser: isClassAdviser,
-    is_subject_teacher: isSubjectTeacher
+    home_role: homeRole,
+    is_class_adviser: homeRole === 'adviser',
+    is_assistant: homeRole === 'assistant',
+    is_subject_teacher: false
   };
 
-  if (isClassAdviser) {
+  if (homeRole) {
     payload.class_adviser_grade = document.getElementById('edit-class-adviser-grade')?.value;
     const caSectionSelect = document.getElementById('edit-class-adviser-section');
     const caSectionNew = document.getElementById('edit-class-adviser-new-section');
@@ -1653,13 +1865,13 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
       payload.class_adviser_section = caSectionSelect?.value || null;
     }
 
-    // Collect selected subjects for Grades 4-6
-    const isUpperGrade = ['4', '5', '6'].includes(String(payload.class_adviser_grade));
-    if (isUpperGrade) {
-      const checkedSubjects = Array.from(document.querySelectorAll('#edit-class-adviser-subjects-list .edit-ca-subject-checkbox:checked')).map(cb => parseInt(cb.value, 10));
-      if (checkedSubjects.length > 0) {
-        payload.class_adviser_subjects = checkedSubjects;
-      }
+    const checkedSubjects = Array.from(document.querySelectorAll('#edit-class-adviser-subjects-list .edit-ca-subject-checkbox:checked')).map(cb => parseInt(cb.value, 10));
+    if (isLowerSchoolGrade(payload.class_adviser_grade) && !checkedSubjects.length) {
+      alert('Select at least one subject this teacher handles in Grades 1–3.');
+      return;
+    }
+    if (checkedSubjects.length > 0) {
+      payload.class_adviser_subjects = checkedSubjects;
     }
 
     if (!payload.class_adviser_grade || !payload.class_adviser_section) {
@@ -1672,32 +1884,14 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
     }
   }
 
-  if (isSubjectTeacher) {
-    const rows = document.querySelectorAll('#edit-subject-assignments-container > .form-row');
-    const assignments = [];
-    for (const row of rows) {
-      const subjectId = row.querySelector('.subject-id-select')?.value;
-      const grade = row.querySelector('.subject-grade-select')?.value;
-      const sectionSelect = row.querySelector('.subject-section-select');
-      const sectionNew = row.querySelector('.subject-new-section');
-      const errorEl = row.querySelector('.subject-section-error');
-
-      let section = null;
-      if (sectionSelect?.value === '__NEW__') {
-        section = validateSectionName(sectionNew?.value || '', null, errorEl?.id);
-      } else {
-        section = sectionSelect?.value || null;
-      }
-
-      if (subjectId && grade && section) {
-        assignments.push({ subject_id: parseInt(subjectId), grade_level: parseInt(grade), section });
-      }
-    }
-    if (assignments.length === 0) {
-      alert('Subject Teacher must have at least one Grades 4–6 subject assignment');
-      return;
-    }
-    payload.subject_assignments = assignments;
+  const alsoTeaches = document.getElementById('edit-teacher-also-teaches')?.checked;
+  const otherAssignments = alsoTeaches
+    ? collectSubjectAssignmentRows('#edit-subject-assignments-container')
+    : [];
+  if (otherAssignments === null) return;
+  if (otherAssignments.length > 0) {
+    payload.is_subject_teacher = true;
+    payload.subject_assignments = otherAssignments;
   }
 
   try {
@@ -1786,7 +1980,7 @@ function openTransferTeacherModal(teacherId, classes) {
   const list = document.getElementById('transfer-teacher-list');
   const idInput = document.getElementById('transfer-teacher-id');
   if (sub) {
-    sub.textContent = `${name} still handles ${classes.length} class${classes.length === 1 ? '' : 'es'}. A class adviser class goes to a newly hired teacher. A subject class goes to an active teacher who already handles that subject.`;
+    sub.textContent = `${name} still handles ${classes.length} class${classes.length === 1 ? '' : 'es'}. A class adviser or assistant class goes to a newly hired teacher. A subject class goes to an active teacher who already handles that subject.`;
   }
   if (errEl) {
     errEl.hidden = true;
@@ -1795,14 +1989,14 @@ function openTransferTeacherModal(teacherId, classes) {
   if (idInput) idInput.value = teacherId;
   if (list) {
     list.innerHTML = classes.map((item, index) => {
-      const isAdviser = item.kind === 'adviser';
+      const isHomeSlot = item.kind === 'adviser' || item.kind === 'assistant';
       const candidates = Array.isArray(item.candidates) ? item.candidates : [];
-      const options = isAdviser
+      const options = isHomeSlot
         ? '<option value="new" selected>Newly hired teacher</option>'
         : candidates.map((user) =>
           `<option value="${user.id}">${escapeHtml(user.first_name)} ${escapeHtml(user.last_name)}</option>`
         ).join('');
-      const emptyNote = !isAdviser && !candidates.length
+      const emptyNote = !isHomeSlot && !candidates.length
         ? '<p class="page-subheading">No other active teacher handles this subject yet.</p>'
         : '';
       return `
@@ -1812,8 +2006,8 @@ function openTransferTeacherModal(teacherId, classes) {
           data-grade="${escapeHtml(String(item.grade_level))}"
           data-section="${escapeHtml(item.section || '')}"
           data-subject="${item.subject_id == null ? '' : escapeHtml(String(item.subject_id))}"
-          ${!isAdviser && !candidates.length ? 'disabled' : ''}>
-          ${isAdviser ? '' : '<option value="">Select a teacher</option>'}
+          ${!isHomeSlot && !candidates.length ? 'disabled' : ''}>
+          ${isHomeSlot ? '' : '<option value="">Select a teacher</option>'}
           ${options}
         </select>
         ${emptyNote}
@@ -2038,14 +2232,14 @@ async function loadClassAdviserForStudent() {
 
     if (data.teacher) {
       setSelectDisplayState(displayBox, displayText, {
-        text: `${data.teacher.last_name}, ${data.teacher.first_name}`,
+        text: classTeacherSummary(data),
         state: 'filled'
       });
       if (hiddenInput) hiddenInput.value = data.teacher.id;
       if (errorEl) errorEl.style.display = 'none';
     } else {
       setSelectDisplayState(displayBox, displayText, {
-        text: data.message || 'No class adviser assigned',
+        text: classTeacherSummary(data),
         state: 'error'
       });
       if (hiddenInput) hiddenInput.value = '';
@@ -3134,14 +3328,14 @@ async function loadReenrollClassAdviser() {
 
     if (data.teacher) {
       setSelectDisplayState(displayBox, displayText, {
-        text: `${data.teacher.last_name}, ${data.teacher.first_name}`,
+        text: classTeacherSummary(data),
         state: 'filled'
       });
       if (hiddenInput) hiddenInput.value = data.teacher.id;
       if (errorEl) errorEl.style.display = 'none';
     } else {
       setSelectDisplayState(displayBox, displayText, {
-        text: data.message || 'No class adviser assigned',
+        text: classTeacherSummary(data),
         state: 'error'
       });
       if (hiddenInput) hiddenInput.value = '';
@@ -3301,7 +3495,7 @@ function resetAdminModalForm(modalId) {
     subjectCounter = 0;
     const caNewSection = document.getElementById('class-adviser-new-section');
     const caSectionSelect = document.getElementById('class-adviser-section');
-    if (caNewSection) { caNewSection.style.display = 'none'; caNewSection.value = ''; }
+    if (caNewSection) { caNewSection.hidden = true; caNewSection.style.display = ''; caNewSection.value = ''; }
     if (caSectionSelect) {
       caSectionSelect.style.display = 'block';
       caSectionSelect.innerHTML = '<option value="">-- Select Grade First --</option>';
@@ -3531,13 +3725,14 @@ async function refreshTeacherRosterIfActive() {
 }
 
 async function refreshAdminSubjectPickers() {
+  subjectCatalogPromise = null;
   const caWrap = document.getElementById('class-adviser-subjects-wrap');
   if (caWrap && caWrap.style.display !== 'none' && typeof loadClassAdviserSubjects === 'function') {
     await loadClassAdviserSubjects();
   }
 
   const editCaWrap = document.getElementById('edit-class-adviser-subjects-wrap');
-  if (editCaWrap && !editCaWrap.hidden && typeof loadEditClassAdviserSubjects === 'function') {
+  if (editCaWrap && editCaWrap.style.display !== 'none' && typeof loadEditClassAdviserSubjects === 'function') {
     const gradeSelect = document.getElementById('edit-class-adviser-grade');
     const preselected = Array.from(document.querySelectorAll('#edit-class-adviser-subjects-list .edit-ca-subject-checkbox:checked'))
       .map((cb) => parseInt(cb.value, 10))
@@ -3547,17 +3742,7 @@ async function refreshAdminSubjectPickers() {
     }
   }
 
-  document.querySelectorAll('.subject-id-select').forEach(async (sel) => {
-    const prev = sel.value;
-    try {
-      const res = await fetch(`${API_URL}/subjects`, { headers: getAuthHeaders() });
-      const subjects = await res.json();
-      if (!res.ok || !Array.isArray(subjects)) return;
-      sel.innerHTML = '<option value="">-- Select Subject --</option>' +
-        subjects.map((s) => `<option value="${s.id}">${s.subject_name || s.name || 'Unnamed'}</option>`).join('');
-      if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
-    } catch (_) { /* ignore */ }
-  });
+  if (typeof refreshOpenSubjectRows === 'function') await refreshOpenSubjectRows();
 }
 
 async function loadActivityLog() {
@@ -4211,13 +4396,40 @@ function priorityBadgeHtml(item) {
   return `<span class="badge ${priorityClass}">${priorityLabel}</span>`;
 }
 
-function teachingModeDisplay(mode, label) {
+function teachingModeDisplay(mode, label, homeroomRole) {
   if (label) return label;
+  const home = homeroomRole === 'assistant' ? 'Assistant Teacher' : 'Class Adviser';
   const m = String(mode || '').toLowerCase();
-  if (m === 'both') return 'Class Adviser & Subject Teacher';
-  if (m === 'class_adviser' || m === 'homeroom') return 'Class Adviser';
+  if (m === 'both') return `${home} & Subject Teacher`;
+  if (m === 'class_adviser' || m === 'homeroom') return home;
   if (m === 'subject_teacher' || m === 'subject') return 'Subject Teacher';
   return 'Not set';
+}
+
+function accountAssignmentLabel(user) {
+  const home = user.homeroom_role === 'assistant' ? 'Assistant Teacher' : 'Class Adviser';
+  const grade = user.homeroom_grade || '?';
+  const section = user.homeroom_section || '?';
+  if (user.teaching_mode === 'class_adviser' || user.teaching_mode === 'homeroom') {
+    return `${home} — Grade ${grade}-${section}`;
+  }
+  if (user.teaching_mode === 'both') {
+    return `${home} — Grade ${grade}-${section} + Subjects`;
+  }
+  if (user.teaching_mode === 'subject_teacher' || user.teaching_mode === 'subject') return 'Subject Teacher';
+  if (user.homeroom_grade && user.homeroom_section) return `${home} — Grade ${grade}-${section}`;
+  if (user.assignments && user.assignments.some((a) => a.subject_id !== null)) return 'Subject Teacher';
+  return 'Teacher — No assignments set';
+}
+
+function classTeacherSummary(data) {
+  const adviser = data?.teacher
+    ? `${data.teacher.last_name}, ${data.teacher.first_name}`
+    : 'No class adviser';
+  const assistant = data?.assistant
+    ? `${data.assistant.last_name}, ${data.assistant.first_name}`
+    : 'No assistant teacher';
+  return `${adviser} · Assistant: ${assistant}`;
 }
 
 function announcementMeta(item) {
@@ -5290,6 +5502,45 @@ async function submitBulkImport({ url, fileInput, errorEl, resultEl, noun, refre
   if (!res.ok) throw new Error(data.error || 'Import failed');
   paintBulkResult(resultEl, data, noun);
   if (data.created && typeof refresh === 'function') refresh();
+  return data;
+}
+
+function roleSheetLabel(role) {
+  const value = String(role || '').toLowerCase();
+  if (value === 'teacher') return 'Teacher';
+  if (value === 'parent') return 'Parent';
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
+}
+
+function printBulkAccountSheet(accounts) {
+  const rows = accounts.map((account) => (
+    `<tr><td>${escapeHtml(account.name || '')}</td><td>${escapeHtml(roleSheetLabel(account.role))}</td><td>${escapeHtml(account.email || '')}</td><td>${escapeHtml(account.password || '')}</td></tr>`
+  )).join('');
+  const body = `<h1>ConnectED accounts</h1>
+    <p class="meta">Temporary passwords for the accounts just created. Each person signs in with the email and password below, then sets their own password.</p>
+    <table><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Temporary password</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return openPrintHtmlDocument('ConnectED accounts', body);
+}
+
+function finishBulkImport(modalId, data, noun) {
+  const failed = Array.isArray(data?.failed) ? data.failed : [];
+  const created = Number(data?.created) || 0;
+  const clean = created > 0 && failed.length === 0;
+  if (modalId === 'bulk-account-modal') {
+    const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+    const printed = accounts.length ? printBulkAccountSheet(accounts) : false;
+    if (!(clean && printed)) return;
+    const emailed = Number(data.emailed) || 0;
+    const mailNote = emailed
+      ? ` Sign-in details emailed to ${emailed}.`
+      : ' The sign-in email was not sent.';
+    closeAdminModal(modalId);
+    showToast(`${created} ${noun}.${mailNote} Save the account list as a PDF.`);
+    return;
+  }
+  if (!clean) return;
+  closeAdminModal(modalId);
+  showToast(`${created} ${noun}.`);
 }
 
 document.getElementById('bulk-account-template')?.addEventListener('click', () => {
@@ -5308,7 +5559,7 @@ document.getElementById('bulk-account-form')?.addEventListener('submit', async (
   e.preventDefault();
   const errorEl = document.getElementById('bulk-account-error');
   try {
-    await submitBulkImport({
+    const data = await submitBulkImport({
       url: `${API_URL}/admin/accounts/bulk`,
       fileInput: document.getElementById('bulk-account-file'),
       errorEl,
@@ -5316,6 +5567,7 @@ document.getElementById('bulk-account-form')?.addEventListener('submit', async (
       noun: 'account(s) added',
       refresh: () => loadAccountsTable()
     });
+    finishBulkImport('bulk-account-modal', data, 'account(s) added');
   } catch (err) {
     if (errorEl) errorEl.textContent = err.message;
   }
@@ -5324,7 +5576,7 @@ document.getElementById('bulk-student-form')?.addEventListener('submit', async (
   e.preventDefault();
   const errorEl = document.getElementById('bulk-student-error');
   try {
-    await submitBulkImport({
+    const data = await submitBulkImport({
       url: `${API_URL}/admin/students/bulk`,
       fileInput: document.getElementById('bulk-student-file'),
       errorEl,
@@ -5332,6 +5584,7 @@ document.getElementById('bulk-student-form')?.addEventListener('submit', async (
       noun: 'student(s) enrolled',
       refresh: () => loadStudentsTable()
     });
+    finishBulkImport('bulk-student-modal', data, 'student(s) enrolled');
   } catch (err) {
     if (errorEl) errorEl.textContent = err.message;
   }
@@ -6115,6 +6368,10 @@ function typeLabel(type) {
 function bankItemTypeLabelClient(type) {
   const t = String(type || '').toLowerCase();
   if (t === 'mcq') return 'Multiple choice';
+  if (t === 'true_false') return 'True or False';
+  if (t === 'fill_blank') return 'Fill in the blank';
+  if (t === 'matching') return 'Matching';
+  if (t === 'sequencing') return 'Sequencing';
   if (t === 'identification') return 'Identification';
   if (t === 'enumeration') return 'Enumeration';
   if (t === 'short_answer') return 'Short answer';
@@ -6122,7 +6379,10 @@ function bankItemTypeLabelClient(type) {
   return type ? String(type) : 'Multiple choice';
 }
 
-const BANK_TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
+const BANK_TYPE_ORDER = [
+  'mcq', 'true_false', 'fill_blank', 'matching', 'sequencing',
+  'identification', 'enumeration', 'short_answer', 'activity'
+];
 
 function isActivityItemType(type) {
   const t = String(type || '').toLowerCase();
@@ -6332,7 +6592,7 @@ function renderTeacherClassNav(classes) {
             data-subject-name="${String(s.name).replace(/"/g, '&quot;')}">
             ${s.name}
           </button>`).join('')
-      : `<span class="class-nav-subject">${c.is_class_adviser ? 'Class adviser' : 'No subjects listed'}</span>`;
+      : `<span class="class-nav-subject">${c.is_assistant ? 'Assistant teacher' : (c.is_class_adviser ? 'Class adviser' : 'No subjects listed')}</span>`;
 
     return `
       <div class="class-nav-group ${i === 0 ? 'is-expanded' : ''}" data-grade="${c.grade_level}" data-section="${c.section}">
@@ -6491,7 +6751,10 @@ async function selectTeacherClassContext({
   setMyClassesTriggerLabel(grade, section, subjectName);
   if (metaEl) metaEl.style.display = 'flex';
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  if (modeBadge) modeBadge.textContent = subjectName || (classInfo?.is_class_adviser ? 'Class Adviser' : 'Class');
+  if (modeBadge) {
+    modeBadge.textContent = subjectName
+      || (classInfo?.is_assistant ? 'Assistant Teacher' : (classInfo?.is_class_adviser ? 'Class Adviser' : 'Class'));
+  }
 
   const classroomSearch = document.getElementById('classroom-search-input');
   if (classroomSearch) classroomSearch.value = '';
@@ -6627,8 +6890,9 @@ function paintTeacherProgressList(listId, students, emptyText, options = {}) {
 }
 
 function teacherProgressPersonHtml(student, showLesson) {
+  const topicPrefix = student.topic_side === 'strength' ? 'Strength' : 'Weakest';
   const lesson = showLesson && student.weakest_lesson
-    ? ` <span class="page-subheading">· Weakest: ${escapeHtml(student.weakest_lesson)}</span>`
+    ? ` <span class="page-subheading">· ${topicPrefix}: ${escapeHtml(student.weakest_lesson)}</span>`
     : '';
   const pct = student.avg_percent == null ? '' : ` <span class="page-subheading">(${student.avg_percent}%)</span>`;
   return `<li>${escapeHtml(teacherProgressName(student))}${pct}${lesson}</li>`;
@@ -6655,6 +6919,174 @@ function renderTeacherProgressGroups(data) {
       <div><h4>No scores yet</h4>${none}</div>
     </div>`;
 }
+
+const SUBJECT_RECORD_SHEETS = [
+  { key: 'quizzes', label: 'Quizzes' },
+  { key: 'activities', label: 'Activities' },
+  { key: 'exams', label: 'Exams' }
+];
+const SUBJECT_RECORD_QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
+let subjectRecordLoadGen = 0;
+let subjectRecordData = null;
+let subjectRecordKind = 'quizzes';
+let subjectRecordQuarter = 'Q1';
+
+function formatRecordScore(value) {
+  if (value == null || value === '') return '';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  return String(Math.round(n * 100) / 100);
+}
+
+function recordColumns(grouped, quarter) {
+  const items = Array.isArray(grouped?.[quarter]) ? grouped[quarter] : [];
+  if (!items.length) return [{ id: null, title: '', scores: {} }];
+  return items.map((item) => ({
+    id: item.id,
+    title: item.title || '',
+    scores: item.scores || {}
+  }));
+}
+
+function renderRecordSheet(spec, grouped, students, quarter) {
+  const cols = recordColumns(grouped, quarter);
+  const head = cols.map((col) => `<th title="${escapeHtml(col.title)}">${escapeHtml(col.title)}</th>`).join('');
+  const body = students.length
+    ? students.map((student) => {
+      const cells = cols.map((col) => {
+        if (!col.id) return '<td></td>';
+        const raw = col.scores[student.id] ?? col.scores[String(student.id)];
+        return `<td>${escapeHtml(formatRecordScore(raw))}</td>`;
+      }).join('');
+      return `<tr><th scope="row">${escapeHtml(teacherProgressName(student))}</th>${cells}</tr>`;
+    }).join('')
+    : `<tr><td colspan="${cols.length + 1}">No students in this class</td></tr>`;
+  const kindOptions = SUBJECT_RECORD_SHEETS.map((item) =>
+    `<option value="${item.key}"${item.key === spec.key ? ' selected' : ''}>${item.label}</option>`
+  ).join('');
+  const quarterOptions = SUBJECT_RECORD_QUARTERS.map((item) =>
+    `<option value="${item}"${item === quarter ? ' selected' : ''}>${item}</option>`
+  ).join('');
+  return `<section class="subject-record-sheet">
+    <div class="subject-record-sheet-bar">
+      <label class="subject-record-quarter">
+        <span class="visually-hidden">Quarter</span>
+        <select id="teacher-subject-record-quarter">${quarterOptions}</select>
+      </label>
+      <h4>${spec.label}</h4>
+      <label class="subject-record-kind">
+        <span class="visually-hidden">Score type</span>
+        <select id="teacher-subject-record-kind">${kindOptions}</select>
+      </label>
+    </div>
+    <div class="subject-record-sheet-scroll">
+      <table>
+        <thead>
+          <tr><th>Name</th>${head}</tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+function renderSubjectRecord(data) {
+  subjectRecordData = data;
+  const sectionEl = document.getElementById('teacher-subject-record-section');
+  const teacherEl = document.getElementById('teacher-subject-record-teacher');
+  if (sectionEl) sectionEl.textContent = data?.section || teacherCurrentClass?.section || '';
+  if (teacherEl) teacherEl.textContent = data?.teacher_name || '';
+  paintSubjectRecordSheet();
+}
+
+function paintSubjectRecordSheet() {
+  const sheets = document.getElementById('teacher-subject-record-sheets');
+  if (!sheets || !subjectRecordData) return;
+  const spec = SUBJECT_RECORD_SHEETS.find((item) => item.key === subjectRecordKind) || SUBJECT_RECORD_SHEETS[0];
+  subjectRecordKind = spec.key;
+  if (!SUBJECT_RECORD_QUARTERS.includes(subjectRecordQuarter)) subjectRecordQuarter = 'Q1';
+  sheets.innerHTML = renderRecordSheet(
+    spec,
+    subjectRecordData[spec.key],
+    subjectRecordData.students || [],
+    subjectRecordQuarter
+  );
+}
+
+async function loadSubjectRecordSheet() {
+  const sheets = document.getElementById('teacher-subject-record-sheets');
+  const select = document.getElementById('teacher-subject-record-select');
+  const grade = teacherCurrentClass?.grade;
+  const section = teacherCurrentClass?.section;
+  const picked = select?.selectedOptions?.[0];
+  const [subjectId, recordTeacherId] = String(picked?.value || '').split(':');
+  if (!sheets || !grade || !section || !subjectId || !recordTeacherId) return;
+  const generation = ++subjectRecordLoadGen;
+  const teacherEl = document.getElementById('teacher-subject-record-teacher');
+  if (teacherEl) teacherEl.textContent = picked.dataset.teacherName || '';
+  sheets.innerHTML = '<p class="page-subheading">Loading scores…</p>';
+  const params = new URLSearchParams({
+    subject_id: subjectId,
+    teacher_id: recordTeacherId
+  });
+  try {
+    const res = await fetch(
+      `${API_URL}/teacher/class-progress/${encodeURIComponent(grade)}/${encodeURIComponent(String(section).trim())}/subject-record?${params}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (generation !== subjectRecordLoadGen) return;
+    if (!res.ok) throw new Error(data.error || 'Could not load this subject.');
+    renderSubjectRecord(data);
+  } catch (err) {
+    if (generation !== subjectRecordLoadGen) return;
+    console.error('Subject record error:', err);
+    sheets.innerHTML = `<p class="page-subheading">${escapeHtml(err.message || 'Could not load this subject.')}</p>`;
+  }
+}
+
+function renderSubjectTeacherReports(data) {
+  const box = document.getElementById('teacher-subject-reports');
+  const empty = document.getElementById('teacher-subject-reports-empty');
+  const body = document.getElementById('teacher-subject-reports-body');
+  const select = document.getElementById('teacher-subject-record-select');
+  if (!box) return;
+  const rows = data?.subject_teachers || [];
+  const show = !teacherCurrentClass?.subjectId && data?.is_home_teacher;
+  if (!show) {
+    subjectRecordLoadGen += 1;
+    subjectRecordData = null;
+    box.hidden = true;
+    if (select) select.innerHTML = '';
+    const sheets = document.getElementById('teacher-subject-record-sheets');
+    if (sheets) sheets.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  const hasRows = rows.length > 0;
+  if (empty) empty.hidden = hasRows;
+  if (body) body.hidden = !hasRows;
+  if (!hasRows || !select) return;
+  const previous = select.value || '';
+  select.innerHTML = rows.map((row) => `
+    <option value="${escapeHtml(row.subject_id)}:${escapeHtml(row.teacher_id)}" data-teacher-name="${escapeHtml(row.teacher_name)}">${escapeHtml(row.subject_name)} — ${escapeHtml(row.teacher_name)}</option>`
+  ).join('');
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  const sectionEl = document.getElementById('teacher-subject-record-section');
+  if (sectionEl) sectionEl.textContent = teacherCurrentClass?.section || '';
+  loadSubjectRecordSheet();
+}
+
+document.getElementById('teacher-subject-record-select')?.addEventListener('change', () => {
+  loadSubjectRecordSheet();
+});
+
+document.getElementById('teacher-subject-record-sheets')?.addEventListener('change', (event) => {
+  if (event.target?.id === 'teacher-subject-record-kind') subjectRecordKind = event.target.value;
+  else if (event.target?.id === 'teacher-subject-record-quarter') subjectRecordQuarter = event.target.value;
+  else return;
+  paintSubjectRecordSheet();
+});
 
 function paintTeacherProgressChart(counts) {
   const wrap = document.getElementById('teacher-progress-chart-wrap');
@@ -6714,6 +7146,7 @@ async function loadTeacherClassProgress(grade, section) {
   const hintEl = document.getElementById('teacher-progress-hint');
   if (!grade || !section) {
     if (summaryEl) summaryEl.textContent = 'Select a class to see how the class is doing.';
+    renderSubjectTeacherReports(null);
     return;
   }
   const subjectId = teacherCurrentClass?.subjectId;
@@ -6742,11 +7175,13 @@ async function loadTeacherClassProgress(grade, section) {
     paintTeacherProgressList('teacher-excels-list', data.excels || [], 'None yet', { limit: 3 });
     paintTeacherProgressList('teacher-behind-list', data.behind || [], 'None', { limit: 3 });
     renderTeacherProgressGroups(data);
+    renderSubjectTeacherReports(data);
   } catch (err) {
     console.error('Class progress error:', err);
     if (summaryEl) summaryEl.textContent = 'Could not load class progress.';
     const lessonEl = document.getElementById('teacher-lesson-line');
     if (lessonEl) lessonEl.textContent = '';
+    renderSubjectTeacherReports(null);
   }
 }
 
@@ -7602,6 +8037,69 @@ document.getElementById('admin-save-quarter-btn')?.addEventListener('click', asy
   }
 });
 
+function progressRubricEditorOpts() {
+  return {
+    listId: 'progress-rubric-list',
+    pointsId: 'progress-max',
+    keepEmpty: true,
+    onSync: syncProgressMaxFromCategories
+  };
+}
+
+function syncProgressMaxFromCategories() {
+  const list = document.getElementById('progress-rubric-list');
+  const maxEl = document.getElementById('progress-max');
+  if (!list || !maxEl) return;
+  if (document.getElementById('progress-type')?.value !== 'activity') return;
+  const inputs = [...list.querySelectorAll('.qb-rubric-max')];
+  if (!inputs.length) return;
+  const sum = inputs.reduce((s, inp) => s + Math.max(1, Number(inp.value) || 1), 0);
+  maxEl.value = String(sum);
+}
+
+function redistributeProgressRubric(totalPoints) {
+  const list = document.getElementById('progress-rubric-list');
+  if (!list) return;
+  const existing = [...list.querySelectorAll('.qb-rubric-category')].map((card) => ({
+    name: card.querySelector('.qb-rubric-name')?.value || '',
+    descriptions: [...card.querySelectorAll('.qb-rubric-level-desc')].map((inp) => inp.value)
+  }));
+  const count = existing.length || 3;
+  const total = Math.max(count, Math.round(Number(totalPoints) || count));
+  const base = Math.floor(total / count);
+  const rem = total - base * count;
+  const names = existing.length
+    ? existing.map((row) => row.name)
+    : ['Participation', 'Correctness', 'Effort'];
+  const categories = names.map((name, i) => {
+    const max_points = base + (i < rem ? 1 : 0);
+    const cat = emptyRubricCategory(name, max_points);
+    const descs = existing[i]?.descriptions || [];
+    cat.levels = cat.levels.map((lv, li) => ({ ...lv, description: descs[li] || '' }));
+    return cat;
+  });
+  renderRubricEditor({ categories }, progressRubricEditorOpts());
+}
+
+function syncProgressCreateRubricVisibility() {
+  const wrap = document.getElementById('progress-rubric-wrap');
+  if (!wrap) return;
+  const isActivity = document.getElementById('progress-type')?.value === 'activity';
+  wrap.hidden = !isActivity;
+  if (!isActivity) {
+    wrap.setAttribute('hidden', '');
+    return;
+  }
+  wrap.removeAttribute('hidden');
+  const list = document.getElementById('progress-rubric-list');
+  if (list && !list.querySelector('.qb-rubric-category')) {
+    renderRubricEditor(
+      emptyRubricTemplateClient(Number(document.getElementById('progress-max')?.value) || 20),
+      progressRubricEditorOpts()
+    );
+  }
+}
+
 function showProgressCreateForm(show) {
   const modal = document.getElementById('progress-create-modal');
   const listWrap = document.getElementById('progress-list-wrap');
@@ -7621,8 +8119,11 @@ function showProgressCreateForm(show) {
     const maxEl = document.getElementById('progress-max');
     const typeEl = document.getElementById('progress-type');
     if (titleEl) titleEl.value = '';
-    if (maxEl) maxEl.value = '100';
+    if (maxEl) maxEl.value = '0';
     if (typeEl) typeEl.value = 'quiz';
+    const rubricList = document.getElementById('progress-rubric-list');
+    if (rubricList) rubricList.innerHTML = '';
+    syncProgressCreateRubricVisibility();
     modal.hidden = false;
     loadTeacherSubjects(true).then(() => {
       fillTeacherSubjectSelects();
@@ -7676,6 +8177,21 @@ document.getElementById('progress-subject')?.addEventListener('change', () => {
   if (!document.getElementById('progress-create-modal')?.hidden) fillProgressLessonSelect();
 });
 
+function activitySettingLine(record) {
+  if (String(record?.type || '').toLowerCase() !== 'activity') return '';
+  const mode = record.activity_mode === 'take_home'
+    ? 'Take home'
+    : record.activity_mode === 'classroom'
+      ? 'Classroom activity'
+      : '';
+  const when = record.activity_target_at
+    ? formatSharePreviewLocal(toDatetimeLocalValue(record.activity_target_at))
+    : '';
+  const bits = [mode, when].filter(Boolean);
+  if (!bits.length) return '';
+  return `<p class="page-subheading progress-card-status-line">${escapeHtml(bits.join(' · '))}</p>`;
+}
+
 function renderProgressCards(records) {
   const listEl = document.getElementById('progress-list');
   if (!listEl) return;
@@ -7689,10 +8205,10 @@ function renderProgressCards(records) {
     const shareActive = Number(r.share_enabled) === 1 && r.share_token;
     const hasQuestions = Number(r.question_count) > 0;
     const shareToken = shareActive ? escapeHtml(String(r.share_token)) : '';
-    const shareUrl = shareActive ? escapeHtml(sharedQuizAbsoluteUrl(r.share_token)) : '';
+    const shareUrl = shareActive ? escapeHtml(sharedQuizAbsoluteUrl(r.share_token, r.type)) : '';
     const quizLink = r.quiz_link ? escapeHtml(String(r.quiz_link)) : '';
     const shareItems = shareActive
-      ? `<button type="button" class="row-menu-item" data-action="copy-share-link" data-share-token="${shareToken}">Copy Link</button>
+      ? `<button type="button" class="row-menu-item" data-action="copy-share-link" data-share-token="${shareToken}" data-share-type="${escapeHtml(String(r.type || 'quiz'))}">Copy Link</button>
           <button type="button" class="row-menu-item" data-action="open-share-link" data-share-url="${shareUrl}">Open Link</button>
           <button type="button" class="row-menu-item" data-action="disable-link" data-record-id="${r.id}">Disable Link</button>`
       : hasQuestions
@@ -7702,14 +8218,14 @@ function renderProgressCards(records) {
       ? `<button type="button" class="row-menu-item" data-action="copy-online-link" data-record-id="${r.id}">Copy Online Link</button>
           <button type="button" class="row-menu-item" data-action="open-online-link" data-quiz-link="${quizLink}">Open Online Link</button>`
       : '';
+    const statusRow = activitySettingLine(r);
     return `
     <article class="lesson-plan-card">
+      ${statusRow ? `<div class="progress-card-status">${statusRow}</div>` : ''}
       <div class="progress-card-top">
         <div class="progress-card-top-left">
           <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
           <h4 style="margin:0;">${escapeHtml(r.title)}</h4>
-          ${shareActive ? '<span class="ai-status-badge ai-status-approved">LINK ON</span>' : ''}
-          ${!shareActive && !hasQuestions ? '<span class="page-subheading">Manual / no live link</span>' : ''}
         </div>
         <div class="row-menu-wrap">
           <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
@@ -7753,7 +8269,7 @@ function renderProgressCards(records) {
 
     if (action === 'enable-link' && recordId) assignSharedQuizLink(recordId);
     else if (action === 'disable-link' && recordId) revokeSharedQuizLink(recordId);
-    else if (action === 'copy-share-link' && btn.dataset.shareToken) copySharedQuizLink(btn.dataset.shareToken);
+    else if (action === 'copy-share-link' && btn.dataset.shareToken) copySharedQuizLink(btn.dataset.shareToken, btn.dataset.shareType);
     else if (action === 'open-share-link' && btn.dataset.shareUrl) {
       window.open(btn.dataset.shareUrl, '_blank', 'noopener');
     } else if (action === 'copy-online-link' && recordId) copyExternalQuizLink(recordId);
@@ -7977,7 +8493,7 @@ window.openProgressEditor = async function(id, mode = 'edit') {
 
     const questions = Array.isArray(data.questions) ? data.questions : [];
     window._progressEditorQuestions = questions;
-    window._progressRubricColumns = buildProgressRubricColumns(questions);
+    window._progressRubricColumns = buildProgressRubricColumns(questions, a.rubric);
     const rubricCap = rubricCapFromProgressColumns();
     progressEditorMax = rubricCap > 0 ? rubricCap : (Number(a.max_score) || 100);
     if (rubricCap > 0 && Number(a.max_score) !== rubricCap) {
@@ -8065,7 +8581,7 @@ window.openProgressEditor = async function(id, mode = 'edit') {
       }
     }
 
-    renderProgressRubricGuide(questions);
+    renderProgressRubricGuide(questions, a);
 
     if (effectiveMode !== 'link') {
       renderProgressScoresTable(effectiveMode, a, data.students || []);
@@ -8076,14 +8592,17 @@ window.openProgressEditor = async function(id, mode = 'edit') {
   }
 };
 
-function buildProgressRubricColumns(questions) {
+function buildProgressRubricColumns(questions, assessmentRubric) {
   const cols = [];
   const activities = (questions || []).filter(
     (q) => isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
   );
-  activities.forEach((q, ai) => {
-    const cats = rubricCategoriesOf(normalizeRubricClient(q.rubric) || q.rubric);
-    const multi = activities.length > 1;
+  const sources = activities.length
+    ? activities.map((q) => q.rubric)
+    : (normalizeRubricClient(assessmentRubric) ? [assessmentRubric] : []);
+  const multi = sources.length > 1;
+  sources.forEach((rubric, ai) => {
+    const cats = rubricCategoriesOf(normalizeRubricClient(rubric) || rubric);
     cats.forEach((c, ci) => {
       const name = String(c.name || `Category ${ci + 1}`).trim();
       cols.push({
@@ -8256,10 +8775,10 @@ function renderProgressScoresTable(mode, assessment, students) {
     const workBtns = [];
     if (quizTaken.length) {
       const quizLabel = workList.length ? 'View quiz' : 'View work';
-      workBtns.push(`<button type="button" class="chip-ghost" onclick="viewProgressQuizTaken(${Number(s.id)})">${quizLabel}</button>`);
+      workBtns.push(`<button type="button" class="chip-ghost" data-view-work="quiz" data-student-id="${Number(s.id)}" onclick="viewProgressQuizTaken(${Number(s.id)})">${quizLabel}</button>`);
     }
     if (workList.length) {
-      workBtns.push(`<button type="button" class="chip-ghost" onclick="viewProgressActivityWork(${Number(s.id)})">View work</button>`);
+      workBtns.push(`<button type="button" class="chip-ghost" data-view-work="activity" data-student-id="${Number(s.id)}" onclick="viewProgressActivityWork(${Number(s.id)})">View work</button>`);
     }
     const workCell = showWorkCol
       ? `<td class="progress-work-cell">${workBtns.length ? workBtns.join('') : '—'}</td>`
@@ -8347,6 +8866,8 @@ function renderProgressScoresTable(mode, assessment, students) {
     else makeupAllBtn.setAttribute('hidden', '');
   }
 
+  bindProgressWorkClicks(table);
+
   if (editMode) {
     bindProgressScoreCellKeys(tbody);
     tbody.querySelectorAll('.progress-rubric-cat-input').forEach((input) => {
@@ -8368,6 +8889,23 @@ function renderProgressScoresTable(mode, assessment, students) {
       input.addEventListener('change', () => clampProgressTotalInput(input));
     });
   }
+}
+
+function bindProgressWorkClicks(root) {
+  if (!root || root.dataset.workClicks === '1') return;
+  root.dataset.workClicks = '1';
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-view-work]');
+    if (!btn || !root.contains(btn) || btn.getAttribute('onclick')) return;
+    const kind = btn.getAttribute('data-view-work');
+    if (kind === 'parent') {
+      window.viewParentWork(Number(btn.getAttribute('data-assessment-id')));
+      return;
+    }
+    const studentId = Number(btn.getAttribute('data-student-id'));
+    if (kind === 'activity') window.viewProgressActivityWork(studentId);
+    else window.viewProgressQuizTaken(studentId);
+  });
 }
 
 function bindProgressScoreCellKeys(tbody) {
@@ -8432,6 +8970,52 @@ window.viewProgressQuizTaken = function (studentId) {
   openProgressTakenModal(studentId, 'quiz');
 };
 
+function isIdentificationTakenItem(item) {
+  return String(item?.item_type || '').toLowerCase() === 'identification';
+}
+
+function identificationBankFromTaken(items) {
+  const ids = (items || []).filter(isIdentificationTakenItem);
+  const seen = new Set();
+  const answers = [];
+  const add = (raw, list) => {
+    const text = String(raw || '').trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(text);
+  };
+  ids.forEach((item) => add(item.expected, answers));
+  if (!answers.length) return [];
+  const words = answers.slice();
+  ids.forEach((item) => {
+    (Array.isArray(item.choices) ? item.choices : []).forEach((word) => add(word, words));
+  });
+  return words;
+}
+
+function identificationAnswerBoxHtml(words) {
+  const list = (words || []).map((w) => String(w || '').trim()).filter(Boolean);
+  if (!list.length) return '';
+  return `<div class="progress-id-box">
+    <p class="progress-id-box-label">Answer box</p>
+    <div class="progress-id-words">${list.map((w) => `<span>${escapeHtml(w)}</span>`).join('')}</div>
+  </div>`;
+}
+
+function quizTakenHtmlWithAnswerBox(items, boxHtml, renderItem) {
+  let placed = false;
+  return (items || []).map((item) => {
+    const piece = renderItem(item);
+    if (!placed && boxHtml && isIdentificationTakenItem(item)) {
+      placed = true;
+      return boxHtml + piece;
+    }
+    return piece;
+  }).join('');
+}
+
 function openProgressTakenModal(studentId, kind) {
   const students = window._progressEditorStudents || [];
   const s = students.find((row) => Number(row.id) === Number(studentId));
@@ -8454,7 +9038,8 @@ function openProgressTakenModal(studentId, kind) {
     if (!work.length) {
       bodyEl.innerHTML = `<p class="page-subheading">${isQuiz ? 'No quiz submission.' : 'No submitted work.'}</p>`;
     } else if (isQuiz) {
-      bodyEl.innerHTML = work.map((item) => renderProgressQuizTakenItem(item)).join('');
+      const box = identificationAnswerBoxHtml(identificationBankFromTaken(work));
+      bodyEl.innerHTML = quizTakenHtmlWithAnswerBox(work, box, renderProgressQuizTakenItem);
     } else {
       bodyEl.innerHTML = work.map((item, i) => {
         const url = String(item.file?.url || '');
@@ -8477,7 +9062,8 @@ function openProgressTakenModal(studentId, kind) {
 
 function renderProgressQuizTakenItem(item) {
   const n = Number(item.n) || 1;
-  const choices = Array.isArray(item.choices) ? item.choices : [];
+  const isId = isIdentificationTakenItem(item);
+  const choices = isId ? [] : (Array.isArray(item.choices) ? item.choices : []);
   const given = formatQuizTakenAnswer(item.given, choices);
   const expected = formatQuizTakenAnswer(item.expected, choices);
   const mark = item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
@@ -8542,15 +9128,27 @@ function setProgressEditorMode(mode, hasQuestions = true) {
   }
 }
 
-function renderProgressRubricGuide(questions) {
-  const wrap = document.getElementById('progress-rubric-guide');
-  const body = document.getElementById('progress-rubric-guide-body');
-  if (!wrap || !body) return;
+function progressRubricGuideActivities(questions, assessment) {
   const activities = (questions || []).filter((q) =>
     isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
   );
+  if (activities.length) return activities;
+  if (!normalizeRubricClient(assessment?.rubric)) return [];
+  return [{
+    question: assessment.title || '',
+    points: rubricCategoriesSum(assessment.rubric) || Number(assessment.max_score) || 0,
+    rubric: assessment.rubric
+  }];
+}
+
+function renderProgressRubricGuide(questions, assessment) {
+  const wrap = document.getElementById('progress-rubric-guide');
+  const body = document.getElementById('progress-rubric-guide-body');
+  if (!wrap || !body) return;
+  const activities = progressRubricGuideActivities(questions, assessment);
   if (!activities.length) {
     wrap.hidden = true;
+    wrap.open = false;
     wrap.setAttribute('hidden', '');
     body.innerHTML = '';
     return;
@@ -8563,6 +9161,7 @@ function renderProgressRubricGuide(questions) {
     </div>
   `).join('');
   wrap.hidden = false;
+  wrap.open = true;
   wrap.removeAttribute('hidden');
 }
 
@@ -8748,9 +9347,7 @@ function exportRubricScoreSheet() {
   }
 
   const sorted = [...students].sort(compareStudentsByAttendanceOrder);
-  const activities = questions.filter(
-    (q) => isActivityItemType(q.item_type) && normalizeRubricClient(q.rubric)
-  );
+  const activities = progressRubricGuideActivities(questions, a);
   const guideHtml = activities.map((q, i) => {
     const cats = rubricCategoriesOf(normalizeRubricClient(q.rubric) || q.rubric);
     const rows = cats.map((c) => {
@@ -8864,6 +9461,22 @@ document.getElementById('progress-editor-back')?.addEventListener('click', () =>
   loadProgressList();
 });
 
+document.getElementById('progress-type')?.addEventListener('change', () => {
+  syncProgressCreateRubricVisibility();
+});
+
+document.getElementById('progress-max')?.addEventListener('change', () => {
+  if (document.getElementById('progress-type')?.value !== 'activity') return;
+  redistributeProgressRubric(document.getElementById('progress-max')?.value);
+});
+
+document.getElementById('progress-rubric-add')?.addEventListener('click', () => {
+  const list = document.getElementById('progress-rubric-list');
+  const current = collectRubricFromList(list, { requireName: false }) || { categories: [] };
+  current.categories.push(emptyRubricCategory('', 5));
+  renderRubricEditor(current, progressRubricEditorOpts());
+});
+
 document.getElementById('progress-create-save')?.addEventListener('click', async () => {
   const msg = document.getElementById('progress-create-msg');
   if (!teacherCurrentClass) {
@@ -8879,6 +9492,14 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
     if (msg) msg.textContent = 'Please enter a title.';
     return;
   }
+  let rubric = null;
+  if (type === 'activity') {
+    rubric = collectRubricFromList(document.getElementById('progress-rubric-list'));
+    if (!rubric) {
+      if (msg) msg.textContent = 'Add at least one named rubric category.';
+      return;
+    }
+  }
 
   try {
     const res = await fetch(`${API_URL}/teacher/assessments`, {
@@ -8892,7 +9513,8 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
         section: teacherCurrentClass.section,
         max_score: maxScore,
         quarter: teacherCurrentQuarter,
-        lesson_plan_id: lessonPlanId ? Number(lessonPlanId) : null
+        lesson_plan_id: lessonPlanId ? Number(lessonPlanId) : null,
+        rubric
       })
     });
     const data = await res.json();
@@ -8936,8 +9558,10 @@ document.getElementById('progress-quiz-link-save')?.addEventListener('click', as
   }
 });
 
-function sharedQuizAbsoluteUrl(token) {
-  return `${window.location.origin}/quiz/${token}`;
+function sharedQuizAbsoluteUrl(token, type) {
+  const kind = String(type || 'quiz').toLowerCase();
+  const segment = kind === 'activity' || kind === 'exam' ? kind : 'quiz';
+  return `${window.location.origin}/${segment}/${token}`;
 }
 
 /** Format a Date or SQL datetime as datetime-local value (Asia/Manila wall clock). */
@@ -9076,15 +9700,22 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   const revokeBtn = document.getElementById('progress-share-revoke');
   const openBtn = document.getElementById('progress-share-open');
   const noteEl = document.getElementById('progress-share-attendance-note');
+  const windows = document.getElementById('progress-share-windows');
   const active = assessment && Number(assessment.share_enabled) === 1 && assessment.share_token;
   const hasQuestions = Number(questionCount) > 0;
+  const takeHome = String(assessment?.activity_mode || '') === 'take_home';
   window._progressShareActive = !!active;
   window._progressShareClosesLocal = assessment?.quiz_closes_at
     ? toDatetimeLocalValue(assessment.quiz_closes_at)
     : '';
+  if (windows) {
+    windows.hidden = takeHome;
+    if (takeHome) windows.setAttribute('hidden', '');
+    else windows.removeAttribute('hidden');
+  }
   fillProgressShareWindowDefaults(assessment);
   if (urlInput) {
-    urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token) : '';
+    urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token, assessment.type) : '';
   }
   if (assignBtn) {
     assignBtn.hidden = !!active;
@@ -9093,12 +9724,12 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
       ? 'Create this record from Classwork with selected items first'
       : '';
   }
-  if (saveWindowsBtn) saveWindowsBtn.hidden = !active;
+  if (saveWindowsBtn) saveWindowsBtn.hidden = takeHome || !active;
   if (copyBtn) copyBtn.hidden = !active;
   if (revokeBtn) revokeBtn.hidden = !active;
   if (openBtn) {
     if (active) {
-      openBtn.href = sharedQuizAbsoluteUrl(assessment.share_token);
+      openBtn.href = sharedQuizAbsoluteUrl(assessment.share_token, assessment.type);
       openBtn.hidden = false;
     } else {
       openBtn.removeAttribute('href');
@@ -9131,13 +9762,29 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
     if (!hasQuestions && !active) {
       showNote('No Classwork items attached. In Classwork, select items then Next: Create Quiz or Create Activity. Enable Link here after that. + New Record is for manual scores only.', '#b71c1c');
     } else if (active) {
-      const attNote = formatAttendanceUsedLabel(assessment);
-      const bits = [attNote, windowNote].filter(Boolean);
-      if (bits.length) showNote(`${bits.join('. ')}.`, 'var(--text-muted)');
-      else hideNote();
+      if (takeHome) {
+        const when = assessment?.activity_target_at
+          ? formatSharePreviewLocal(toDatetimeLocalValue(assessment.activity_target_at))
+          : '';
+        if (when) showNote(`Deadline: ${when}.`, 'var(--orange-dark)');
+        else hideNote();
+      } else {
+        const attNote = formatAttendanceUsedLabel(assessment);
+        const bits = [attNote, windowNote].filter(Boolean);
+        if (bits.length) showNote(`${bits.join('. ')}.`, 'var(--text-muted)');
+        else hideNote();
+      }
     } else if (attendanceMeta) {
       const gate = gateLabel(attendanceMeta);
-      if (attendanceMeta.complete) {
+      if (attendanceMeta.complete && takeHome) {
+        const when = assessment?.activity_target_at
+          ? formatSharePreviewLocal(toDatetimeLocalValue(assessment.activity_target_at))
+          : '';
+        showNote(
+          when ? `Deadline: ${when}.` : 'Set a target date before enabling the link.',
+          'var(--orange-dark)'
+        );
+      } else if (attendanceMeta.complete) {
         showNote(
           gate
             ? `Attendance complete for ${gate}. Set Minutes Open, then Enable Link.`
@@ -9298,8 +9945,8 @@ window.revokeMakeupForStudent = revokeMakeupForStudent;
 
 window.grantMakeupQuiz = grantMakeupQuiz;
 
-window.copySharedQuizLink = async function(token) {
-  const url = sharedQuizAbsoluteUrl(token);
+window.copySharedQuizLink = async function(token, type) {
+  const url = sharedQuizAbsoluteUrl(token, type);
   try {
     await navigator.clipboard.writeText(url);
     showToast('Shared link copied.');
@@ -9326,7 +9973,13 @@ window.copyExternalQuizLink = async function(id) {
 window.assignSharedQuizLink = async function(id) {
   try {
     const subjectMode = teacherCurrentClass && isSubjectAttendanceGrade(teacherCurrentClass.grade);
-    const windowBody = collectProgressShareWindowBody();
+    const loaded = window._progressEditorAssessment;
+    const takeHome = loaded
+      && String(loaded.id) === String(id)
+      && String(loaded.activity_mode || '') === 'take_home';
+    const windowBody = takeHome
+      ? { live_closes_at: loaded.activity_target_at || null }
+      : collectProgressShareWindowBody();
     const body = subjectMode
       ? { ...windowBody }
       : { session: currentManilaSessionClient(), ...windowBody };
@@ -9341,7 +9994,7 @@ window.assignSharedQuizLink = async function(id) {
     const day = data.attendance_date ? ` (${data.attendance_date}${sess})` : '';
     showToast((data.message || 'Shared link ready.') + day);
     if (data.share_token) {
-      await copySharedQuizLink(data.share_token);
+      await copySharedQuizLink(data.share_token, data.type);
     }
     const editor = document.getElementById('progress-editor');
     if (editor && !editor.hidden && editor.dataset.assessmentId === String(id)) {
@@ -9691,16 +10344,12 @@ function renderMaterialsSubjectCards() {
     return;
   }
   listEl.innerHTML = subjects.map((s) => `
-    <article class="lesson-plan-card qb-set-card" data-subject-key="${escapeHtml(s.key)}" role="button" tabindex="0">
-      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
-        <div>
-          <h3 class="page-heading font-heading" style="margin:0;">${escapeHtml(s.name)}</h3>
-          <p class="page-subheading">
-            ${s.plans} material${s.plans === 1 ? '' : 's'} · ${s.drafts} AI draft${s.drafts === 1 ? '' : 's'}
-          </p>
-        </div>
-        <span class="chip-ghost" style="pointer-events:none;">Open →</span>
-      </div>
+    <article class="lesson-plan-card qb-set-card lp-subject-card" data-subject-key="${escapeHtml(s.key)}" role="button" tabindex="0">
+      <h3 class="page-heading font-heading">${escapeHtml(s.name)}</h3>
+      <p class="page-subheading">
+        ${s.plans} material${s.plans === 1 ? '' : 's'} · ${s.drafts} AI draft${s.drafts === 1 ? '' : 's'}
+      </p>
+      <span class="chip-ghost">Open →</span>
     </article>
   `).join('');
 
@@ -9776,14 +10425,14 @@ function aiDraftCardHtml(r, expandId) {
             </div>
           </summary>
           <div class="ai-rec-fold-body">
-            <details class="ai-draft-details" open>
+            ${c.quiz ? `<details class="ai-draft-details" open>
               <summary>Quiz — ${escapeHtml(c.quiz?.title || 'Quiz')}</summary>
               ${formatAiItemsPreview(c.quiz, 'quiz')}
-            </details>
-            <details class="ai-draft-details">
+            </details>` : ''}
+            ${c.activity ? `<details class="ai-draft-details"${c.quiz ? '' : ' open'}>
               <summary>Activity — ${escapeHtml(c.activity?.title || 'Activity')}</summary>
               ${formatAiItemsPreview(c.activity, 'activity')}
-            </details>
+            </details>` : ''}
             ${r.status === 'pending' && !inClasswork ? `
             <div class="lesson-plan-card-actions">
               <button type="button" class="chip-ghost primary" data-action="save-draft-classwork" data-rec-id="${r.id}">Save to Classwork</button>
@@ -9941,12 +10590,10 @@ async function loadAiStatusHint() {
     const res = await fetch(`${API_URL}/teacher/ai/status`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    if (data.mode === 'ollama') {
-      hint.textContent = `AI: Ollama (local)${data.model ? ` · ${data.model}` : ''}`;
-    } else if (data.mode === 'openai') {
-      hint.textContent = `AI: OpenAI (live)${data.model ? ` · ${data.model}` : ''}`;
+    if (data.mode === 'groq') {
+      hint.textContent = `AI: Groq${data.model ? ` · ${data.model}` : ''}`;
     } else {
-      hint.textContent = 'AI: mock (set Ollama or OPENAI_API_KEY for live)';
+      hint.textContent = 'AI: mock (set GROQ_API_KEY for live)';
     }
   } catch {
     hint.textContent = '';
@@ -9961,15 +10608,19 @@ function formatAiItemsPreview(part, type) {
   }
   const items = Array.isArray(part.items) ? part.items : [];
   if (!items.length) return `<p>${escapeHtml(part.notes || '')}</p>`;
-  return `<ol class="ai-draft-items">${items.slice(0, 8).map((it) => {
-    const t = String(it.type || it.item_type || (Array.isArray(it.choices) && it.choices.length ? 'mcq' : 'identification')).toLowerCase();
-    const label = t === 'mcq' ? 'MCQ'
-      : t === 'identification' ? 'ID'
-      : t === 'enumeration' ? 'Enum'
-      : t === 'short_answer' ? 'SA'
-      : 'Q';
-    return `<li><span class="page-subheading">[${label}]</span> ${escapeHtml(it.question || '')}</li>`;
-  }).join('')}</ol>`;
+  const order = BANK_TYPE_ORDER.filter((t) => t !== 'activity');
+  const groups = new Map();
+  items.forEach((it) => {
+    let t = String(it.type || it.item_type || '').toLowerCase().replace(/[\s-]+/g, '_');
+    if (!order.includes(t)) t = Array.isArray(it.choices) && it.choices.length ? 'mcq' : 'short_answer';
+    if (!groups.has(t)) groups.set(t, []);
+    groups.get(t).push(it);
+  });
+  return order.filter((t) => (groups.get(t) || []).length).map((t) => {
+    const list = groups.get(t);
+    const lis = list.map((it) => `<li>${escapeHtml(it.question || '')}</li>`).join('');
+    return `<div class="ai-draft-type"><p class="ai-draft-type-title">${escapeHtml(bankItemTypeLabel(t))} <span class="page-subheading">${list.length}</span></p><ol class="ai-draft-items">${lis}</ol></div>`;
+  }).join('');
 }
 
 async function loadAiRecommendations() {
@@ -9993,11 +10644,94 @@ window.generateAiForLesson = async function(lessonPlanId) {
   openAiGenerateOptionsModal({ mode: 'generate', lessonPlanId });
 };
 
+function setHiddenEl(el, hidden) {
+  if (!el) return;
+  el.hidden = hidden;
+  if (hidden) el.setAttribute('hidden', '');
+  else el.removeAttribute('hidden');
+}
+
+function teacherFocusValue() {
+  return String(document.getElementById('ai-generate-focus')?.value || '').trim().slice(0, 500);
+}
+
+function getAiGenerateKind() {
+  return document.getElementById('ai-generate-kind-activity')?.classList.contains('btn-solid') ? 'activity' : 'quiz';
+}
+
+function setAiGenerateKind(kind) {
+  const locked = !!examAiIntent;
+  const next = locked || kind !== 'activity' ? 'quiz' : 'activity';
+  const quizBtn = document.getElementById('ai-generate-kind-quiz');
+  const activityBtn = document.getElementById('ai-generate-kind-activity');
+  const choice = document.getElementById('ai-generate-kind');
+  const lead = document.getElementById('ai-generate-lead');
+  setHiddenEl(choice, locked);
+  if (quizBtn) {
+    quizBtn.classList.toggle('btn-solid', next === 'quiz');
+    quizBtn.classList.toggle('btn-outline', next !== 'quiz');
+  }
+  if (activityBtn) {
+    activityBtn.classList.toggle('btn-solid', next === 'activity');
+    activityBtn.classList.toggle('btn-outline', next !== 'activity');
+  }
+  setHiddenEl(document.getElementById('ai-generate-quiz-fields'), next !== 'quiz');
+  setHiddenEl(document.getElementById('ai-generate-activity-note'), next !== 'activity');
+  if (lead) {
+    lead.textContent = locked
+      ? 'Choose the quiz types and how many items of each.'
+      : 'Choose a quiz or an activity.';
+  }
+  syncAiGenerateGoEnabled();
+}
+
+function syncAiGenerateGoEnabled() {
+  const goBtn = document.getElementById('ai-generate-count-go');
+  if (!goBtn) return;
+  if (getAiGenerateKind() === 'activity') {
+    goBtn.disabled = false;
+    return;
+  }
+  const picked = getSelectedAiGenerateCounts();
+  goBtn.disabled = picked.types.length === 0 || picked.missing;
+}
+
 function resetAiGenerateTypeChecks() {
   document.querySelectorAll('input[name="ai-quiz-type"]').forEach((el) => {
-    el.checked = true;
+    el.checked = false;
   });
+  document.querySelectorAll('input[name="ai-quiz-type-count"]').forEach((el) => {
+    el.value = '';
+    el.hidden = true;
+    el.setAttribute('hidden', '');
+  });
+  syncAiGenerateGoEnabled();
 }
+
+function syncAiTypeCountFields() {
+  document.querySelectorAll('input[name="ai-quiz-type"]').forEach((box) => {
+    const count = document.querySelector(`input[name="ai-quiz-type-count"][data-type="${box.value}"]`);
+    if (!count) return;
+    if (box.checked) {
+      count.hidden = false;
+      count.removeAttribute('hidden');
+    } else {
+      count.value = '';
+      count.hidden = true;
+      count.setAttribute('hidden', '');
+    }
+  });
+  syncAiGenerateGoEnabled();
+}
+
+document.querySelectorAll('input[name="ai-quiz-type"]').forEach((el) => {
+  el.addEventListener('change', syncAiTypeCountFields);
+});
+document.querySelectorAll('input[name="ai-quiz-type-count"]').forEach((el) => {
+  el.addEventListener('input', syncAiGenerateGoEnabled);
+});
+document.getElementById('ai-generate-kind-quiz')?.addEventListener('click', () => setAiGenerateKind('quiz'));
+document.getElementById('ai-generate-kind-activity')?.addEventListener('click', () => setAiGenerateKind('activity'));
 
 function openAiGenerateOptionsModal({ mode = 'generate', lessonPlanId = null, recommendationId = null } = {}) {
   const modal = document.getElementById('ai-generate-count-modal');
@@ -10011,24 +10745,31 @@ function openAiGenerateOptionsModal({ mode = 'generate', lessonPlanId = null, re
   if (recInput) recInput.value = recommendationId != null ? String(recommendationId) : '';
   if (titleEl) titleEl.textContent = mode === 'regenerate' ? 'Regenerate AI Draft' : 'Generate AI Draft';
   if (goBtn) goBtn.textContent = mode === 'regenerate' ? 'Regenerate' : 'Generate';
-  const custom = document.getElementById('ai-generate-count-custom');
-  if (custom) custom.value = '';
-  document.querySelectorAll('.ai-count-chip').forEach((chip) => {
-    chip.classList.toggle('active', chip.dataset.count === '10');
-  });
   resetAiGenerateTypeChecks();
+  setAiGenerateKind('quiz');
+  const focusEl = document.getElementById('ai-generate-focus');
+  if (focusEl) focusEl.value = '';
   if (modal) {
     modal.hidden = false;
     modal.removeAttribute('hidden');
   }
 }
 
+function paintAiGeneratingProgress(progress) {
+  const msgEl = document.getElementById('ai-generating-message');
+  const fill = document.getElementById('ai-generating-fill');
+  const step = Number(progress?.step) || 1;
+  const total = Number(progress?.total) || 3;
+  const label = progress?.label || 'Reading the lesson';
+  if (msgEl) msgEl.textContent = label;
+  if (fill) fill.style.width = `${Math.min(100, Math.round((step / total) * 100))}%`;
+}
+
 function showAiGeneratingModal(title = 'Generating AI Draft') {
   const modal = document.getElementById('ai-generating-modal');
   const titleEl = document.getElementById('ai-generating-title');
-  const msgEl = document.getElementById('ai-generating-message');
   if (titleEl) titleEl.textContent = title;
-  if (msgEl) msgEl.textContent = 'Please wait...';
+  paintAiGeneratingProgress({ step: 1, total: 3, label: 'Reading the lesson' });
   if (modal) {
     modal.hidden = false;
     modal.removeAttribute('hidden');
@@ -10046,7 +10787,7 @@ function hideAiGeneratingModal() {
 function getSelectedAiGenerateTypes() {
   return [...document.querySelectorAll('input[name="ai-quiz-type"]:checked')]
     .map((el) => el.value)
-    .filter((v) => ['mcq', 'identification', 'enumeration'].includes(v));
+    .filter((v) => BANK_TYPE_ORDER.includes(v) && v !== 'activity');
 }
 
 async function parseAiJsonResponse(res) {
@@ -10082,41 +10823,76 @@ async function pollAiJob(jobId) {
       if (res.status === 404) continue;
       throw new Error(data.error || 'Could not check generation status');
     }
+    if (data.progress) paintAiGeneratingProgress(data.progress);
     if (data.status === 'done') return data;
     if (data.status === 'error') throw new Error(data.error || 'Generation failed');
   }
-  throw new Error('Generation is taking too long. Check Ollama and try again.');
+  throw new Error('Generation is taking too long. Check the Gemini connection and try again.');
 }
 
-async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes) {
-  showAiGeneratingModal('Generating AI Draft');
+let aiDraftJobRunning = false;
+
+function aiDraftAlreadyRunning() {
+  if (!aiDraftJobRunning) return false;
+  showToast('A draft is already being generated.', 'error');
+  return true;
+}
+
+async function runAiGenerateWithCount(lessonPlanId, quizItemCount, quizItemTypes, opts = {}) {
+  if (aiDraftAlreadyRunning()) return;
+  aiDraftJobRunning = true;
+  showAiGeneratingModal(opts.asExam ? 'Generating exam' : 'Generating AI Draft');
   try {
-    const res = await fetch(`${API_URL}/teacher/lesson-plans/${lessonPlanId}/generate`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        quiz_item_count: quizItemCount,
-        quiz_item_types: quizItemTypes
-      })
-    });
+    const examIds = opts.asExam && Array.isArray(opts.lessonIds) ? opts.lessonIds.filter((id) => Number(id) > 0) : [];
+    const examGenerate = examIds.length > 0;
+    const payload = {
+      quiz_item_count: quizItemCount,
+      quiz_item_types: quizItemTypes,
+      quiz_item_counts: opts.quizItemCounts || null,
+      draft_kind: opts.draftKind === 'activity' ? 'activity' : 'quiz',
+      teacher_focus: opts.teacherFocus || ''
+    };
+    const res = await fetch(
+      examGenerate
+        ? `${API_URL}/teacher/ai/generate-exam`
+        : `${API_URL}/teacher/lesson-plans/${lessonPlanId}/generate`,
+      {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(examGenerate
+          ? { ...payload, lesson_plan_ids: examIds }
+          : payload)
+      }
+    );
     const { ok, data, parseError } = await parseAiJsonResponse(res);
     if (parseError) throw new Error('Could not start generation. Try again.');
     if (!ok) throw new Error(data.error || data.details || 'Generation failed');
     const done = data.jobId ? await pollAiJob(data.jobId) : data;
     showToast(done.message || 'AI draft created.');
+    if (opts.asExam && done.id) {
+      examAiDraftId = done.id;
+      openExamAiSaveModal();
+      return;
+    }
     aiDraftExpandId = done.id;
     await loadAiRecommendations();
+    const materials = document.getElementById('teacher-panel-lesson-plans');
     const draftsHeading = document.getElementById('lp-ai-drafts-heading');
-    if (draftsHeading) draftsHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (materials && !materials.hasAttribute('hidden') && draftsHeading) {
+      draftsHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   } catch (err) {
     showToast(err.message, 'error');
     await loadAiRecommendations();
   } finally {
+    aiDraftJobRunning = false;
     hideAiGeneratingModal();
   }
 }
 
-async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizItemTypes) {
+async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizItemTypes, quizItemCounts = null, draftKind = 'quiz', teacherFocus = '') {
+  if (aiDraftAlreadyRunning()) return;
+  aiDraftJobRunning = true;
   showAiGeneratingModal('Regenerating AI Draft');
   try {
     const res = await fetch(`${API_URL}/teacher/ai/recommendations/${recommendationId}/regenerate`, {
@@ -10124,7 +10900,10 @@ async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizI
       headers: getAuthHeaders(),
       body: JSON.stringify({
         quiz_item_count: quizItemCount,
-        quiz_item_types: quizItemTypes
+        quiz_item_types: quizItemTypes,
+        quiz_item_counts: quizItemCounts,
+        draft_kind: draftKind === 'activity' ? 'activity' : 'quiz',
+        teacher_focus: teacherFocus || ''
       })
     });
     const { ok, data, parseError } = await parseAiJsonResponse(res);
@@ -10138,42 +10917,51 @@ async function runAiRegenerateWithOptions(recommendationId, quizItemCount, quizI
     showToast(err.message, 'error');
     await loadAiRecommendations();
   } finally {
+    aiDraftJobRunning = false;
     hideAiGeneratingModal();
   }
 }
 
-function getSelectedAiGenerateCount() {
-  const custom = document.getElementById('ai-generate-count-custom');
-  const customVal = custom?.value ? Number(custom.value) : NaN;
-  if (Number.isFinite(customVal) && customVal >= 5 && customVal <= 50) return Math.round(customVal);
-  const active = document.querySelector('.ai-count-chip.active');
-  const n = Number(active?.dataset.count);
-  return Number.isFinite(n) ? n : 10;
-}
-
-document.querySelectorAll('.ai-count-chip').forEach((chip) => {
-  chip.addEventListener('click', () => {
-    document.querySelectorAll('.ai-count-chip').forEach((c) => c.classList.remove('active'));
-    chip.classList.add('active');
-    const custom = document.getElementById('ai-generate-count-custom');
-    if (custom) custom.value = '';
+function getSelectedAiGenerateCounts() {
+  const types = getSelectedAiGenerateTypes();
+  const counts = {};
+  let total = 0;
+  let missing = false;
+  types.forEach((type) => {
+    const el = document.querySelector(`input[name="ai-quiz-type-count"][data-type="${type}"]`);
+    const n = Number(el?.value);
+    if (!Number.isInteger(n) || n < 1 || n > 20) {
+      missing = true;
+      return;
+    }
+    counts[type] = n;
+    total += n;
   });
-});
-
-document.getElementById('ai-generate-count-custom')?.addEventListener('input', () => {
-  document.querySelectorAll('.ai-count-chip').forEach((c) => c.classList.remove('active'));
-});
+  return { types, counts, total, missing };
+}
 
 document.getElementById('ai-generate-count-go')?.addEventListener('click', async () => {
   const mode = document.getElementById('ai-generate-mode')?.value || 'generate';
   const lessonId = Number(document.getElementById('ai-generate-lesson-id')?.value);
   const recId = Number(document.getElementById('ai-generate-rec-id')?.value);
-  const count = getSelectedAiGenerateCount();
-  const types = getSelectedAiGenerateTypes();
+  const kind = getAiGenerateKind();
+  const picked = getSelectedAiGenerateCounts();
+  const focus = teacherFocusValue();
   const modal = document.getElementById('ai-generate-count-modal');
-  if (!types.length) {
-    showToast('Select at least one quiz item type.', 'error');
-    return;
+  if (kind === 'quiz') {
+    if (!picked.types.length) {
+      showToast('Select at least one quiz item type.', 'error');
+      return;
+    }
+    if (picked.missing) {
+      showToast('Enter 1 to 20 items for each selected type.', 'error');
+      return;
+    }
+    const itemCap = examAiIntent ? 50 : 30;
+    if (picked.total > itemCap) {
+      showToast(`The total can be at most ${itemCap} items.`, 'error');
+      return;
+    }
   }
   if (modal) {
     modal.hidden = true;
@@ -10181,14 +10969,30 @@ document.getElementById('ai-generate-count-go')?.addEventListener('click', async
   }
   if (mode === 'regenerate') {
     if (!recId) return;
-    await runAiRegenerateWithOptions(recId, count, types);
+    await runAiRegenerateWithOptions(
+      recId,
+      kind === 'activity' ? null : picked.total,
+      kind === 'activity' ? [] : picked.types,
+      kind === 'activity' ? null : picked.counts,
+      kind,
+      focus
+    );
     return;
   }
   if (!lessonId) return;
-  await runAiGenerateWithCount(lessonId, count, types);
+  const asExam = examAiIntent;
+  examAiIntent = false;
+  await runAiGenerateWithCount(lessonId, kind === 'activity' ? null : picked.total, kind === 'activity' ? [] : picked.types, {
+    asExam,
+    lessonIds: asExam ? examAiLessonIds.slice() : [],
+    quizItemCounts: kind === 'activity' ? null : picked.counts,
+    draftKind: asExam ? 'quiz' : kind,
+    teacherFocus: focus
+  });
 });
 
 document.getElementById('ai-generate-count-cancel')?.addEventListener('click', () => {
+  examAiIntent = false;
   const modal = document.getElementById('ai-generate-count-modal');
   if (modal) {
     modal.hidden = true;
@@ -10244,9 +11048,15 @@ window.saveAiDraftToBank = async function(id) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.details || 'Save failed');
     showToast(data.message || 'Saved to Classwork.');
-    questionBankCurrentSetId = null;
-    questionBankCurrentSet = null;
-    if (typeof loadQuestionBank === 'function') {
+    const savedKind = data.kind || (Array.isArray(data.sets) && data.sets[0]?.kind) || null;
+    if (data.quiz_set_id && savedKind) {
+      questionBankCurrentSetId = data.quiz_set_id;
+      questionBankCurrentCategory = savedKind;
+      questionBankOpenedFromKind = true;
+      applyTeacherPanel('quiz-bank');
+    } else if (typeof loadQuestionBank === 'function') {
+      questionBankCurrentSetId = null;
+      questionBankCurrentSet = null;
       await loadQuestionBank();
     }
     await loadAiRecommendations();
@@ -10285,10 +11095,21 @@ let questionBankItems = [];
 let questionBankCategories = [];
 let questionBankCurrentSetId = null;
 let questionBankCurrentSet = null;
-let questionBankCurrentCategory = null; // 'quizzes' | 'activity' | null
+let questionBankCurrentCategory = null; // 'quizzes' | 'activity' | 'exam' | null
+let questionBankOpenedFromKind = false;
+let examWriteMode = false;
+let examWriteQuestions = [];
+let examWriteGrade = null;
+let examWriteSubjectId = null;
+let examAiIntent = false;
+let examAiDraftId = null;
+let examAiPlan = null;
+let examAiLessonIds = [];
+let examAiSource = 'lessons';
 const questionBankSelected = new Set();
 let qbFilterGrade = '';
 let qbFilterSubjectId = '';
+let qbFilterKind = '';
 let qbGradeMenuApi = null;
 let qbSubjectMenuApi = null;
 
@@ -10385,29 +11206,17 @@ function fillAddQuizSubjectOptions() {
 }
 
 function bankItemTypeLabel(type) {
-  const t = String(type || '').toLowerCase();
-  if (t === 'mcq') return 'Multiple choice';
-  if (t === 'identification') return 'Identification';
-  if (t === 'enumeration') return 'Enumeration';
-  if (t === 'short_answer') return 'Short answer';
-  if (isActivityItemType(t)) return 'Activity';
-  return type ? String(type) : 'Multiple choice';
+  return bankItemTypeLabelClient(type);
 }
 
 function syncQuizBankLandingChrome() {
   const onLanding = !questionBankCurrentSetId;
   const addQuizBtn = document.getElementById('qb-add-quiz-btn');
-  const createExamBtn = document.getElementById('qb-create-exam-btn');
   const filterToolbar = document.getElementById('qb-filter-toolbar');
   if (addQuizBtn) {
     addQuizBtn.hidden = !onLanding;
     if (onLanding) addQuizBtn.removeAttribute('hidden');
     else addQuizBtn.setAttribute('hidden', '');
-  }
-  if (createExamBtn) {
-    createExamBtn.hidden = !onLanding;
-    if (onLanding) createExamBtn.removeAttribute('hidden');
-    else createExamBtn.setAttribute('hidden', '');
   }
   if (filterToolbar) {
     filterToolbar.hidden = !onLanding;
@@ -10419,7 +11228,9 @@ function syncQuizBankLandingChrome() {
 function classworkCreateKind(typeOverride) {
   const t = String(typeOverride || '').toLowerCase();
   if (t === 'activity' || t === 'quiz' || t === 'exam') return t;
-  return questionBankCurrentCategory === 'activity' ? 'activity' : 'quiz';
+  if (questionBankCurrentCategory === 'activity') return 'activity';
+  if (questionBankCurrentCategory === 'exam') return 'exam';
+  return 'quiz';
 }
 
 function classworkCreateKindLabel(typeOverride) {
@@ -10438,6 +11249,20 @@ function syncClassworkCreateModalLabels() {
   const confirmBtn = document.getElementById('qb-create-confirm');
   if (titleEl) titleEl.textContent = `Create ${label} from Classwork`;
   if (confirmBtn) confirmBtn.textContent = `Create ${label}`;
+  const activityFields = document.getElementById('qb-create-activity-fields');
+  const typeField = document.getElementById('qb-create-type-field');
+  if (activityFields) {
+    const show = kind === 'activity';
+    activityFields.hidden = !show;
+    if (show) activityFields.removeAttribute('hidden');
+    else activityFields.setAttribute('hidden', '');
+  }
+  if (typeField) {
+    const showType = kind === 'quiz';
+    typeField.hidden = !showType;
+    if (showType) typeField.removeAttribute('hidden');
+    else typeField.setAttribute('hidden', '');
+  }
 }
 
 function updateQuizBankSelectionMeta() {
@@ -10452,7 +11277,9 @@ function updateQuizBankSelectionMeta() {
 
   if (titleEl) {
     if (questionBankCurrentCategory) {
-      titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Activity' : 'Quizzes';
+    if (questionBankCurrentCategory === 'activity') titleEl.textContent = 'Activity';
+    else if (questionBankCurrentCategory === 'exam') titleEl.textContent = 'Exam';
+    else titleEl.textContent = 'Quizzes';
     } else if (questionBankCurrentSetId) {
       titleEl.textContent = questionBankCurrentSet?.title || 'Classwork set';
     } else {
@@ -10463,9 +11290,9 @@ function updateQuizBankSelectionMeta() {
     if (questionBankCurrentCategory) {
       meta.textContent = n ? `${n} selected` : `Select items to create ${classworkCreateKindPhrase()}`;
     } else if (questionBankCurrentSetId) {
-      meta.textContent = 'Open Quizzes or Activity';
+      meta.textContent = 'Open Quizzes, Activity, or Exam';
     } else {
-      meta.textContent = 'Open a set to pick items, or Create Exam to compose a period exam';
+      meta.textContent = 'Open a set to pick items, or Create Exam to generate or type an exam';
     }
   }
 
@@ -10529,6 +11356,7 @@ function renderQuizBankSets() {
   questionBankCurrentSetId = null;
   questionBankCurrentSet = null;
   questionBankCurrentCategory = null;
+  questionBankOpenedFromKind = false;
   questionBankCategories = [];
   showQuizBankListView();
 
@@ -10538,14 +11366,42 @@ function renderQuizBankSets() {
     return;
   }
 
-  listEl.innerHTML = questionBankSets.map((set) => `
-    <article class="lesson-plan-card qb-set-card" data-set-id="${set.id}" role="button" tabindex="0">
+  const cards = [];
+  questionBankSets.forEach((set) => {
+    const kindSpecs = [
+      { key: 'quizzes', label: 'Quiz', count: Number(set.quiz_count) || 0 },
+      { key: 'activity', label: 'Activity', count: Number(set.activity_count) || 0 },
+      { key: 'exam', label: 'Exam', count: Number(set.exam_count) || 0 }
+    ];
+    const owned = kindSpecs.find((kind) => kind.key === set.kind);
+    const kinds = owned
+      ? [{ ...owned, count: owned.count }]
+      : kindSpecs.filter((kind) => kind.count > 0);
+    const visible = qbFilterKind ? kinds.filter((kind) => kind.key === qbFilterKind) : kinds;
+    if (!visible.length) {
+      if (!qbFilterKind && !kinds.length && !owned) {
+        cards.push({ set, key: '', label: '', count: Number(set.item_count) || 0 });
+      }
+      return;
+    }
+    visible.forEach((kind) => cards.push({ set, ...kind }));
+  });
+  if (!cards.length) {
+    const emptyLabel = qbFilterKind === 'quizzes' ? 'quizzes' : qbFilterKind === 'activity' ? 'activities' : 'exams';
+    listEl.innerHTML = `<p class="empty-state">No ${emptyLabel} yet.</p>`;
+    updateQuizBankSelectionMeta();
+    return;
+  }
+
+  listEl.innerHTML = cards.map(({ set, key, label, count }) => `
+    <article class="lesson-plan-card qb-set-card" data-set-id="${set.id}" data-qb-kind="${escapeHtml(key)}" role="button" tabindex="0">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
         <div>
+          ${label ? `<p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(label)}</p>` : ''}
           <h3 class="page-heading font-heading" style="margin:0;">${escapeHtml(set.title || 'Classwork set')}</h3>
           <p class="page-subheading">
             Grade ${set.grade_level}${set.subject_name ? ' · ' + escapeHtml(set.subject_name) : ''}
-            · ${Number(set.item_count) || 0} item(s)
+            · ${count} item(s)
             ${set.source === 'ai' ? ' · AI' : ''}
           </p>
         </div>
@@ -10555,7 +11411,10 @@ function renderQuizBankSets() {
   `).join('');
 
   listEl.querySelectorAll('.qb-set-card').forEach((card) => {
-    const open = () => openQuizBankSet(Number(card.dataset.setId));
+    const open = () => {
+      const kind = card.dataset.qbKind;
+      openQuizBankSet(Number(card.dataset.setId), kind ? { keepCategory: kind, fromKindList: true } : {});
+    };
     card.addEventListener('click', open);
     card.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -10614,10 +11473,10 @@ function setQuizBankBulkBarVisible(visible) {
     else bar.setAttribute('hidden', '');
   }
   if (del) {
-    // Delete set only on folder level (not inside Quizzes/Activity)
-    del.hidden = !!visible;
-    if (visible) del.setAttribute('hidden', '');
-    else del.removeAttribute('hidden');
+    const showDelete = !visible || questionBankOpenedFromKind;
+    del.hidden = !showDelete;
+    if (showDelete) del.removeAttribute('hidden');
+    else del.setAttribute('hidden', '');
   }
   if (addBtn) {
     // Add question/activity only inside Quizzes/Activity questions view
@@ -10626,7 +11485,9 @@ function setQuizBankBulkBarVisible(visible) {
       addBtn.removeAttribute('hidden');
       addBtn.textContent = questionBankCurrentCategory === 'activity'
         ? '+ Add Activity'
-        : '+ Add Quiz Question';
+        : questionBankCurrentCategory === 'exam'
+          ? '+ Add Exam Question'
+          : '+ Add Quiz Question';
     } else {
       addBtn.setAttribute('hidden', '');
     }
@@ -10713,31 +11574,70 @@ function syncQuizBankChoicesVisibility() {
   const rubricWrap = document.getElementById('qb-edit-rubric-wrap');
   const qLabel = document.getElementById('qb-edit-question-label');
   const qInput = document.getElementById('qb-edit-question');
+  const choiceLabel = document.getElementById('qb-edit-choices-label');
+  const choiceHint = document.getElementById('qb-edit-choices-hint');
+  const answerLabel = document.getElementById('qb-edit-answer-label');
+  const answerInput = document.getElementById('qb-edit-answer');
+  const answerTf = document.getElementById('qb-edit-answer-tf');
+  const answerLong = document.getElementById('qb-edit-answer-long');
   const isActivity = type === 'activity';
+  const showChoices = quizTypeStoresChoices(type);
+  const derivedAnswer = type === 'matching' || type === 'sequencing';
 
   if (qLabel) qLabel.textContent = isActivity ? 'Description' : 'Question';
   if (qInput) {
     qInput.placeholder = isActivity
       ? 'Describe what students will do…'
-      : 'e.g. What is…?';
+      : (type === 'fill_blank' ? 'Use _____ for each blank.' : 'e.g. What is…?');
+  }
+  if (choiceLabel) {
+    choiceLabel.textContent = type === 'fill_blank' ? 'Word bank'
+      : type === 'matching' ? 'Pairs'
+      : type === 'sequencing' ? 'Steps in order'
+      : type === 'identification' ? 'Extra words'
+      : 'Choices';
+  }
+  if (choiceHint) {
+    choiceHint.textContent = type === 'fill_blank'
+      ? 'One word or phrase per line. Include the correct words and a few extras.'
+      : type === 'matching'
+        ? 'Each line is left | right. Example: Sun | star. Each right side can be used only once.'
+        : type === 'sequencing'
+          ? 'One step per line, already in the correct order.'
+          : type === 'identification'
+            ? 'Optional. These words join the shared answer box and are not the correct answer.'
+            : 'Enter adds the next letter (A, B, C…). Long text wraps in the same box.';
   }
 
   if (wrap) {
-    const show = type === 'mcq';
-    wrap.hidden = !show;
-    if (show) {
+    wrap.hidden = !showChoices;
+    if (showChoices) {
       wrap.removeAttribute('hidden');
       bindQbChoicesListOnce();
       const list = document.getElementById('qb-edit-choices-list');
-      if (list && !list.querySelector('.qb-choice-row')) setQbChoiceValues(['', '']);
+      if (list && !list.querySelector('.qb-choice-row')) {
+        const blanks = (type === 'matching' || type === 'sequencing') ? ['', '', '']
+          : type === 'identification' ? ['']
+          : ['', ''];
+        setQbChoiceValues(blanks);
+      }
     } else wrap.setAttribute('hidden', '');
   }
   if (answerWrap) {
-    const showAns = !isActivity;
+    const showAns = !isActivity && !derivedAnswer;
     answerWrap.hidden = !showAns;
     if (showAns) answerWrap.removeAttribute('hidden');
     else answerWrap.setAttribute('hidden', '');
   }
+  if (answerLabel) {
+    answerLabel.textContent = type === 'short_answer' ? 'Model answer' : 'Correct Answer';
+  }
+  if (answerInput) {
+    answerInput.hidden = type === 'true_false' || type === 'short_answer';
+    answerInput.placeholder = type === 'fill_blank' ? 'Correct word, or words in blank order' : 'A';
+  }
+  if (answerTf) answerTf.hidden = type !== 'true_false';
+  if (answerLong) answerLong.hidden = type !== 'short_answer';
   if (rubricWrap) {
     rubricWrap.hidden = !isActivity;
     if (isActivity) rubricWrap.removeAttribute('hidden');
@@ -10823,12 +11723,32 @@ function syncRubricSumWarning() {
   note.className = 'page-subheading';
 }
 
-function renderRubricEditor(rubric) {
-  const list = document.getElementById('qb-edit-rubric-list');
+function renderRubricEditor(rubric, opts = {}) {
+  const list = document.getElementById(opts.listId || 'qb-edit-rubric-list');
   if (!list) return;
-  const data = normalizeRubricClient(rubric) || emptyRubricTemplateClient(
-    Number(document.getElementById('qb-edit-points')?.value) || 20
-  );
+  const pointsValue = () => Number(document.getElementById(opts.pointsId || 'qb-edit-points')?.value) || 20;
+  const onSync = typeof opts.onSync === 'function' ? opts.onSync : syncRubricSumWarning;
+  let data = null;
+  if (opts.keepEmpty && rubric?.categories?.length) {
+    data = {
+      categories: rubric.categories.slice(0, 8).map((c) => {
+        const max_points = Math.max(1, Number(c.max_points) || 5);
+        const pts = defaultRubricLevelPoints(max_points);
+        const levels = QB_RUBRIC_LEVELS.map((label, i) => {
+          const lv = (c.levels || [])[i] || {};
+          return {
+            label: String(lv.label || label),
+            points: Math.max(0, Number(lv.points) || pts[i]),
+            description: String(lv.description || '')
+          };
+        });
+        return { name: String(c.name || ''), max_points, levels };
+      })
+    };
+  }
+  if (!data?.categories?.length) {
+    data = normalizeRubricClient(rubric) || emptyRubricTemplateClient(pointsValue());
+  }
   list.innerHTML = data.categories.map((c, idx) => `
     <div class="qb-rubric-category" data-rubric-idx="${idx}">
       <div class="form-row admin-edit-form-row-2" style="margin-bottom:6px;">
@@ -10859,14 +11779,14 @@ function renderRubricEditor(rubric) {
       if (!card) return;
       card.remove();
       if (!list.querySelector('.qb-rubric-category')) {
-        renderRubricEditor(emptyRubricTemplateClient(Number(document.getElementById('qb-edit-points')?.value) || 20));
+        renderRubricEditor(emptyRubricTemplateClient(pointsValue()), opts);
       }
-      syncRubricSumWarning();
+      onSync();
     });
   });
 
   list.querySelectorAll('.qb-rubric-max, .qb-rubric-name').forEach((input) => {
-    input.addEventListener('input', syncRubricSumWarning);
+    input.addEventListener('input', onSync);
     input.addEventListener('change', () => {
       if (input.classList.contains('qb-rubric-max')) {
         const card = input.closest('.qb-rubric-category');
@@ -10880,15 +11800,14 @@ function renderRubricEditor(rubric) {
           }
         });
       }
-      syncRubricSumWarning();
+      onSync();
     });
   });
 
-  syncRubricSumWarning();
+  onSync();
 }
 
-function collectRubricFromEditor() {
-  const list = document.getElementById('qb-edit-rubric-list');
+function collectRubricFromList(list, { requireName = true } = {}) {
   if (!list) return null;
   const categories = [...list.querySelectorAll('.qb-rubric-category')].map((card) => {
     const name = card.querySelector('.qb-rubric-name')?.value?.trim() || '';
@@ -10900,8 +11819,12 @@ function collectRubricFromEditor() {
       description: inp.value.trim()
     }));
     return { name, max_points, levels };
-  }).filter((c) => c.name);
+  }).filter((c) => !requireName || c.name);
   return categories.length ? { categories } : null;
+}
+
+function collectRubricFromEditor() {
+  return collectRubricFromList(document.getElementById('qb-edit-rubric-list'));
 }
 
 function rubricPreviewHtml(rubric) {
@@ -10921,10 +11844,18 @@ function rubricPreviewHtml(rubric) {
 
 const QB_QUIZ_TYPE_OPTIONS = [
   { value: 'mcq', label: 'Multiple choice' },
+  { value: 'true_false', label: 'True or False' },
+  { value: 'fill_blank', label: 'Fill in the blank' },
+  { value: 'matching', label: 'Matching' },
+  { value: 'sequencing', label: 'Sequencing' },
   { value: 'identification', label: 'Identification' },
   { value: 'enumeration', label: 'Enumeration' },
   { value: 'short_answer', label: 'Short answer' }
 ];
+
+function quizTypeStoresChoices(type) {
+  return ['mcq', 'fill_blank', 'matching', 'sequencing', 'identification'].includes(type);
+}
 
 const QB_ACTIVITY_TYPE_OPTIONS = [
   { value: 'activity', label: 'Activity' }
@@ -10950,31 +11881,46 @@ function fillQuizBankTypeOptions(preferredValue, categoryOverride = null) {
 }
 
 window.openQuizBankAdd = function(preferredType) {
-  if (!questionBankCurrentSetId || !questionBankCurrentSet) {
+  const writingExam = examWriteMode;
+  if (!writingExam && (!questionBankCurrentSetId || !questionBankCurrentSet)) {
     showToast('Open a Classwork set first.', 'error');
     return;
   }
   const modal = document.getElementById('qb-edit-modal');
   if (!modal) return;
   const titleEl = document.getElementById('qb-edit-modal-title');
-  if (titleEl) titleEl.textContent = questionBankCurrentCategory === 'activity' ? 'Add Activity' : 'Add Quiz Question';
+  if (titleEl) {
+    titleEl.textContent = writingExam || questionBankCurrentCategory === 'exam'
+      ? 'Add Exam Question'
+      : questionBankCurrentCategory === 'activity' ? 'Add Activity' : 'Add Quiz Question';
+  }
   const subEl = document.getElementById('qb-edit-modal-subtitle');
   if (subEl) {
-    subEl.textContent = questionBankCurrentCategory === 'activity'
-      ? 'Add an activity to this Classwork set.'
-      : 'Add a quiz question to this classwork set.';
+    subEl.textContent = writingExam || questionBankCurrentCategory === 'exam'
+      ? 'Add an exam question to this Classwork set.'
+      : questionBankCurrentCategory === 'activity'
+        ? 'Add an activity to this Classwork set.'
+        : 'Add a quiz question to this classwork set.';
   }
   document.getElementById('qb-edit-id').value = '';
   document.getElementById('qb-edit-question').value = '';
   bindQbChoicesListOnce();
   setQbChoiceValues(['', '']);
   document.getElementById('qb-edit-answer').value = '';
+  const tfAdd = document.getElementById('qb-edit-answer-tf');
+  const longAdd = document.getElementById('qb-edit-answer-long');
+  if (tfAdd) tfAdd.value = 'True';
+  if (longAdd) longAdd.value = '';
   document.getElementById('qb-edit-points').value = preferredType === 'activity' || questionBankCurrentCategory === 'activity' ? '20' : '1';
-  const preferred = preferredType || (questionBankCurrentCategory === 'activity' ? 'activity' : 'mcq');
-  fillQuizBankTypeOptions(preferred);
+  const preferred = writingExam
+    ? 'mcq'
+    : (preferredType || (questionBankCurrentCategory === 'activity' ? 'activity' : 'mcq'));
+  fillQuizBankTypeOptions(preferred, writingExam ? 'quizzes' : null);
   const gradeSel = document.getElementById('qb-edit-grade');
   const grades = getTeacherAssignedGrades();
-  const setGrade = Number(questionBankCurrentSet.grade_level);
+  const setGrade = writingExam
+    ? Number(examWriteGrade)
+    : Number(questionBankCurrentSet?.grade_level);
   if (gradeSel) {
     gradeSel.innerHTML = grades.length
       ? grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join('')
@@ -11004,9 +11950,17 @@ window.openQuizBankEdit = function(id) {
   document.getElementById('qb-edit-question').value = item.question || '';
   bindQbChoicesListOnce();
   setQbChoiceValues(Array.isArray(item.choices) ? item.choices : ['', '']);
-  document.getElementById('qb-edit-answer').value = Array.isArray(item.choices) && item.choices.length
-    ? formatMcqAnswerDisplay(item.answer, item.choices)
-    : (item.answer || '');
+  const answerText = document.getElementById('qb-edit-answer');
+  const answerTf = document.getElementById('qb-edit-answer-tf');
+  const answerLong = document.getElementById('qb-edit-answer-long');
+  const itemType = String(item.item_type || 'mcq');
+  if (answerText) {
+    answerText.value = itemType === 'mcq' && Array.isArray(item.choices) && item.choices.length
+      ? (formatMcqAnswerDisplay(item.answer, item.choices) || item.answer || '')
+      : (item.answer || '');
+  }
+  if (answerTf) answerTf.value = /false/i.test(String(item.answer || '')) ? 'False' : 'True';
+  if (answerLong) answerLong.value = itemType === 'short_answer' ? (item.answer || '') : '';
   document.getElementById('qb-edit-points').value = String(Number(item.points) || 1);
   // Prefer folder category; fall back to item type when editing
   const editCat = questionBankCurrentCategory
@@ -11057,7 +12011,7 @@ function renderQuizBankCategoryFolders() {
   if (!questionBankItems.length) {
     groupsEl.insertAdjacentHTML('beforeend', `
       <p class="page-subheading" style="margin:12px 0 0;">
-        No items yet. Open <strong>Quizzes</strong> or <strong>Activity</strong> to add items, or generate an AI draft in <strong>Materials</strong> and use <strong>Save to Classwork</strong>.
+        No items yet. Open <strong>Quizzes</strong>, <strong>Activity</strong>, or <strong>Exam</strong> to add items, or generate an AI draft in <strong>Materials</strong> and use <strong>Save to Classwork</strong>.
       </p>`);
   }
 
@@ -11118,15 +12072,19 @@ function renderQuizBankCategoryDetail(categoryKey) {
   const set = questionBankCurrentSet || {};
 
   if (backBtn) {
-    const setTitle = (set.title || '').trim();
-    backBtn.textContent = setTitle ? `← ${setTitle}` : '← Back to set';
+    if (questionBankOpenedFromKind) {
+      backBtn.textContent = '← Classwork';
+    } else {
+      const setTitle = (set.title || '').trim();
+      backBtn.textContent = setTitle ? `← ${setTitle}` : '← Back to set';
+    }
   }
   if (!groupsEl) return;
 
   const groups = cat?.groups || [];
   if (!groups.length) {
     groupsEl.innerHTML = `
-      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>${questionBankCurrentCategory === 'activity' ? '+ Add Activity' : '+ Add Quiz Question'}</strong> above to create one.</p>`;
+      <p class="empty-state" style="margin-bottom:12px;">No items in this folder yet. Use <strong>${questionBankCurrentCategory === 'activity' ? '+ Add Activity' : questionBankCurrentCategory === 'exam' ? '+ Add Exam Question' : '+ Add Quiz Question'}</strong> above to create one.</p>`;
     updateQuizBankSelectionMeta();
     return;
   }
@@ -11174,8 +12132,14 @@ function openQuizBankCategory(categoryKey) {
 }
 
 function buildCategoriesClientSide(items) {
-  const quizItems = items.filter((i) => !isActivityItemType(i.item_type));
-  const activityItems = items.filter((i) => isActivityItemType(i.item_type));
+  const quizItems = [];
+  const activityItems = [];
+  const examItems = [];
+  (items || []).forEach((item) => {
+    if (isActivityItemType(item.item_type)) activityItems.push(item);
+    else if (String(item.folder || '').toLowerCase() === 'exam') examItems.push(item);
+    else quizItems.push(item);
+  });
   const byType = (list) => {
     const map = new Map();
     list.forEach((item) => {
@@ -11189,10 +12153,10 @@ function buildCategoriesClientSide(items) {
       items: groupItems
     }));
   };
-  // Always show both folders so teachers can open + add without a set-home CTA
   return [
     { category: 'quizzes', label: 'Quizzes', item_count: quizItems.length, groups: byType(quizItems) },
-    { category: 'activity', label: 'Activity', item_count: activityItems.length, groups: byType(activityItems) }
+    { category: 'activity', label: 'Activity', item_count: activityItems.length, groups: byType(activityItems) },
+    { category: 'exam', label: 'Exam', item_count: examItems.length, groups: byType(examItems) }
   ];
 }
 
@@ -11255,6 +12219,8 @@ async function openQuizBankSet(setId, opts = {}) {
     if (!res.ok) throw new Error(data.error);
     questionBankCurrentSetId = setId;
     questionBankCurrentSet = data.set || null;
+    if (opts.fromKindList) questionBankOpenedFromKind = true;
+    else if (!opts.keepCategory) questionBankOpenedFromKind = false;
     questionBankItems = Array.isArray(data.items) ? data.items : [];
     questionBankCategories = ensureQuizBankFolders(
       Array.isArray(data.categories) ? data.categories : [],
@@ -11351,8 +12317,28 @@ qbSubjectMenuApi = wireDownloadSelectMenu({
   }
 });
 
+wireDownloadSelectMenu({
+  menuId: 'qb-filter-kind-menu',
+  btnId: 'qb-filter-kind-btn',
+  panelId: 'qb-filter-kind-panel',
+  options: [
+    { value: '', label: 'All types' },
+    { value: 'quizzes', label: 'Quiz' },
+    { value: 'activity', label: 'Activity' },
+    { value: 'exam', label: 'Exam' }
+  ],
+  getValue: () => qbFilterKind,
+  setValue: (v) => { qbFilterKind = v || ''; },
+  onPick: () => {
+    questionBankCurrentSetId = null;
+    questionBankCurrentCategory = null;
+    questionBankSelected.clear();
+    renderQuizBankSets();
+  }
+});
+
 document.getElementById('qb-set-back')?.addEventListener('click', () => {
-  if (questionBankCurrentCategory) {
+  if (questionBankCurrentCategory && !questionBankOpenedFromKind) {
     questionBankSelected.clear();
     renderQuizBankCategoryFolders();
     return;
@@ -11360,6 +12346,7 @@ document.getElementById('qb-set-back')?.addEventListener('click', () => {
   questionBankCurrentSetId = null;
   questionBankCurrentSet = null;
   questionBankCurrentCategory = null;
+  questionBankOpenedFromKind = false;
   questionBankSelected.clear();
   loadQuestionBank();
 });
@@ -11471,10 +12458,15 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
   const id = document.getElementById('qb-edit-id')?.value;
   const question = document.getElementById('qb-edit-question')?.value?.trim();
   const choices = collectQbChoices();
-  const answerRaw = document.getElementById('qb-edit-answer')?.value?.trim() || null;
   const points = document.getElementById('qb-edit-points')?.value;
   const grade_level = document.getElementById('qb-edit-grade')?.value;
   const item_type = document.getElementById('qb-edit-type')?.value || 'mcq';
+  let answerRaw = document.getElementById('qb-edit-answer')?.value?.trim() || null;
+  if (item_type === 'true_false') {
+    answerRaw = document.getElementById('qb-edit-answer-tf')?.value || 'True';
+  } else if (item_type === 'short_answer') {
+    answerRaw = document.getElementById('qb-edit-answer-long')?.value?.trim() || null;
+  }
   if (!question) {
     showToast(
       (document.getElementById('qb-edit-type')?.value || '') === 'activity'
@@ -11492,13 +12484,66 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
     showToast('Multiple choice needs at least 2 choices.', 'error');
     return;
   }
-  const answer = item_type === 'mcq'
-    ? (formatMcqAnswerDisplay(answerRaw, choices) || answerRaw)
-    : answerRaw;
+  if (item_type === 'fill_blank' && (choices.length < 2 || !answerRaw || !/_{3,}/.test(question))) {
+    showToast('Fill in the blank needs _____ in the question, a word bank, and the correct word.', 'error');
+    return;
+  }
+  if (item_type === 'matching' && choices.filter((c) => c.includes('|')).length < 3) {
+    showToast('Matching needs at least 3 pairs written as left | right.', 'error');
+    return;
+  }
+  if (item_type === 'matching') {
+    const seenRights = new Set();
+    const repeated = choices.some((c) => {
+      if (!String(c).includes('|')) return false;
+      const right = String(c).split('|').slice(1).join('|').trim().toLowerCase();
+      if (!right) return false;
+      if (seenRights.has(right)) return true;
+      seenRights.add(right);
+      return false;
+    });
+    if (repeated) {
+      showToast('Each matching answer can be used only once.', 'error');
+      return;
+    }
+  }
+  if (item_type === 'sequencing' && choices.length < 3) {
+    showToast('Sequencing needs at least 3 steps.', 'error');
+    return;
+  }
+  if (item_type === 'short_answer' && !answerRaw) {
+    showToast('Enter a model answer for this short answer.', 'error');
+    return;
+  }
+  if (item_type === 'identification' && !answerRaw) {
+    showToast('Enter the correct answer for this identification item.', 'error');
+    return;
+  }
+  let answer = answerRaw;
+  let choicePayload = null;
+  if (item_type === 'mcq') {
+    choicePayload = choices;
+    answer = formatMcqAnswerDisplay(answerRaw, choices) || answerRaw;
+  } else if (item_type === 'true_false') {
+    choicePayload = ['True', 'False'];
+    answer = /false/i.test(String(answerRaw || '')) ? 'False' : 'True';
+  } else if (item_type === 'fill_blank') {
+    choicePayload = choices;
+  } else if (item_type === 'matching') {
+    choicePayload = choices.filter((c) => c.includes('|'));
+    answer = choicePayload.join('; ');
+  } else if (item_type === 'sequencing') {
+    choicePayload = choices;
+    answer = choicePayload.join(' | ');
+  } else if (item_type === 'identification') {
+    const key = String(answerRaw || '').trim().toLowerCase();
+    choicePayload = choices.filter((c) => c.trim().toLowerCase() !== key);
+    if (!choicePayload.length) choicePayload = null;
+  }
 
   const payload = {
     question,
-    choices: item_type === 'mcq' ? choices : null,
+    choices: choicePayload,
     answer: item_type === 'activity' ? null : answer,
     points,
     grade_level: Number(grade_level),
@@ -11506,11 +12551,24 @@ document.getElementById('qb-edit-save')?.addEventListener('click', async () => {
     subject_id: questionBankCurrentSet?.subject_id || null,
     quiz_set_id: questionBankCurrentSetId || null,
     lesson_title: questionBankCurrentSet?.title || null,
-    rubric: item_type === 'activity' ? collectRubricFromEditor() : null
+    rubric: item_type === 'activity' ? collectRubricFromEditor() : null,
+    folder: (examWriteMode || questionBankCurrentCategory === 'exam') ? 'exam' : 'quiz'
   };
 
   if (item_type === 'activity' && !payload.rubric) {
     showToast('Add at least one rubric category with a name.', 'error');
+    return;
+  }
+
+  if (examWriteMode && !id) {
+    examWriteQuestions.push({
+      ...payload,
+      subject_id: examWriteSubjectId || payload.subject_id,
+      folder: 'exam'
+    });
+    renderExamWriteList();
+    showToast('Question added. Type the next one, or close this form to create the exam.');
+    openQuizBankAdd('mcq');
     return;
   }
 
@@ -11588,6 +12646,8 @@ async function openCreateProgressFromBank() {
     const lesson = selectedItems.find((i) => i.lesson_title)?.lesson_title;
     if (questionBankCurrentCategory === 'activity') {
       titleEl.value = lesson ? `Activity — ${lesson}` : (set?.title ? `Activity — ${set.title}` : 'Activity from Classwork');
+    } else if (questionBankCurrentCategory === 'exam') {
+      titleEl.value = set?.title ? `Exam — ${set.title}` : (lesson ? `Exam — ${lesson}` : 'Exam from Classwork');
     } else {
       titleEl.value = (set && set.title) || (lesson ? `Quiz — ${lesson}` : 'Quiz from Classwork');
     }
@@ -11595,8 +12655,17 @@ async function openCreateProgressFromBank() {
 
   const typeSel = document.getElementById('qb-create-type');
   if (typeSel) {
-    typeSel.value = questionBankCurrentCategory === 'activity' ? 'activity' : 'quiz';
+    typeSel.value = questionBankCurrentCategory === 'activity'
+      ? 'activity'
+      : questionBankCurrentCategory === 'exam'
+        ? 'exam'
+        : 'quiz';
   }
+  document.querySelectorAll('input[name="qb-create-activity-mode"]').forEach((input) => {
+    input.checked = false;
+  });
+  const targetInput = document.getElementById('qb-create-target');
+  if (targetInput) targetInput.value = '';
   syncClassworkCreateModalLabels();
   const rubricCap = rubricCapFromBankItems(selectedItems);
   if ((typeSel?.value === 'activity' || questionBankCurrentCategory === 'activity') && rubricCap > 0) {
@@ -11634,9 +12703,29 @@ async function openAddQuizModal() {
   fillAddQuizSubjectOptions();
   const titleInput = document.getElementById('qb-add-title');
   if (titleInput) titleInput.value = '';
+  const kindSel = document.getElementById('qb-add-kind');
+  if (kindSel) kindSel.value = 'quizzes';
   titleInput?.setAttribute('placeholder', 'e.g., Fractions Week 2');
+  syncAddClassworkKindFields();
   modal.hidden = false;
 }
+
+function syncAddClassworkKindFields() {
+  const exam = document.getElementById('qb-add-kind')?.value === 'exam';
+  const details = document.getElementById('qb-add-details');
+  const submit = document.getElementById('qb-add-submit');
+  if (details) {
+    details.hidden = exam;
+    if (exam) details.setAttribute('hidden', '');
+    else details.removeAttribute('hidden');
+  }
+  document.getElementById('qb-add-title')?.toggleAttribute('required', !exam);
+  document.getElementById('qb-add-grade')?.toggleAttribute('required', !exam);
+  document.getElementById('qb-add-subject')?.toggleAttribute('required', !exam);
+  if (submit) submit.textContent = exam ? 'Continue' : 'Create';
+}
+
+document.getElementById('qb-add-kind')?.addEventListener('change', () => syncAddClassworkKindFields());
 
 document.getElementById('qb-add-quiz-btn')?.addEventListener('click', () => openAddQuizModal());
 
@@ -11947,6 +13036,527 @@ function updateExamComposerPreview() {
   if (confirmBtn) confirmBtn.disabled = items.length === 0;
 }
 
+function hideOverlay(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.hidden = true;
+  modal.setAttribute('hidden', '');
+}
+
+function showOverlay(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.hidden = false;
+  modal.removeAttribute('hidden');
+}
+
+function fillExamClassSelect(selectEl, gradeLimit) {
+  if (!selectEl) return;
+  const pairs = getTeacherAssignedClassPairs().filter((p) =>
+    gradeLimit ? Number(p.grade_level) === Number(gradeLimit) : true
+  );
+  selectEl.innerHTML = pairs.length
+    ? pairs.map((p) =>
+      `<option value="${p.grade_level}|${escapeHtml(p.section)}">Grade ${p.grade_level} – ${escapeHtml(p.section)}</option>`
+    ).join('')
+    : '<option value="">No assigned class</option>';
+  if (teacherCurrentClass && pairs.some((p) =>
+    Number(p.grade_level) === Number(teacherCurrentClass.grade) &&
+    String(p.section).toUpperCase() === String(teacherCurrentClass.section).toUpperCase()
+  )) {
+    selectEl.value = `${teacherCurrentClass.grade}|${teacherCurrentClass.section}`;
+  }
+}
+
+function renderExamWriteList() {
+  const list = document.getElementById('qb-exam-write-list');
+  const count = document.getElementById('qb-exam-write-count');
+  const createBtn = document.getElementById('qb-exam-write-create');
+  const n = examWriteQuestions.length;
+  if (count) count.textContent = n ? `${n} question${n === 1 ? '' : 's'} added.` : 'No questions yet.';
+  if (createBtn) createBtn.disabled = n === 0;
+  if (!list) return;
+  list.innerHTML = examWriteQuestions.map((item, i) => {
+    const label = bankItemTypeLabel(item.item_type);
+    const text = String(item.question || '').trim();
+    return `<li><strong>${i + 1}. ${escapeHtml(label)}</strong> ${escapeHtml(text)}</li>`;
+  }).join('');
+}
+
+function openExamChoiceModal() {
+  showOverlay('qb-exam-choice-modal');
+}
+
+async function openExamWriteModal() {
+  hideOverlay('qb-exam-choice-modal');
+  examWriteMode = true;
+  examWriteQuestions = [];
+  renderExamWriteList();
+  showOverlay('qb-exam-write-modal');
+  await ensureTeacherAssignedClasses();
+  await loadTeacherSubjects(true);
+  fillExamClassSelect(document.getElementById('qb-exam-write-class'));
+  fillUnlockedQuarterSelect(
+    document.getElementById('qb-exam-write-quarter'),
+    teacherCurrentQuarter || CURRENT_QUARTER
+  );
+  const titleEl = document.getElementById('qb-exam-write-title');
+  if (titleEl) titleEl.value = '';
+  syncExamWriteSubject();
+  renderExamWriteList();
+}
+
+function syncExamWriteSubject() {
+  const classVal = document.getElementById('qb-exam-write-class')?.value || '';
+  const grade = Number(String(classVal).split('|')[0]);
+  const subjectSel = document.getElementById('qb-exam-write-subject');
+  if (!subjectSel) return;
+  const subjects = getAssignedSubjectsForGrade(grade);
+  subjectSel.innerHTML = subjectSelectOptionsHtml(subjects, {
+    emptyLabel: subjects.length ? '-- Select Subject --' : 'No assigned subject for this grade'
+  });
+  if (teacherCurrentClass?.subjectId &&
+    String(teacherCurrentClass.grade) === String(grade) &&
+    [...subjectSel.options].some((o) => o.value === String(teacherCurrentClass.subjectId))) {
+    subjectSel.value = String(teacherCurrentClass.subjectId);
+  }
+}
+
+function openExamQuestionForm() {
+  const title = document.getElementById('qb-exam-write-title')?.value?.trim();
+  const classVal = document.getElementById('qb-exam-write-class')?.value || '';
+  const subjectId = document.getElementById('qb-exam-write-subject')?.value;
+  const { grade_level } = parseExamClassValue(classVal);
+  if (!title) {
+    showToast('Enter an exam title first.', 'error');
+    return;
+  }
+  if (!grade_level) {
+    showToast('Select a class first.', 'error');
+    return;
+  }
+  if (!subjectId) {
+    showToast('Select a subject first.', 'error');
+    return;
+  }
+  examWriteMode = true;
+  examWriteGrade = grade_level;
+  examWriteSubjectId = Number(subjectId);
+  openQuizBankAdd('mcq');
+}
+
+async function createTypedExam() {
+  const title = document.getElementById('qb-exam-write-title')?.value?.trim();
+  const classVal = document.getElementById('qb-exam-write-class')?.value || '';
+  const subjectId = document.getElementById('qb-exam-write-subject')?.value;
+  const quarter = document.getElementById('qb-exam-write-quarter')?.value;
+  const { grade_level, section } = parseExamClassValue(classVal);
+  if (!title) {
+    showToast('Enter an exam title.', 'error');
+    return;
+  }
+  if (!grade_level || !section) {
+    showToast('Select a class.', 'error');
+    return;
+  }
+  if (!subjectId) {
+    showToast('Select a subject.', 'error');
+    return;
+  }
+  if (!examWriteQuestions.length) {
+    showToast('Add at least one question.', 'error');
+    return;
+  }
+  const btn = document.getElementById('qb-exam-write-create');
+  if (btn) btn.disabled = true;
+  try {
+    const setRes = await fetch(`${API_URL}/teacher/classwork/sets`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        grade_level,
+        subject_id: Number(subjectId),
+        kind: 'exam'
+      })
+    });
+    const setData = await setRes.json();
+    if (!setRes.ok) throw new Error(setData.error || 'Could not start the exam.');
+    const ids = [];
+    for (const item of examWriteQuestions) {
+      const itemRes = await fetch(`${API_URL}/teacher/classwork`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...item,
+          grade_level,
+          subject_id: Number(subjectId),
+          quiz_set_id: setData.id,
+          lesson_title: title
+        })
+      });
+      const itemData = await itemRes.json();
+      if (!itemRes.ok) throw new Error(itemData.error || 'Could not save a question.');
+      ids.push(itemData.id);
+    }
+    const examRes = await fetch(`${API_URL}/teacher/assessments/from-bank`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        type: 'exam',
+        grade_level,
+        section,
+        subject_id: Number(subjectId),
+        quarter,
+        question_ids: ids
+      })
+    });
+    const examData = await examRes.json();
+    if (!examRes.ok) throw new Error(examData.error || 'Could not create the exam.');
+    examWriteMode = false;
+    examWriteQuestions = [];
+    hideOverlay('qb-exam-write-modal');
+    showToast(examData.message || 'Exam created.');
+    applyTeacherPanel('progress');
+    if (examData.id) setTimeout(() => openProgressEditor(examData.id, 'edit'), 200);
+  } catch (err) {
+    showToast(err.message || 'Could not create the exam.', 'error');
+    if (btn) btn.disabled = examWriteQuestions.length === 0;
+  }
+}
+
+async function openExamAiModal() {
+  hideOverlay('qb-exam-choice-modal');
+  examAiSource = 'lessons';
+  examAiLessonIds = [];
+  const list = document.getElementById('qb-exam-ai-lesson-list');
+  const empty = document.getElementById('qb-exam-ai-lesson-empty');
+  if (list) list.innerHTML = '<p class="page-subheading">Loading lessons…</p>';
+  if (empty) empty.hidden = true;
+  const fileInput = document.getElementById('qb-exam-ai-files');
+  if (fileInput) fileInput.value = '';
+  setExamAiSource('lessons');
+  showOverlay('qb-exam-ai-modal');
+  try {
+    await Promise.all([
+      loadLessonPlans(),
+      ensureTeacherAssignedClasses(),
+      loadTeacherSubjects(true)
+    ]);
+  } catch {
+    materialsPlansCache = materialsPlansCache || [];
+  }
+  renderExamAiLessonList();
+  fillExamAiGradeOptions();
+  syncExamAiContinue();
+}
+
+function setExamAiSource(source) {
+  examAiSource = source === 'files' ? 'files' : 'lessons';
+  const lessonsPanel = document.getElementById('qb-exam-ai-lessons-panel');
+  const filesPanel = document.getElementById('qb-exam-ai-files-panel');
+  const lessonsBtn = document.getElementById('qb-exam-ai-mode-lessons');
+  const filesBtn = document.getElementById('qb-exam-ai-mode-files');
+  if (lessonsPanel) {
+    lessonsPanel.hidden = examAiSource !== 'lessons';
+    if (examAiSource === 'lessons') lessonsPanel.removeAttribute('hidden');
+    else lessonsPanel.setAttribute('hidden', '');
+  }
+  if (filesPanel) {
+    filesPanel.hidden = examAiSource !== 'files';
+    if (examAiSource === 'files') filesPanel.removeAttribute('hidden');
+    else filesPanel.setAttribute('hidden', '');
+  }
+  if (lessonsBtn) {
+    lessonsBtn.classList.toggle('btn-solid', examAiSource === 'lessons');
+    lessonsBtn.classList.toggle('btn-outline', examAiSource !== 'lessons');
+  }
+  if (filesBtn) {
+    filesBtn.classList.toggle('btn-solid', examAiSource === 'files');
+    filesBtn.classList.toggle('btn-outline', examAiSource !== 'files');
+  }
+  syncExamAiContinue();
+}
+
+function examAiLessonSubjectKey(plan) {
+  return plan?.subject_id ? String(plan.subject_id) : 'none';
+}
+
+function examAiLessonSubjects(plans) {
+  const groups = new Map();
+  plans.forEach((plan) => {
+    const key = examAiLessonSubjectKey(plan);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        name: key === 'none' ? 'No subject' : (plan.subject_name || 'Subject')
+      });
+    }
+  });
+  return [...groups.values()].sort((a, b) => {
+    if (a.key === 'none') return 1;
+    if (b.key === 'none') return -1;
+    return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+  });
+}
+
+function setExamAiLessonEmpty(message, show) {
+  const empty = document.getElementById('qb-exam-ai-lesson-empty');
+  if (!empty) return;
+  empty.textContent = message;
+  empty.hidden = !show;
+  if (show) empty.removeAttribute('hidden');
+  else empty.setAttribute('hidden', '');
+}
+
+function renderExamAiLessonList() {
+  const list = document.getElementById('qb-exam-ai-lesson-list');
+  const subjectSel = document.getElementById('qb-exam-ai-lesson-subject');
+  const plans = Array.isArray(materialsPlansCache) ? materialsPlansCache : [];
+  const subjects = examAiLessonSubjects(plans);
+  if (subjectSel) {
+    const current = subjectSel.value;
+    subjectSel.innerHTML = `<option value="">-- Select Subject --</option>${subjects.map((subject) =>
+      `<option value="${escapeHtml(subject.key)}">${escapeHtml(subject.name)}</option>`
+    ).join('')}`;
+    subjectSel.value = current && [...subjectSel.options].some((option) => option.value === current) ? current : '';
+  }
+  const key = subjectSel?.value || '';
+  if (!list) return;
+  if (!key) {
+    list.innerHTML = '';
+    list.hidden = true;
+    list.setAttribute('hidden', '');
+    setExamAiLessonEmpty('No lesson files yet. Upload files instead, or add one in Materials.', plans.length === 0);
+    syncExamAiContinue();
+    return;
+  }
+  const matched = plans.filter((plan) => examAiLessonSubjectKey(plan) === key);
+  if (!matched.length) {
+    list.innerHTML = '';
+    list.hidden = true;
+    list.setAttribute('hidden', '');
+    setExamAiLessonEmpty('No materials for this subject.', true);
+    syncExamAiContinue();
+    return;
+  }
+  setExamAiLessonEmpty('', false);
+  list.hidden = false;
+  list.removeAttribute('hidden');
+  list.innerHTML = matched.map((plan) => `
+    <label class="qb-exam-ai-lesson-row">
+      <input type="checkbox" name="qb-exam-ai-lesson" value="${plan.id}" />
+      <span>${escapeHtml(plan.title || 'Lesson')} · Grade ${escapeHtml(String(plan.grade_level || ''))}</span>
+    </label>
+  `).join('');
+  list.querySelectorAll('input').forEach((input) => {
+    input.addEventListener('change', syncExamAiContinue);
+  });
+  syncExamAiContinue();
+}
+
+function fillExamAiGradeOptions() {
+  const gradeSel = document.getElementById('qb-exam-ai-grade');
+  if (!gradeSel) return;
+  const grades = getTeacherAssignedGrades();
+  gradeSel.innerHTML = grades.length
+    ? grades.map((grade) => `<option value="${grade}">Grade ${grade}</option>`).join('')
+    : '<option value="">No assigned grades</option>';
+  if (teacherCurrentClass?.grade && grades.includes(Number(teacherCurrentClass.grade))) {
+    gradeSel.value = String(teacherCurrentClass.grade);
+  }
+  fillExamAiSubjectOptions();
+}
+
+function fillExamAiSubjectOptions() {
+  const subjectSel = document.getElementById('qb-exam-ai-subject');
+  if (!subjectSel) return;
+  const grade = document.getElementById('qb-exam-ai-grade')?.value;
+  const subjects = getAssignedSubjectsForGrade(grade);
+  subjectSel.innerHTML = subjectSelectOptionsHtml(subjects, {
+    emptyLabel: subjects.length ? '-- Select Subject --' : 'No assigned subject for this grade'
+  });
+  if (teacherCurrentClass?.subjectId &&
+    String(teacherCurrentClass.grade) === String(grade) &&
+    [...subjectSel.options].some((option) => option.value === String(teacherCurrentClass.subjectId))) {
+    subjectSel.value = String(teacherCurrentClass.subjectId);
+  }
+}
+
+function selectedExamAiLessons() {
+  return [...document.querySelectorAll('input[name="qb-exam-ai-lesson"]:checked')]
+    .map((input) => (materialsPlansCache || []).find((plan) => Number(plan.id) === Number(input.value)))
+    .filter(Boolean);
+}
+
+function syncExamAiContinue() {
+  const btn = document.getElementById('qb-exam-ai-go');
+  if (!btn) return;
+  if (examAiSource === 'files') {
+    const files = document.getElementById('qb-exam-ai-files')?.files;
+    btn.disabled = !files || files.length === 0;
+    return;
+  }
+  btn.disabled = selectedExamAiLessons().length === 0;
+}
+
+function openExamGenerateOptions(plan, lessonIds) {
+  examAiPlan = plan;
+  examAiLessonIds = lessonIds;
+  examAiIntent = true;
+  hideOverlay('qb-exam-ai-modal');
+  openAiGenerateOptionsModal({ mode: 'generate', lessonPlanId: lessonIds[0] });
+  const titleEl = document.getElementById('ai-generate-modal-title');
+  if (titleEl) titleEl.textContent = 'Generate exam';
+  const goBtn = document.getElementById('ai-generate-count-go');
+  if (goBtn) goBtn.textContent = 'Generate exam';
+}
+
+async function uploadExamSourceFiles() {
+  const grade = document.getElementById('qb-exam-ai-grade')?.value;
+  const subjectId = document.getElementById('qb-exam-ai-subject')?.value;
+  const files = [...(document.getElementById('qb-exam-ai-files')?.files || [])];
+  if (!grade) throw new Error('Select a grade.');
+  if (!subjectId) throw new Error('Select a subject.');
+  if (!files.length) throw new Error('Choose at least one file.');
+  const created = [];
+  for (const file of files) {
+    const title = String(file.name || 'Lesson').replace(/\.[^.]+$/, '').trim().slice(0, 255) || 'Lesson';
+    const body = new FormData();
+    body.append('file', file);
+    body.append('title', title);
+    body.append('grade_level', grade);
+    body.append('subject_id', subjectId);
+    const headers = {};
+    const token = getAuthToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_URL}/teacher/lesson-plans`, { method: 'POST', headers, body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Could not upload ${file.name}.`);
+    created.push({
+      id: data.id,
+      title,
+      grade_level: Number(grade),
+      subject_id: Number(subjectId)
+    });
+  }
+  return created;
+}
+
+async function continueExamAiGenerate() {
+  const btn = document.getElementById('qb-exam-ai-go');
+  if (examAiSource === 'files') {
+    if (btn) btn.disabled = true;
+    try {
+      const created = await uploadExamSourceFiles();
+      const subjectName = document.getElementById('qb-exam-ai-subject')?.selectedOptions?.[0]?.textContent?.trim() || '';
+      openExamGenerateOptions({
+        title: created.map((plan) => plan.title).join(', '),
+        grade_level: created[0].grade_level,
+        subject_id: created[0].subject_id,
+        subject_name: subjectName
+      }, created.map((plan) => plan.id));
+    } catch (err) {
+      showToast(err.message || 'Could not upload the files.', 'error');
+      if (btn) btn.disabled = false;
+    }
+    return;
+  }
+  const plans = selectedExamAiLessons();
+  if (!plans.length) {
+    showToast('Choose at least one lesson.', 'error');
+    return;
+  }
+  const grades = new Set(plans.map((plan) => Number(plan.grade_level)));
+  if (grades.size > 1) {
+    showToast('Choose lessons from the same grade.', 'error');
+    return;
+  }
+  const subjects = new Set(plans.map((plan) => Number(plan.subject_id) || 0));
+  if (subjects.size > 1) {
+    showToast('Choose materials from the same subject.', 'error');
+    return;
+  }
+  const title = plans.map((plan) => plan.title).filter(Boolean).join(', ');
+  openExamGenerateOptions({
+    title,
+    grade_level: plans[0].grade_level,
+    subject_id: plans[0].subject_id,
+    subject_name: plans[0].subject_name || ''
+  }, plans.map((plan) => plan.id));
+}
+
+function openExamAiSaveModal() {
+  const plan = examAiPlan || {};
+  const titleEl = document.getElementById('qb-exam-ai-save-title');
+  if (titleEl) titleEl.value = plan.title ? `Exam — ${plan.title}` : 'Exam';
+  const note = document.getElementById('qb-exam-ai-save-note');
+  if (note) {
+    const subjectBit = plan.subject_name ? ` Subject: ${plan.subject_name}.` : '';
+    note.textContent = plan.title
+      ? `The draft for “${plan.title}” is ready.${subjectBit} Save it in Classwork so you can check and edit the questions.`
+      : `The draft is ready.${subjectBit} Save it in Classwork so you can check and edit the questions.`;
+  }
+  showOverlay('qb-exam-ai-save-modal');
+}
+
+async function saveGeneratedExam() {
+  const title = document.getElementById('qb-exam-ai-save-title')?.value?.trim();
+  if (!examAiDraftId) {
+    showToast('Generate a draft first.', 'error');
+    return;
+  }
+  if (!title) {
+    showToast('Enter an exam title.', 'error');
+    return;
+  }
+  const btn = document.getElementById('qb-exam-ai-save-go');
+  if (btn) btn.disabled = true;
+  try {
+    const saveRes = await fetch(`${API_URL}/teacher/classwork/from-ai/${examAiDraftId}`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ types: ['quiz'], folder: 'exam', title })
+    });
+    const saveData = await saveRes.json();
+    if (!saveRes.ok) throw new Error(saveData.error || 'Could not save the draft.');
+    if (!saveData.quiz_set_id) throw new Error('The draft has no questions to save.');
+    hideOverlay('qb-exam-ai-save-modal');
+    examAiDraftId = null;
+    examAiPlan = null;
+    showToast(saveData.message || 'Saved to Classwork.');
+    questionBankCurrentSetId = saveData.quiz_set_id;
+    questionBankCurrentCategory = 'exam';
+    questionBankOpenedFromKind = true;
+    applyTeacherPanel('quiz-bank');
+  } catch (err) {
+    showToast(err.message || 'Could not save the exam.', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.getElementById('qb-exam-choice-cancel')?.addEventListener('click', () => hideOverlay('qb-exam-choice-modal'));
+document.getElementById('qb-exam-choice-type')?.addEventListener('click', () => openExamWriteModal());
+document.getElementById('qb-exam-choice-ai')?.addEventListener('click', () => openExamAiModal());
+document.getElementById('qb-exam-ai-cancel')?.addEventListener('click', () => hideOverlay('qb-exam-ai-modal'));
+document.getElementById('qb-exam-ai-mode-lessons')?.addEventListener('click', () => setExamAiSource('lessons'));
+document.getElementById('qb-exam-ai-mode-files')?.addEventListener('click', () => setExamAiSource('files'));
+document.getElementById('qb-exam-ai-lesson-subject')?.addEventListener('change', () => renderExamAiLessonList());
+document.getElementById('qb-exam-ai-files')?.addEventListener('change', () => syncExamAiContinue());
+document.getElementById('qb-exam-ai-grade')?.addEventListener('change', () => fillExamAiSubjectOptions());
+document.getElementById('qb-exam-ai-go')?.addEventListener('click', () => continueExamAiGenerate());
+document.getElementById('qb-exam-ai-save-cancel')?.addEventListener('click', () => hideOverlay('qb-exam-ai-save-modal'));
+document.getElementById('qb-exam-ai-save-go')?.addEventListener('click', () => saveGeneratedExam());
+document.getElementById('qb-exam-write-class')?.addEventListener('change', () => syncExamWriteSubject());
+document.getElementById('qb-exam-write-cancel')?.addEventListener('click', () => {
+  examWriteMode = false;
+  hideOverlay('qb-exam-write-modal');
+});
+document.getElementById('qb-exam-write-add')?.addEventListener('click', () => openExamQuestionForm());
+document.getElementById('qb-exam-write-create')?.addEventListener('click', () => createTypedExam());
+
 async function openCreateExamModal() {
   const modal = document.getElementById('qb-exam-modal');
   if (!modal) return;
@@ -11996,8 +13606,6 @@ async function openCreateExamModal() {
   modal.hidden = false;
   await Promise.all([loadExamComposerSets(), loadExamComposerMaterials()]);
 }
-
-document.getElementById('qb-create-exam-btn')?.addEventListener('click', () => openCreateExamModal());
 
 document.getElementById('qb-exam-cancel')?.addEventListener('click', () => {
   const modal = document.getElementById('qb-exam-modal');
@@ -12137,6 +13745,13 @@ document.getElementById('qb-add-quiz-form')?.addEventListener('submit', async (e
   const grade_level = Number(document.getElementById('qb-add-grade')?.value);
   const subjectRaw = document.getElementById('qb-add-subject')?.value;
   const subject_id = subjectRaw ? Number(subjectRaw) : null;
+  const kind = document.getElementById('qb-add-kind')?.value || 'quizzes';
+  if (kind === 'exam') {
+    const modal = document.getElementById('qb-add-quiz-modal');
+    if (modal) modal.hidden = true;
+    openExamChoiceModal();
+    return;
+  }
   if (!title) {
     showToast('Enter a title.', 'error');
     return;
@@ -12153,18 +13768,18 @@ document.getElementById('qb-add-quiz-form')?.addEventListener('submit', async (e
     const res = await fetch(`${API_URL}/teacher/classwork/sets`, {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, grade_level, subject_id })
+      body: JSON.stringify({ title, grade_level, subject_id, kind })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     const modal = document.getElementById('qb-add-quiz-modal');
     if (modal) modal.hidden = true;
-    showToast(data.message || 'Classwork set created. Find it in Classwork.');
-    questionBankCurrentSetId = null;
-    questionBankCurrentCategory = null;
+    showToast(data.message || 'Classwork created.');
+    questionBankCurrentSetId = data.id;
+    questionBankCurrentCategory = data.kind || kind;
+    questionBankOpenedFromKind = true;
     questionBankSelected.clear();
-    await loadQuestionBank();
-    if (data.id) await openQuizBankSet(data.id);
+    await openQuizBankSet(data.id, { keepCategory: data.kind || kind, fromKindList: true });
   } catch (err) {
     showToast(err.message || 'Could not create set.', 'error');
   }
@@ -12236,6 +13851,20 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
     const cap = rubricCapFromBankItems(selectedItems);
     if (cap > 0) max_score = cap;
   }
+  let activity_mode = null;
+  let activity_target_at = null;
+  if (type === 'activity') {
+    activity_mode = document.querySelector('input[name="qb-create-activity-mode"]:checked')?.value || '';
+    activity_target_at = document.getElementById('qb-create-target')?.value || '';
+    if (activity_mode !== 'classroom' && activity_mode !== 'take_home') {
+      showToast('Choose Classroom activity or Take home.', 'error');
+      return;
+    }
+    if (!activity_target_at) {
+      showToast('Set a target date.', 'error');
+      return;
+    }
+  }
 
   try {
     const res = await fetch(`${API_URL}/teacher/assessments/from-bank`, {
@@ -12250,7 +13879,9 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
         subject_id,
         question_ids,
         max_score,
-        section_totals
+        section_totals,
+        activity_mode,
+        activity_target_at
       })
     });
     const data = await res.json();
@@ -12534,7 +14165,7 @@ async function buildParentReportHtml(student, tab) {
     const monthBit = parentPeriodLabel(parentAttPeriod, parentAttPeriodMode);
     const rows = filtered.map((r) => {
       const when = parentAttendanceWhenLabel(r);
-      const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+      const dateStr = parentAttendanceDisplayDate(r.date);
       return `<tr>
         <td>${escapeHtml(dateStr)}</td>
         <td>${escapeHtml(when)}</td>
@@ -12610,13 +14241,13 @@ async function buildParentReportHtml(student, tab) {
   try {
     const records = await fetchParentAttendance(student.id);
     parentAttendanceCache = records;
-    recent = filterParentAttendanceRecords(records, { limit: 5 });
+    recent = recentParentAttendance(records);
   } catch { /* ignore */ }
 
   const gender = student.gender === 'M' ? 'Male' : student.gender === 'F' ? 'Female' : 'N/A';
   const attRows = recent.map((r) => {
     const when = parentAttendanceWhenLabel(r);
-    const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+    const dateStr = parentAttendanceDisplayDate(r.date);
     return `<tr>
       <td>${escapeHtml(dateStr)}</td>
       <td>${escapeHtml(when)}</td>
@@ -12870,19 +14501,14 @@ async function renderParentOverview(student) {
       </div>
 
       <div class="parent-analytics-row">
-        <div class="chart-card" id="parent-classwork-card">
+        <div class="chart-card">
           <div class="teacher-header-row" style="align-items:center;">
-            <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Weekly Classwork Results</h3>
-            <div class="parent-week-nav">
-              <button type="button" class="chip-ghost chip-icon" id="parent-week-prev" aria-label="Previous week">◀</button>
-              <span class="parent-week-label" id="parent-week-label">…</span>
-              <button type="button" class="chip-ghost chip-icon" id="parent-week-next" aria-label="Next week">▶</button>
-            </div>
+            <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Recent Attendance</h3>
+            <button type="button" class="chip-ghost" id="parent-attendance-see-more" style="font-size:0.78rem;">See More →</button>
           </div>
-          <div class="parent-chart-wrap" id="parent-classwork-chart-wrap">
-            <canvas id="parent-classwork-chart" aria-label="Classwork results this week" role="img"></canvas>
+          <div id="parent-attendance-table-wrap">
+            <p style="color:var(--text-muted);font-size:0.84rem;">Loading...</p>
           </div>
-          <div id="parent-classwork-table" style="margin-top:10px;"></div>
         </div>
 
         <div class="parent-analytics-col">
@@ -12911,14 +14537,19 @@ async function renderParentOverview(student) {
         </div>
       </div>
 
-      <div class="chart-card">
+      <div class="chart-card" id="parent-classwork-card">
         <div class="teacher-header-row" style="align-items:center;">
-          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Recent Attendance</h3>
-          <button type="button" class="chip-ghost" id="parent-attendance-see-more" style="font-size:0.78rem;">See More →</button>
+          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Weekly Classwork Results</h3>
+          <div class="parent-week-nav">
+            <button type="button" class="chip-ghost chip-icon" id="parent-week-prev" aria-label="Previous week">◀</button>
+            <span class="parent-week-label" id="parent-week-label">…</span>
+            <button type="button" class="chip-ghost chip-icon" id="parent-week-next" aria-label="Next week">▶</button>
+          </div>
         </div>
-        <div id="parent-attendance-table-wrap">
-          <p style="color:var(--text-muted);font-size:0.84rem;">Loading...</p>
+        <div class="parent-chart-wrap" id="parent-classwork-chart-wrap">
+          <canvas id="parent-classwork-chart" aria-label="Classwork results this week" role="img"></canvas>
         </div>
+        <div id="parent-classwork-table" style="margin-top:10px;"></div>
       </div>
 
       <div class="chart-card" style="background:var(--peach-soft);border-color:rgba(243,156,18,0.35);">
@@ -13069,6 +14700,30 @@ function paintParentLessonChart() {
 
   const lessons = parentFilteredLessons();
   const showSubject = parentLessonSubject === 'all';
+  const kindSource = !showSubject && lessons.length === 1 && Array.isArray(lessons[0].kinds) && lessons[0].kinds.length
+    ? lessons[0]
+    : null;
+  const rows = kindSource
+    ? kindSource.kinds.map((kind) => ({
+      label: kind.name,
+      percent: kind.percent,
+      status: kind.status,
+      subject_name: kindSource.subject_name,
+      items: kind.items,
+      quiz_parts: kind.kind === 'quiz' ? kindSource.quiz_parts : null,
+      activity_parts: kind.kind === 'activity' ? kindSource.activity_parts : null,
+      exam_parts: kind.kind === 'exam' ? kindSource.exam_parts : null
+    }))
+    : lessons.map((lesson) => ({
+      label: lesson.subject_name,
+      percent: lesson.avg_percent,
+      status: lesson.status,
+      subject_name: lesson.subject_name,
+      items: lesson.items,
+      quiz_parts: lesson.quiz_parts,
+      activity_parts: lesson.activity_parts,
+      exam_parts: lesson.exam_parts
+    }));
 
   if (!lessons.length) {
     if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
@@ -13086,11 +14741,11 @@ function paintParentLessonChart() {
       wrap.innerHTML = '<canvas id="parent-lesson-chart" aria-label="Average score per lesson" role="img"></canvas>';
     }
     // Horizontal bars: one row per lesson, grow card height with the list
-    wrap.style.height = `${Math.max(180, Math.min(520, 44 * lessons.length + 60))}px`;
+    wrap.style.height = `${Math.max(180, Math.min(520, 44 * rows.length + 60))}px`;
     const canvas = document.getElementById('parent-lesson-chart');
-    const labels = lessons.map((l) => (showSubject ? `${l.subject_name} · ${l.lesson}` : l.lesson));
-    const values = lessons.map((l) => l.avg_percent);
-    const colors = lessons.map((l) => PARENT_STATUS_COLORS[l.status] || '#8a726b');
+    const labels = rows.map((row) => row.label);
+    const values = rows.map((row) => row.percent);
+    const colors = rows.map((row) => PARENT_STATUS_COLORS[row.status] || '#8a726b');
 
     if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
     parentCharts.lessons = new Chart(canvas, {
@@ -13117,11 +14772,14 @@ function paintParentLessonChart() {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              title: (items) => lessons[items[0].dataIndex]?.lesson || '',
+              title: (items) => rows[items[0].dataIndex]?.label || '',
               label: (item) => {
-                const l = lessons[item.dataIndex];
-                const st = l.status === 'excels' ? 'Excels' : l.status === 'on_track' ? 'On track' : 'Needs improvement';
-                return [`${l.subject_name}`, `Average: ${l.avg_percent}% (${l.items} item${l.items === 1 ? '' : 's'})`, st];
+                const row = rows[item.dataIndex];
+                const st = row.status === 'excels' ? 'Excels' : row.status === 'on_track' ? 'On track' : 'Needs improvement';
+                const score = row.items == null
+                  ? `${row.percent}%`
+                  : `${row.percent}% (${row.items} item${row.items === 1 ? '' : 's'})`;
+                return [`${row.subject_name}`, score, st];
               }
             }
           }
@@ -13131,18 +14789,18 @@ function paintParentLessonChart() {
   }
 
   if (lists) {
-    const excels = lessons.filter((l) => l.status === 'excels');
-    const needs = lessons.filter((l) => l.status === 'needs_improvement');
-    const partLine = (label, ends) => {
-      if (!ends?.strong_part) return '';
-      const strong = `${ends.strong_part.name} ${ends.strong_part.avg_percent}%`;
-      const text = ends.weak_part
-        ? `${label}: ${strong}, ${ends.weak_part.name} ${ends.weak_part.avg_percent}%`
-        : `${label}: ${strong}`;
+    const excels = rows.filter((row) => row.status === 'excels');
+    const needs = rows.filter((row) => row.status === 'needs_improvement');
+    const partLine = (label, parts) => {
+      const list = Array.isArray(parts)
+        ? parts.filter((part) => part && part.name)
+        : [parts?.strong_part, parts?.weak_part].filter((part) => part && part.name);
+      if (!list.length) return '';
+      const text = `${label}: ${list.map((part) => `${part.name} ${part.avg_percent}%`).join(', ')}`;
       return `<span class="page-subheading parent-lesson-parts">${escapeHtml(text)}</span>`;
     };
-    const partBits = (l) => `${partLine('Quiz', l.quiz_parts)}${partLine('Activity', l.activity_parts)}`;
-    const li = (l) => `<li><span class="parent-lesson-subject">${escapeHtml(l.subject_name)}</span> · ${escapeHtml(l.lesson)} <strong>${l.avg_percent}%</strong>${partBits(l)}</li>`;
+    const partBits = (row) => `${partLine('Quiz', row.quiz_parts)}${partLine('Activity', row.activity_parts)}${partLine('Exam', row.exam_parts)}`;
+    const li = (row) => `<li><span class="parent-lesson-subject">${escapeHtml(row.label)}</span> <strong>${row.percent}%</strong>${partBits(row)}</li>`;
     lists.innerHTML = `
       <div class="parent-lesson-list parent-lesson-list--good">
         <h4>Excels</h4>
@@ -13642,7 +15300,27 @@ function parentAttendanceMonthLabel(ym) {
   return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
-function filterParentAttendanceRecords(records, { month = '', mode = '', period = '', status = 'all', limit = null } = {}) {
+function parentAttendanceISO(value) {
+  const d = parentDateFromAny(value);
+  return d ? parentLocalISO(d) : '';
+}
+
+function parentAttendanceIsWeekday(value) {
+  const iso = parentAttendanceISO(value);
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const day = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getDay();
+  return day >= 1 && day <= 5;
+}
+
+function parentAttendanceDisplayDate(value) {
+  const iso = parentAttendanceISO(value);
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '-';
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
+}
+
+function filterParentAttendanceRecords(records, { month = '', mode = '', period = '', status = 'all', weekdaysOnly = false, limit = null } = {}) {
   let list = Array.isArray(records) ? [...records] : [];
   list.sort((a, b) => {
     const da = new Date(a.date || 0).getTime();
@@ -13663,14 +15341,33 @@ function filterParentAttendanceRecords(records, { month = '', mode = '', period 
   if (status && status !== 'all') {
     list = list.filter((r) => String(r.status || '').toLowerCase() === String(status).toLowerCase());
   }
+  if (weekdaysOnly) list = list.filter((r) => parentAttendanceIsWeekday(r.date));
   if (limit != null) list = list.slice(0, limit);
   return list;
+}
+
+
+function recentParentAttendance(records) {
+  const weekdays = (Array.isArray(records) ? records : []).filter((row) => parentAttendanceIsWeekday(row.date));
+  let newest = '';
+  for (const row of weekdays) {
+    const iso = parentAttendanceISO(row.date);
+    if (iso > newest) newest = iso;
+  }
+  if (!newest) return [];
+  const monday = parentPeriodKey(newest, 'week');
+  const friday = parentShiftISO(monday, 4);
+  const week = weekdays.filter((row) => {
+    const iso = parentAttendanceISO(row.date);
+    return iso >= monday && iso <= friday;
+  });
+  return filterParentAttendanceRecords(week, { limit: 10 });
 }
 
 function parentAttendanceRowsHtml(records) {
   return records.map((r) => {
     const when = escapeHtml(parentAttendanceWhenLabel(r));
-    const dateStr = r.date ? new Date(r.date).toLocaleDateString() : '-';
+    const dateStr = parentAttendanceDisplayDate(r.date);
     const status = r.status || '-';
     const rowTint = status === 'Absent'
       ? 'background:rgba(183,28,28,0.08);'
@@ -13715,7 +15412,7 @@ async function loadParentAttendanceTable(studentId) {
   try {
     const records = await fetchParentAttendance(studentId);
     parentAttendanceCache = records;
-    const recent = filterParentAttendanceRecords(records, { limit: 5 });
+    const recent = recentParentAttendance(records);
     wrap.innerHTML = parentAttendanceTableHtml(recent, {
       emptyText: 'No attendance records yet.'
     });
@@ -13917,7 +15614,7 @@ function renderParentProgress(student) {
             </div>
           </div>
         </div>
-        <div id="parent-progress-table-wrap" style="margin-top:8px;"></div>
+        <div id="parent-progress-table-wrap" class="records-table-wrapper" style="margin-top:8px;padding-left:0;padding-right:0;"></div>
         <div id="parent-progress-pager-wrap"></div>
       </div>
     </div>`;
@@ -13964,8 +15661,10 @@ function renderParentProgress(student) {
 
 function renderParentQuizTakenItem(item) {
   const n = Number(item.n) || 1;
-  const choices = Array.isArray(item.choices) ? item.choices : [];
+  const isId = isIdentificationTakenItem(item);
+  const choices = isId ? [] : (Array.isArray(item.choices) ? item.choices : []);
   const given = formatQuizTakenAnswer(item.given, choices);
+  const expected = formatQuizTakenAnswer(item.expected, choices);
   const mark = item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
   const markHtml = mark ? ` <span class="page-subheading">${escapeHtml(mark)}</span>` : '';
   const choiceHtml = choices.length
@@ -13979,7 +15678,8 @@ function renderParentQuizTakenItem(item) {
     <p class="page-subheading" style="margin:0 0 8px;"><strong>Item ${n}</strong>${markHtml}</p>
     <p style="margin:0 0 8px;font-size:0.86rem;"><strong>Question:</strong> ${escapeHtml(item.question || '')}</p>
     ${choiceHtml}
-    <p class="progress-activity-work" style="margin-bottom:0;"><strong>Your child's answer:</strong> ${given ? escapeHtml(given) : '—'}</p>
+    <p class="progress-activity-work"><strong>Your child's answer:</strong> ${given ? escapeHtml(given) : '—'}</p>
+    <p class="progress-activity-work" style="margin-bottom:0;"><strong>Correct answer:</strong> ${expected ? escapeHtml(expected) : '—'}</p>
   </div>`;
 }
 
@@ -14018,17 +15718,26 @@ window.viewParentWork = async function (assessmentId) {
     const kind = String(data.type || '').toLowerCase();
     const quiz = Array.isArray(data.quiz_taken) ? data.quiz_taken : [];
     const work = Array.isArray(data.activity_work) ? data.activity_work : [];
-    if (titleEl) titleEl.textContent = data.title || 'Submitted work';
+    if (titleEl) {
+      const child = parentCurrentChild;
+      const childName = child
+        ? `${child.last_name || ''}, ${child.first_name || ''}`.replace(/^,\s*/, '').trim()
+        : '';
+      titleEl.textContent = childName || data.title || 'Submitted work';
+    }
     if (subEl) {
-      subEl.textContent = kind === 'activity'
+      const submitted = kind === 'activity'
         ? 'Submitted from the live activity link.'
         : kind === 'exam'
           ? 'Submitted from the live exam link.'
           : 'Submitted from the live quiz link.';
+      const quizTitle = String(data.title || '').trim();
+      subEl.textContent = quizTitle ? `${quizTitle}. ${submitted}` : submitted;
     }
     if (!bodyEl) return;
     const parts = [];
-    if (quiz.length) parts.push(quiz.map((item) => renderParentQuizTakenItem(item)).join(''));
+    const box = identificationAnswerBoxHtml(data.identification_bank);
+    if (quiz.length) parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderParentQuizTakenItem));
     if (work.length) parts.push(work.map((item, i) => renderParentActivityWorkItem(item, i)).join(''));
     bodyEl.innerHTML = parts.join('') || '<p class="page-subheading">No submitted work.</p>';
   } catch (err) {
@@ -14160,13 +15869,14 @@ function paintParentProgress() {
             <td>${escapeHtml(r.subject_name || '—')}</td>
             <td>${r.score} / ${r.max_score}</td>
             <td>${r.percent}%</td>
-            <td>${r.has_submission
-              ? `<button type="button" class="chip-ghost" onclick="viewParentWork(${Number(r.id)})">View Work</button>`
+            <td class="progress-work-cell">${r.has_submission
+              ? `<button type="button" class="chip-ghost" data-view-work="parent" data-assessment-id="${Number(r.id)}" onclick="viewParentWork(${Number(r.id)})">View Work</button>`
               : '—'}</td>
           </tr>
         `).join('')}
       </tbody>
     </table>`;
+  bindProgressWorkClicks(wrap);
   if (pagerWrap) {
     pagerWrap.innerHTML = parentPagerHtml('parent-progress-pager', pager);
     wireParentPager('parent-progress-pager', (p) => { parentProgressPage = p; paintParentProgress(); });
@@ -15391,7 +17101,7 @@ window.openTeacherDetailModal = async function(teacherId) {
         <div><strong>Email:</strong> ${data.email || '-'}</div>
         <div><strong>Phone:</strong> ${data.phone || '-'}</div>
         <div><strong>Status:</strong> ${statusBadgeHtml(data.status)}</div>
-        <div><strong>Teaching Mode:</strong> ${teachingModeDisplay(data.teaching_mode, data.teaching_mode_label)}</div>
+        <div><strong>Teaching Mode:</strong> ${teachingModeDisplay(data.teaching_mode, data.teaching_mode_label, data.homeroom_role)}</div>
       </div>
     `;
 
@@ -15417,6 +17127,43 @@ window.openTeacherDetailModal = async function(teacherId) {
     }
 
     const adviserSubjects = data.adviser_subjects || [];
+    const assistantAssignments = data.assistant_assignments || [];
+    const assistantSubjects = data.assistant_subjects || [];
+    if (assistantAssignments.length > 0) {
+      const uniqueAssistant = [...new Map(assistantAssignments.map(a => [
+        `${a.grade_level}-${a.section}-${a.school_year}`, a
+      ])).values()];
+      html += `<h4 style="color:var(--maroon-deep);font-size:0.95rem;margin:16px 0 8px;">Assistant Teacher Assignment</h4>`;
+      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;">
+        <thead style="background:var(--maroon-header);color:#fff;">
+          <tr><th style="padding:6px;text-align:left;">Grade</th><th style="padding:6px;text-align:left;">Section</th><th style="padding:6px;text-align:left;">School Year</th></tr>
+        </thead>
+        <tbody>`;
+      uniqueAssistant.forEach(a => {
+        html += `<tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:6px;">Grade ${a.grade_level}</td>
+          <td style="padding:6px;">${a.section}</td>
+          <td style="padding:6px;">${a.school_year}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    if (assistantSubjects.length > 0) {
+      html += `<h4 style="color:var(--maroon-deep);font-size:0.95rem;margin:16px 0 8px;">Subjects Taught as Assistant Teacher</h4>`;
+      html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;table-layout:fixed;">
+        <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
+        <thead style="background:var(--maroon-header);color:#fff;">
+          <tr><th style="padding:6px;text-align:left;">Subject</th><th style="padding:6px;text-align:left;">Class</th></tr>
+        </thead>
+        <tbody>`;
+      assistantSubjects.forEach(a => {
+        html += `<tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:6px;overflow-wrap:anywhere;">${a.subject_name || a.subject_code || 'Subject ID ' + a.subject_id}</td>
+          <td style="padding:6px;">Grade ${a.grade_level} – ${a.section}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
     if (adviserSubjects.length > 0) {
       html += `<h4 style="color:var(--maroon-deep);font-size:0.95rem;margin:16px 0 8px;">Subjects Taught as Class Adviser</h4>`;
       html += `<table style="width:100%;font-size:0.82rem;border-collapse:collapse;table-layout:fixed;">
@@ -15453,6 +17200,8 @@ window.openTeacherDetailModal = async function(teacherId) {
 
     if ((!data.class_adviser_assignments || data.class_adviser_assignments.length === 0) &&
         (!adviserSubjects.length) &&
+        (!assistantAssignments.length) &&
+        (!assistantSubjects.length) &&
         (!data.subject_assignments || data.subject_assignments.length === 0)) {
       html += `<p style="color:var(--text-muted);font-size:0.85rem;margin-top:12px;">No assignments found for this teacher.</p>`;
     }

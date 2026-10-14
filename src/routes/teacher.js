@@ -15,6 +15,7 @@ const { ensureInboxTrash, trashExcludeSql, teacherHandlesConcern } = require('..
 const { isQuarterUnlocked, getCurrentQuarter, normalizeQuarter } = require('../utils/schoolSettings');
 const { logActivity, logActivityThrottled } = require('../utils/activityLog');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
+const { ensureAssignmentSlots } = require('../utils/teachingMode');
 const {
   ensureAttendanceSchema,
   manilaISODate,
@@ -27,20 +28,20 @@ const {
   currentManilaSession,
   statusLetter
 } = require('../utils/attendanceSchema');
-const { enqueueSms, pickParentPhone, processSmsQueue, notifyStudentScore, notifyClassAnnouncement } = require('../utils/sms');
+const { enqueueSms, pickParentPhone, processSmsQueue, notifyStudentScore, notifyClassAnnouncement, notifyTakeHomeLink } = require('../utils/sms');
 const {
   ensureAiRecommendationsSchema,
   generateRecommendationsForLesson,
+  generateRecommendationsForLessons,
   generateActivityRubric,
   safeParseJsonContent,
   pickDraftPart,
   isAiDryRun,
   isAiConfigured,
   getAiProviderMode,
-  getOpenAiBaseUrl,
-  getOpenAiModel
+  getActiveAiModel
 } = require('../utils/aiRecommendations');
-const { createJob, getJobForTeacher, finishJob, publicJob, runExclusive } = require('../utils/aiJobs');
+const { createJob, getJobForTeacher, finishJob, setJobProgress, publicJob, runExclusive } = require('../utils/aiJobs');
 const {
   ensureQuestionBankSchema,
   saveDraftPartsToBank,
@@ -55,9 +56,11 @@ const {
   isActivityType,
   canonicalItemType,
   isAllowedItemType,
+  storesChoiceList,
+  normalizeTrueFalseAnswer,
   ITEM_TYPES
 } = require('../utils/questionBank');
-const { lessonName } = require('../utils/lessonParts');
+const { topicInsightForStudent, PASSING } = require('../utils/parentInsights');
 const {
   ensureQuizAttendanceSchema,
   parseMakeupIds,
@@ -69,6 +72,7 @@ const {
   isMakeupStatus,
   isPastManila,
   resolveQuizWindowsFromBody,
+  normalizeSqlDatetime,
   VALID_STATUSES
 } = require('../utils/quizAttendance');
 
@@ -81,6 +85,19 @@ async function getTeacherAssignmentRows(teacherId) {
     [teacherId, schoolYear]
   );
   return rows;
+}
+
+function matchingRightsRepeat(choices) {
+  const seen = new Set();
+  for (const raw of choices || []) {
+    const text = String(raw || '');
+    if (!text.includes('|')) continue;
+    const right = text.split('|').slice(1).join('|').trim().toLowerCase();
+    if (!right) continue;
+    if (seen.has(right)) return true;
+    seen.add(right);
+  }
+  return false;
 }
 
 function normalizeSectionKey(section) {
@@ -124,9 +141,10 @@ async function assertTeacherClassAssignment(teacherId, gradeLevel, section) {
 // ========== CLASSES ==========
 router.get('/classes', verifyToken, async (req, res) => {
   try {
+    await ensureAssignmentSlots();
     const teacherId = req.user?.id || req.user?.userId;
     const [rows] = await db.query(
-      `SELECT ta.grade_level, ta.section, ta.subject_id,
+      `SELECT ta.grade_level, ta.section, ta.subject_id, ta.slot,
         s.NAME as subject_name
        FROM teacher_assignments ta
        LEFT JOIN subjects s ON ta.subject_id = s.id
@@ -143,12 +161,14 @@ router.get('/classes', verifyToken, async (req, res) => {
           grade_level: row.grade_level,
           section: row.section,
           is_class_adviser: false,
+          is_assistant: false,
           subjects: []
         });
       }
       const entry = byClass.get(key);
       if (row.subject_id == null) {
-        entry.is_class_adviser = true;
+        if (row.slot === 'assistant') entry.is_assistant = true;
+        else entry.is_class_adviser = true;
       } else if (row.subject_name) {
         const already = entry.subjects.some(s => Number(s.id) === Number(row.subject_id));
         if (!already) {
@@ -1058,6 +1078,164 @@ router.get('/stats/:grade/:section', verifyToken, async (req, res) => {
   }
 });
 
+async function viewerHomeSlot(viewerId, grade, sectionNorm) {
+  const [homeRows] = await db.query(
+    `SELECT slot FROM teacher_assignments
+     WHERE teacher_id = ? AND grade_level = ? AND TRIM(UPPER(section)) = TRIM(UPPER(?))
+       AND subject_id IS NULL AND school_year = ? AND slot IN ('adviser', 'assistant')
+     LIMIT 1`,
+    [viewerId, grade, sectionNorm, schoolYear]
+  );
+  return homeRows[0] || null;
+}
+
+function teacherDisplayName(row) {
+  return [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || 'Teacher';
+}
+
+async function loadSubjectTeacherReports(viewerId, grade, sectionNorm) {
+  const home = await viewerHomeSlot(viewerId, grade, sectionNorm);
+  if (!home) return { is_home_teacher: false, subject_teachers: [] };
+
+  const [assigned] = await db.query(
+    `SELECT s.id AS subject_id, s.NAME AS subject_name,
+            u.id AS teacher_id, u.first_name, u.last_name
+     FROM teacher_assignments ta
+     JOIN users u ON u.id = ta.teacher_id
+     JOIN subjects s ON s.id = ta.subject_id AND s.deleted_at IS NULL
+     WHERE ta.grade_level = ?
+       AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
+       AND ta.school_year = ?
+       AND ta.subject_id IS NOT NULL
+       AND ta.teacher_id <> ?
+       AND COALESCE(u.STATUS, 'active') != 'inactive'
+     ORDER BY s.NAME, u.last_name, u.first_name`,
+    [grade, sectionNorm, schoolYear, viewerId]
+  );
+
+  const unique = new Map();
+  for (const row of assigned) {
+    const key = `${row.subject_id}|${row.teacher_id}`;
+    if (!unique.has(key)) unique.set(key, row);
+  }
+  const subject_teachers = [...unique.values()].map((row) => ({
+    subject_id: row.subject_id,
+    subject_name: row.subject_name,
+    teacher_id: row.teacher_id,
+    teacher_name: teacherDisplayName(row)
+  }));
+
+  return { is_home_teacher: true, subject_teachers };
+}
+
+router.get('/class-progress/:grade/:section/subject-record', verifyToken, async (req, res) => {
+  try {
+    const teacherId = req.user?.id || req.user?.userId;
+    const grade = req.params.grade;
+    const sectionNorm = String(req.params.section || '').trim();
+    const subjectId = Number(req.query.subject_id);
+    const recordTeacherId = Number(req.query.teacher_id);
+    if (!subjectId || !recordTeacherId) {
+      return res.status(400).json({ error: 'Choose a subject.' });
+    }
+    if (recordTeacherId === Number(teacherId)) {
+      return res.status(403).json({ error: 'This subject is assigned to you.' });
+    }
+
+    await assertTeacherClassAssignment(teacherId, grade, sectionNorm);
+    const home = await viewerHomeSlot(teacherId, grade, sectionNorm);
+    if (!home) {
+      return res.status(403).json({ error: 'Only the class adviser or assistant teacher can view this record.' });
+    }
+
+    const [assigned] = await db.query(
+      `SELECT s.NAME AS subject_name, u.first_name, u.last_name
+       FROM teacher_assignments ta
+       JOIN users u ON u.id = ta.teacher_id
+       JOIN subjects s ON s.id = ta.subject_id AND s.deleted_at IS NULL
+       WHERE ta.teacher_id = ? AND ta.subject_id = ?
+         AND ta.grade_level = ? AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
+         AND ta.school_year = ? AND ta.subject_id IS NOT NULL
+         AND COALESCE(u.STATUS, 'active') != 'inactive'
+       LIMIT 1`,
+      [recordTeacherId, subjectId, grade, sectionNorm, schoolYear]
+    );
+    if (!assigned.length) {
+      return res.status(404).json({ error: 'That subject is not assigned to this class.' });
+    }
+
+    const [students] = await db.query(
+      `SELECT id, first_name, last_name
+       FROM students
+       WHERE grade_level = ? AND TRIM(section) = ? AND \`STATUS\` = 'active'
+       ORDER BY last_name, first_name`,
+      [grade, sectionNorm]
+    );
+
+    const [assessments] = await db.query(
+      `SELECT a.id, a.title, a.TYPE AS type, a.quarter, a.max_score
+       FROM assessments a
+       WHERE a.subject_id = ? AND a.created_by = ?
+         AND a.grade_level = ? AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
+         AND a.TYPE IN ('quiz', 'activity', 'exam')
+       ORDER BY a.created_at, a.id`,
+      [subjectId, recordTeacherId, grade, sectionNorm]
+    );
+
+    const scoresByAssessment = new Map();
+    if (assessments.length) {
+      const place = assessments.map(() => '?').join(',');
+      const [scoreRows] = await db.query(
+        `SELECT assessment_id, student_id, score
+         FROM assessment_scores
+         WHERE assessment_id IN (${place})`,
+        assessments.map((row) => row.id)
+      );
+      for (const row of scoreRows) {
+        if (!scoresByAssessment.has(row.assessment_id)) scoresByAssessment.set(row.assessment_id, {});
+        const raw = Number(row.score);
+        scoresByAssessment.get(row.assessment_id)[row.student_id] = Number.isFinite(raw) ? raw : null;
+      }
+    }
+
+    const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
+    function sheet(type) {
+      const grouped = { Q1: [], Q2: [], Q3: [], Q4: [] };
+      for (const row of assessments) {
+        if (String(row.type || '').toLowerCase() !== type) continue;
+        const quarter = quarters.includes(String(row.quarter || '').toUpperCase())
+          ? String(row.quarter).toUpperCase()
+          : 'Q1';
+        grouped[quarter].push({
+          id: row.id,
+          title: row.title,
+          max_score: row.max_score,
+          scores: scoresByAssessment.get(row.id) || {}
+        });
+      }
+      return grouped;
+    }
+
+    res.json({
+      subject_id: subjectId,
+      subject_name: assigned[0].subject_name,
+      teacher_id: recordTeacherId,
+      teacher_name: teacherDisplayName(assigned[0]),
+      section: sectionNorm,
+      students,
+      quizzes: sheet('quiz'),
+      activities: sheet('activity'),
+      exams: sheet('exam')
+    });
+  } catch (error) {
+    console.error('Subject record error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.status ? error.message : 'Server error fetching subject record'
+    });
+  }
+});
+
 router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
   try {
     const teacherId = req.user?.id || req.user?.userId;
@@ -1074,10 +1252,12 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
       [grade, sectionNorm]
     );
 
-    let scoreSql = `SELECT sc.student_id, sc.score, a.max_score, a.lesson_title, a.title
+    let scoreSql = `SELECT sc.student_id, sc.score, a.max_score, a.subject_id,
+              sub.NAME as subject_name
        FROM assessment_scores sc
        JOIN assessments a ON a.id = sc.assessment_id
        JOIN students s ON s.id = sc.student_id
+       LEFT JOIN subjects sub ON sub.id = a.subject_id
        WHERE s.grade_level = ? AND TRIM(s.section) = ? AND s.\`STATUS\` = 'active'`;
     const scoreParams = [grade, sectionNorm];
     if (subjectId) {
@@ -1087,34 +1267,84 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
     const [scores] = await db.query(scoreSql, scoreParams);
 
     const byStudent = new Map();
-    const lessonsByStudent = new Map();
-    const classLessons = new Map();
+    const subjectsByStudent = new Map();
+    const classSubjects = new Map();
     for (const row of scores) {
       const max = Number(row.max_score) || 0;
       const raw = Number(row.score);
       if (!Number.isFinite(raw) || max <= 0) continue;
       const pct = Math.min(100, Math.max(0, Math.round((raw / max) * 100)));
-      const lesson = lessonName(row.lesson_title, row.title);
-      const lessonKey = lesson.toLowerCase();
+      const subjectName = String(row.subject_name || '').trim() || 'General';
+      const subjectKey = subjectName.toLowerCase();
       if (!byStudent.has(row.student_id)) byStudent.set(row.student_id, []);
       byStudent.get(row.student_id).push(pct);
-      if (!lessonsByStudent.has(row.student_id)) lessonsByStudent.set(row.student_id, new Map());
-      const studentLessons = lessonsByStudent.get(row.student_id);
-      if (!studentLessons.has(lessonKey)) studentLessons.set(lessonKey, { lesson, percents: [] });
-      studentLessons.get(lessonKey).percents.push(pct);
-      if (!classLessons.has(lessonKey)) classLessons.set(lessonKey, { lesson, percents: [] });
-      classLessons.get(lessonKey).percents.push(pct);
+      if (!subjectsByStudent.has(row.student_id)) subjectsByStudent.set(row.student_id, new Map());
+      const studentSubjects = subjectsByStudent.get(row.student_id);
+      if (!studentSubjects.has(subjectKey)) studentSubjects.set(subjectKey, { name: subjectName, percents: [] });
+      studentSubjects.get(subjectKey).percents.push(pct);
+      if (!classSubjects.has(subjectKey)) classSubjects.set(subjectKey, { name: subjectName, percents: [] });
+      classSubjects.get(subjectKey).percents.push(pct);
     }
 
-    function weakestLessonName(studentId) {
-      const map = lessonsByStudent.get(studentId);
-      if (!map || !map.size) return null;
-      const ranked = [...map.values()].map((entry) => ({
-        lesson: entry.lesson,
-        avg: Math.round(entry.percents.reduce((sum, n) => sum + n, 0) / entry.percents.length)
-      }));
-      ranked.sort((a, b) => a.avg - b.avg || a.lesson.localeCompare(b.lesson));
-      return ranked[0].lesson;
+    function average(list) {
+      return Math.round(list.reduce((sum, n) => sum + n, 0) / list.length);
+    }
+
+    function rankedSubjects(map) {
+      if (!map || !map.size) return [];
+      return [...map.values()].map((entry) => ({
+        name: entry.name,
+        avg: average(entry.percents)
+      })).sort((a, b) => b.avg - a.avg || a.name.localeCompare(b.name));
+    }
+
+    function joinTopics(topics) {
+      const arr = [];
+      const seen = new Set();
+      for (const topic of topics || []) {
+        const text = String(topic || '').trim();
+        const key = text.toLowerCase();
+        if (!text || seen.has(key)) continue;
+        seen.add(key);
+        arr.push(text);
+      }
+      if (arr.length <= 1) return arr[0] || '';
+      if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+      return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
+    }
+
+    const topicByStudent = new Map();
+    for (const student of students) {
+      if (!byStudent.get(student.id)?.length) continue;
+      try {
+        const insight = await topicInsightForStudent(db, student.id);
+        const reports = new Map();
+        for (const report of insight?.subjects || []) {
+          const key = String(report.subject || '').trim().toLowerCase();
+          if (key) reports.set(key, report);
+        }
+        topicByStudent.set(student.id, reports);
+      } catch (topicErr) {
+        console.warn('[class-progress] topics:', topicErr.message);
+        topicByStudent.set(student.id, new Map());
+      }
+    }
+
+    function topicLabel(studentId, subjectName, side) {
+      const report = topicByStudent.get(studentId)?.get(String(subjectName || '').trim().toLowerCase());
+      const topics = side === 'strength' ? report?.strongTopics : report?.weakTopics;
+      return joinTopics(topics) || subjectName;
+    }
+
+    function classTopicLabel(subjectName, side) {
+      const collected = [];
+      const key = String(subjectName || '').trim().toLowerCase();
+      for (const reports of topicByStudent.values()) {
+        const report = reports.get(key);
+        if (!report) continue;
+        collected.push(...((side === 'strength' ? report.strongTopics : report.weakTopics) || []));
+      }
+      return joinTopics(collected) || subjectName;
     }
 
     function displayName(student) {
@@ -1137,12 +1367,16 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
         continue;
       }
       const avg = Math.round(percents.reduce((sum, n) => sum + n, 0) / percents.length);
+      const subjects = rankedSubjects(subjectsByStudent.get(student.id));
+      const side = avg >= 85 ? 'strength' : 'weakness';
+      const picked = side === 'strength' ? subjects[0] : subjects[subjects.length - 1];
       const entry = {
         id: student.id,
         first_name: student.first_name,
         last_name: student.last_name,
         avg_percent: avg,
-        weakest_lesson: weakestLessonName(student.id)
+        weakest_lesson: picked ? topicLabel(student.id, picked.name, side) : null,
+        topic_side: side
       };
       if (avg >= 85) bands.excels.push(entry);
       else if (avg >= 75) bands.on_track.push(entry);
@@ -1170,18 +1404,24 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
       summary = `${counts.excels} excelling, ${counts.on_track} on track, ${counts.behind} left behind.`;
     }
 
-    const lessonAvgs = [...classLessons.values()].map((entry) => ({
-      lesson: entry.lesson,
-      avg: Math.round(entry.percents.reduce((sum, n) => sum + n, 0) / entry.percents.length)
-    })).sort((a, b) => b.avg - a.avg || a.lesson.localeCompare(b.lesson));
+    const subjectAvgs = rankedSubjects(classSubjects);
     let lesson_line = '';
-    if (lessonAvgs.length === 1) {
-      lesson_line = `Excelled Lesson: ${lessonAvgs[0].lesson} (${lessonAvgs[0].avg}%).`;
-    } else if (lessonAvgs.length > 1) {
-      const best = lessonAvgs[0];
-      const worst = lessonAvgs[lessonAvgs.length - 1];
-      lesson_line = `Excelled Lesson: ${best.lesson} (${best.avg}%).\nNeeds Improvement: ${worst.lesson} (${worst.avg}%).`;
+    if (subjectAvgs.length) {
+      const lines = [];
+      const best = subjectAvgs.find((subject) => subject.avg >= PASSING);
+      lines.push(best
+        ? `Excelled Lesson: ${classTopicLabel(best.name, 'strength')} (${best.avg}%).`
+        : 'Excelled Lesson: none');
+      const worst = subjectAvgs[subjectAvgs.length - 1];
+      if (subjectAvgs.length > 1 || !best) {
+        lines.push(`Needs Improvement: ${classTopicLabel(worst.name, 'weakness')} (${worst.avg}%).`);
+      }
+      lesson_line = lines.join('\n');
     }
+
+    const subjectReports = subjectId
+      ? { is_home_teacher: false, subject_teachers: [] }
+      : await loadSubjectTeacherReports(teacherId, grade, sectionNorm);
 
     res.json({
       total_students: students.length,
@@ -1192,7 +1432,9 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
       excels: bands.excels,
       on_track: bands.on_track,
       behind: bands.behind,
-      unscored
+      unscored,
+      is_home_teacher: subjectReports.is_home_teacher,
+      subject_teachers: subjectReports.subject_teachers
     });
   } catch (error) {
     console.error('Class progress error:', error);
@@ -1528,8 +1770,7 @@ router.get('/ai/status', verifyToken, async (_req, res) => {
     dry_run: isAiDryRun(),
     configured: isAiConfigured(),
     mode,
-    model: getOpenAiModel(),
-    base_url: getOpenAiBaseUrl()
+    model: getActiveAiModel()
   });
 });
 
@@ -1646,6 +1887,9 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
 
     const quizItemCount = req.body?.quiz_item_count;
     const quizItemTypes = req.body?.quiz_item_types;
+    const quizItemCounts = req.body?.quiz_item_counts;
+    const draftKind = req.body?.draft_kind === 'activity' ? 'activity' : 'quiz';
+    const teacherFocus = String(req.body?.teacher_focus || '').trim().slice(0, 500);
     const jobKey = `gen:${teacherId}:${plan.id}`;
     const { id: jobId, reused } = createJob(teacherId, jobKey);
     res.status(202).json({ jobId, status: 'running' });
@@ -1653,12 +1897,18 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
 
     setImmediate(async () => {
       try {
+        setJobProgress(jobId, { step: 1, total: 3, label: 'Reading the lesson' });
         const generated = await runExclusive(() => generateRecommendationsForLesson({
           lessonPlan: plan,
           subjectName: plan.subject_name,
           quizItemCount,
-          quizItemTypes
+          quizItemTypes,
+          quizItemCounts,
+          draftKind,
+          teacherFocus,
+          onProgress: (progress) => setJobProgress(jobId, progress)
         }));
+        setJobProgress(jobId, { step: 3, total: 3, label: 'Saving the draft' });
         const [result] = await db.query(
           `INSERT INTO ai_recommendations
             (lesson_plan_id, teacher_id, subject_id, grade_level, status, provider, source_excerpt, content)
@@ -1688,7 +1938,7 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
             provider: generated.provider,
             message:
               generated.provider === 'mock'
-                ? 'Mock AI draft created (set OPENAI_API_KEY and AI_DRY_RUN=false for live generation).'
+                ? 'Mock AI draft created (set GROQ_API_KEY and AI_DRY_RUN=false for live generation).'
                 : 'AI draft created. Review, then save to Classwork. Create a Quiz or Activity from Classwork for Records.'
           }
         });
@@ -1705,6 +1955,113 @@ router.post('/lesson-plans/:id/generate', verifyToken, async (req, res) => {
     const status = error.status || 500;
     res.status(status).json({
       error: error.status ? error.message : 'Server error generating AI resources',
+      details: error.message
+    });
+  }
+});
+
+router.post('/ai/generate-exam', verifyToken, async (req, res) => {
+  try {
+    await ensureAiRecommendationsSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const ids = [...new Set((req.body?.lesson_plan_ids || []).map((n) => Number(n)).filter((n) => n > 0))];
+    if (!ids.length) {
+      return res.status(400).json({ error: 'Choose at least one lesson.' });
+    }
+    const quizItemCount = req.body?.quiz_item_count;
+    const quizItemTypes = req.body?.quiz_item_types;
+    const quizItemCounts = req.body?.quiz_item_counts;
+    const draftKind = 'quiz';
+    const teacherFocus = String(req.body?.teacher_focus || '').trim().slice(0, 500);
+    const placeholders = ids.map(() => '?').join(',');
+    const [plans] = await db.query(
+      `SELECT lp.id, lp.title, lp.grade_level, lp.objectives, lp.file_path, lp.subject_id,
+              s.NAME as subject_name
+       FROM lesson_plans lp
+       LEFT JOIN subjects s ON s.id = lp.subject_id
+       WHERE lp.uploaded_by = ? AND lp.id IN (${placeholders})`,
+      [teacherId, ...ids]
+    );
+    if (plans.length !== ids.length) {
+      return res.status(404).json({ error: 'One or more lessons were not found.' });
+    }
+    const byId = new Map(plans.map((plan) => [Number(plan.id), plan]));
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+    const grades = new Set(ordered.map((plan) => Number(plan.grade_level)));
+    if (grades.size > 1) {
+      return res.status(400).json({ error: 'Choose lessons from the same grade.' });
+    }
+    const subjects = new Set(ordered.map((plan) => Number(plan.subject_id) || 0));
+    if (subjects.size > 1) {
+      return res.status(400).json({ error: 'Choose materials from the same subject.' });
+    }
+
+    const jobKey = `gen-exam:${teacherId}:${ids.join(',')}`;
+    const { id: jobId, reused } = createJob(teacherId, jobKey);
+    res.status(202).json({ jobId, status: 'running' });
+    if (reused) return;
+
+    setImmediate(async () => {
+      try {
+        setJobProgress(jobId, { step: 1, total: 3, label: 'Reading the lessons' });
+        const generated = await runExclusive(() => generateRecommendationsForLessons({
+          lessons: ordered,
+          subjectName: ordered[0]?.subject_name,
+          quizItemCount,
+          quizItemTypes,
+          quizItemCounts,
+          quizItemMax: 50,
+          draftKind,
+          teacherFocus,
+          onProgress: (progress) => setJobProgress(jobId, progress)
+        }));
+        setJobProgress(jobId, { step: 3, total: 3, label: 'Saving the draft' });
+        const primary = ordered[0];
+        const [result] = await db.query(
+          `INSERT INTO ai_recommendations
+            (lesson_plan_id, teacher_id, subject_id, grade_level, status, provider, source_excerpt, content)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+          [
+            primary.id,
+            teacherId,
+            primary.subject_id || null,
+            primary.grade_level,
+            generated.provider,
+            generated.sourceExcerpt,
+            JSON.stringify(generated.content)
+          ]
+        );
+        await logActivity(
+          db,
+          teacherId,
+          'Generated AI exam',
+          'lesson_plan',
+          generated.title || primary.title,
+          `sources=${ordered.length} provider=${generated.provider}`
+        );
+        finishJob(jobId, {
+          status: 'done',
+          result: {
+            id: result.insertId,
+            provider: generated.provider,
+            message: generated.provider === 'mock'
+              ? 'Mock exam draft created. Review it, then save as an exam.'
+              : 'Exam draft created. Review it, then save as an exam.'
+          }
+        });
+      } catch (error) {
+        console.error('Generate exam error:', error);
+        finishJob(jobId, {
+          status: 'error',
+          error: error.status ? error.message : (error.message || 'Server error generating exam')
+        });
+      }
+    });
+  } catch (error) {
+    console.error('Generate exam error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.status ? error.message : 'Server error generating exam',
       details: error.message
     });
   }
@@ -1802,6 +2159,9 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
 
     const quizItemCount = req.body?.quiz_item_count;
     const quizItemTypes = req.body?.quiz_item_types;
+    const quizItemCounts = req.body?.quiz_item_counts;
+    const draftKind = req.body?.draft_kind === 'activity' ? 'activity' : 'quiz';
+    const teacherFocus = String(req.body?.teacher_focus || '').trim().slice(0, 500);
     const recId = Number(req.params.id);
     const jobKey = `regen:${teacherId}:${recId}`;
     const { id: jobId, reused } = createJob(teacherId, jobKey);
@@ -1810,6 +2170,7 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
 
     setImmediate(async () => {
       try {
+        setJobProgress(jobId, { step: 1, total: 3, label: 'Reading the lesson' });
         const generated = await runExclusive(() => generateRecommendationsForLesson({
           lessonPlan: {
             title: row.title,
@@ -1820,8 +2181,13 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
           },
           subjectName: row.subject_name,
           quizItemCount,
-          quizItemTypes
+          quizItemTypes,
+          quizItemCounts,
+          draftKind,
+          teacherFocus,
+          onProgress: (progress) => setJobProgress(jobId, progress)
         }));
+        setJobProgress(jobId, { step: 3, total: 3, label: 'Saving the draft' });
         await db.query(
           `UPDATE ai_recommendations
            SET provider = ?, source_excerpt = ?, content = ?, updated_at = CURRENT_TIMESTAMP
@@ -1849,7 +2215,7 @@ router.post('/ai/recommendations/:id/regenerate', verifyToken, async (req, res) 
             provider: generated.provider,
             message:
               generated.provider === 'mock'
-                ? 'Draft regenerated (mock). Set OPENAI_API_KEY and AI_DRY_RUN=false for live AI.'
+                ? 'Draft regenerated (mock). Set GROQ_API_KEY and AI_DRY_RUN=false for live AI.'
                 : 'Draft regenerated. Review, then save to Classwork. Create a Quiz or Activity from Classwork for Records.'
           }
         });
@@ -2056,6 +2422,7 @@ router.post('/classwork/from-ai/:id', verifyToken, async (req, res) => {
     const types = Array.isArray(typesRaw) && typesRaw.length
       ? typesRaw.filter((t) => t === 'quiz' || t === 'activity')
       : ['quiz', 'activity'];
+    const folder = String(req.body?.folder || '').toLowerCase() === 'exam' ? 'exam' : 'quiz';
 
     const [[row]] = await db.query(
       `SELECT r.*, lp.title as lesson_title
@@ -2075,7 +2442,9 @@ router.post('/classwork/from-ai/:id', verifyToken, async (req, res) => {
       lessonTitle: row.lesson_title,
       aiRecommendationId: row.id,
       content,
-      types
+      types,
+      folder,
+      title: req.body?.title
     });
 
     await logActivity(
@@ -2090,7 +2459,9 @@ router.post('/classwork/from-ai/:id', verifyToken, async (req, res) => {
     res.status(201).json({
       message:
         result.created > 0
-          ? `Saved “${result.title}” to Classwork (${result.created} items).`
+          ? (Array.isArray(result.sets) && result.sets.length > 1
+            ? `Saved ${result.sets.map((s) => `“${s.title}”`).join(' and ')} to Classwork.`
+            : `Saved “${result.title}” to Classwork (${result.created} items).`)
           : result.already_exists
             ? `“${result.title}” is already in your Classwork.`
             : result.skipped > 0
@@ -2117,7 +2488,18 @@ router.get('/classwork/sets', verifyToken, async (req, res) => {
 
     let sql = `SELECT qs.*, s.NAME as subject_name,
                 (SELECT COUNT(*) FROM question_bank qb
-                 WHERE qb.quiz_set_id = qs.id AND qb.status = 'active') as item_count
+                 WHERE qb.quiz_set_id = qs.id AND qb.status = 'active') as item_count,
+                (SELECT COUNT(*) FROM question_bank qb
+                 WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
+                   AND LOWER(IFNULL(qb.item_type, '')) IN ('activity', 'activity_prompt')) as activity_count,
+                (SELECT COUNT(*) FROM question_bank qb
+                 WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
+                   AND LOWER(IFNULL(qb.item_type, '')) NOT IN ('activity', 'activity_prompt')
+                   AND LOWER(IFNULL(qb.folder, '')) = 'exam') as exam_count,
+                (SELECT COUNT(*) FROM question_bank qb
+                 WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
+                   AND LOWER(IFNULL(qb.item_type, '')) NOT IN ('activity', 'activity_prompt')
+                   AND LOWER(IFNULL(qb.folder, '')) <> 'exam') as quiz_count
                FROM quiz_sets qs
                LEFT JOIN subjects s ON s.id = qs.subject_id
                WHERE qs.teacher_id = ? AND qs.status = 'active'`;
@@ -2142,7 +2524,10 @@ router.get('/classwork/sets', verifyToken, async (req, res) => {
     res.json(
       rows.map((r) => ({
         ...r,
-        item_count: Number(r.item_count) || 0
+        item_count: Number(r.item_count) || 0,
+        quiz_count: Number(r.quiz_count) || 0,
+        activity_count: Number(r.activity_count) || 0,
+        exam_count: Number(r.exam_count) || 0
       }))
     );
   } catch (error) {
@@ -2155,9 +2540,10 @@ router.post('/classwork/sets', verifyToken, async (req, res) => {
   try {
     await ensureQuestionBankSchema();
     const teacherId = req.user?.id || req.user?.userId;
-    const { title, grade_level, subject_id } = req.body || {};
+    const { title, grade_level, subject_id, kind } = req.body || {};
     const setTitle = String(title || '').trim().slice(0, 255);
     const grade = Number(grade_level);
+    const setKind = ['quizzes', 'activity', 'exam'].includes(kind) ? kind : 'quizzes';
 
     if (!setTitle) return res.status(400).json({ error: 'Title is required' });
     if (!grade) return res.status(400).json({ error: 'Grade level is required' });
@@ -2207,9 +2593,9 @@ router.post('/classwork/sets', verifyToken, async (req, res) => {
 
     const [result] = await db.query(
       `INSERT INTO quiz_sets
-        (teacher_id, title, subject_id, grade_level, source, status)
-       VALUES (?, ?, ?, ?, 'manual', 'active')`,
-      [teacherId, setTitle, subjectId, grade]
+        (teacher_id, title, subject_id, grade_level, source, status, kind)
+       VALUES (?, ?, ?, ?, 'manual', 'active', ?)`,
+      [teacherId, setTitle, subjectId, grade, setKind]
     );
 
     await logActivity(
@@ -2218,7 +2604,7 @@ router.post('/classwork/sets', verifyToken, async (req, res) => {
       'Created classwork set',
       'question_bank',
       setTitle,
-      `Grade ${grade}${subjectId ? ` · subject #${subjectId}` : ''}`
+      `Grade ${grade}${subjectId ? ` · subject #${subjectId}` : ''} · ${setKind}`
     );
 
     res.status(201).json({
@@ -2226,7 +2612,8 @@ router.post('/classwork/sets', verifyToken, async (req, res) => {
       title: setTitle,
       grade_level: grade,
       subject_id: subjectId,
-      message: 'Classwork set created. Find it in Classwork.'
+      kind: setKind,
+      message: 'Classwork created. Find it in Classwork.'
     });
   } catch (error) {
     console.error('Create quiz set error:', error);
@@ -2260,7 +2647,7 @@ router.get('/classwork/sets/:id', verifyToken, async (req, res) => {
        FROM question_bank qb
        LEFT JOIN subjects s ON s.id = qb.subject_id
        WHERE qb.quiz_set_id = ? AND qb.teacher_id = ? AND qb.status = 'active'
-       ORDER BY FIELD(qb.item_type, 'mcq', 'identification', 'enumeration', 'short_answer', 'activity', 'activity_prompt'),
+       ORDER BY FIELD(qb.item_type, 'mcq', 'true_false', 'fill_blank', 'matching', 'sequencing', 'identification', 'enumeration', 'short_answer', 'activity', 'activity_prompt'),
                 qb.id ASC`,
       [setId, teacherId]
     );
@@ -2427,19 +2814,51 @@ router.post('/classwork', verifyToken, async (req, res) => {
         ? 'mcq'
         : 'short_answer';
     type = canonicalItemType(type);
-    const choiceList = type === 'mcq' ? normalizeChoices(choices) : null;
+    let choiceList = storesChoiceList(type) ? normalizeChoices(choices) : null;
+    if (type === 'true_false') choiceList = ['True', 'False'];
     if (type === 'mcq' && (!choiceList || choiceList.length < 2)) {
       return res.status(400).json({ error: 'MCQ items need at least 2 choices' });
+    }
+    if (type === 'fill_blank' && (!choiceList || choiceList.length < 2)) {
+      return res.status(400).json({ error: 'Fill in the blank needs at least 2 word-bank words' });
+    }
+    if (type === 'matching' && (!choiceList || choiceList.filter((c) => String(c).includes('|')).length < 3)) {
+      return res.status(400).json({ error: 'Matching needs at least 3 pairs written as left | right' });
+    }
+    if (type === 'matching' && matchingRightsRepeat(choiceList)) {
+      return res.status(400).json({ error: 'Each matching answer can be used only once' });
+    }
+    if (type === 'sequencing' && (!choiceList || choiceList.length < 3)) {
+      return res.status(400).json({ error: 'Sequencing needs at least 3 steps' });
+    }
+    let storedAnswer = answer != null ? String(answer).trim().slice(0, 500) : null;
+    if (type === 'true_false') storedAnswer = normalizeTrueFalseAnswer(storedAnswer);
+    if (type === 'matching' && choiceList) {
+      storedAnswer = choiceList.filter((c) => String(c).includes('|')).join('; ').slice(0, 500);
+    }
+    if (type === 'sequencing' && choiceList) {
+      storedAnswer = choiceList.join(' | ').slice(0, 500);
+    }
+    if (type === 'identification' && !storedAnswer) {
+      return res.status(400).json({ error: 'Identification needs a correct answer' });
+    }
+    if (type === 'identification' && choiceList) {
+      const key = String(storedAnswer || '').trim().toLowerCase();
+      choiceList = choiceList.filter((c) => String(c).trim().toLowerCase() !== key);
+      if (!choiceList.length) choiceList = null;
     }
 
     const pts = Math.max(0.5, Number(points) || 1);
     const rubricObj = isActivityType(type) ? normalizeRubric(rubric, pts) : null;
+    const folder = !isActivityType(type) && String(req.body?.folder || '').toLowerCase() === 'exam'
+      ? 'exam'
+      : 'quiz';
 
     const [result] = await db.query(
       `INSERT INTO question_bank
         (teacher_id, quiz_set_id, subject_id, grade_level, lesson_plan_id, lesson_title,
-         item_type, question, choices, answer, points, rubric, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
+         item_type, question, choices, answer, points, rubric, source, folder)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`,
       [
         teacherId,
         quizSetId,
@@ -2450,16 +2869,20 @@ router.post('/classwork', verifyToken, async (req, res) => {
         type,
         qText,
         choiceList ? JSON.stringify(choiceList) : null,
-        answer != null ? String(answer).trim().slice(0, 500) : null,
+        storedAnswer,
         pts,
-        rubricObj ? JSON.stringify(rubricObj) : null
+        rubricObj ? JSON.stringify(rubricObj) : null,
+        folder
       ]
     );
 
     res.status(201).json({
       id: result.insertId,
       quiz_set_id: quizSetId,
-      message: isActivityType(type) ? 'Activity added.' : 'Quiz question added.'
+      folder,
+      message: folder === 'exam'
+        ? 'Exam question added.'
+        : isActivityType(type) ? 'Activity added.' : 'Quiz question added.'
     });
   } catch (error) {
     console.error('Create classwork item error:', error);
@@ -2509,12 +2932,26 @@ router.put('/classwork/:id', verifyToken, async (req, res) => {
       type = choiceList && choiceList.length >= 2 ? 'mcq' : isActivityType(row.item_type) ? 'activity' : 'short_answer';
     }
     type = canonicalItemType(type);
+    if (!storesChoiceList(type)) choiceList = null;
+    if (type === 'true_false') choiceList = ['True', 'False'];
 
     if (type === 'mcq' && (!choiceList || choiceList.length < 2)) {
       return res.status(400).json({ error: 'MCQ items need at least 2 choices' });
     }
+    if (type === 'fill_blank' && (!choiceList || choiceList.length < 2)) {
+      return res.status(400).json({ error: 'Fill in the blank needs at least 2 word-bank words' });
+    }
+    if (type === 'matching' && (!choiceList || choiceList.filter((c) => String(c).includes('|')).length < 3)) {
+      return res.status(400).json({ error: 'Matching needs at least 3 pairs written as left | right' });
+    }
+    if (type === 'matching' && matchingRightsRepeat(choiceList)) {
+      return res.status(400).json({ error: 'Each matching answer can be used only once' });
+    }
+    if (type === 'sequencing' && (!choiceList || choiceList.length < 3)) {
+      return res.status(400).json({ error: 'Sequencing needs at least 3 steps' });
+    }
 
-    const nextAnswer =
+    let nextAnswer =
       answer !== undefined
         ? answer != null
           ? String(answer).trim().slice(0, 500)
@@ -2546,6 +2983,21 @@ router.put('/classwork/:id', verifyToken, async (req, res) => {
     } else if (!isActivityType(type)) {
       nextRubric = null;
     }
+    if (type === 'true_false') nextAnswer = normalizeTrueFalseAnswer(nextAnswer);
+    if (type === 'matching' && choiceList) {
+      nextAnswer = choiceList.filter((c) => String(c).includes('|')).join('; ').slice(0, 500);
+    }
+    if (type === 'sequencing' && choiceList) {
+      nextAnswer = choiceList.join(' | ').slice(0, 500);
+    }
+    if (type === 'identification' && !String(nextAnswer || '').trim()) {
+      return res.status(400).json({ error: 'Identification needs a correct answer' });
+    }
+    if (type === 'identification') {
+      const key = String(nextAnswer || '').trim().toLowerCase();
+      choiceList = (choiceList || []).filter((c) => String(c).trim().toLowerCase() !== key);
+      if (!choiceList.length) choiceList = null;
+    }
 
     await db.query(
       `UPDATE question_bank SET
@@ -2554,7 +3006,7 @@ router.put('/classwork/:id', verifyToken, async (req, res) => {
        WHERE id = ? AND teacher_id = ?`,
       [
         qText,
-        type === 'mcq' && choiceList ? JSON.stringify(choiceList) : null,
+        storesChoiceList(type) && choiceList ? JSON.stringify(choiceList) : null,
         nextAnswer,
         nextPoints,
         nextGrade,
@@ -2615,11 +3067,25 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       quarter,
       question_ids,
       max_score,
-      section_totals: sectionTotalsBody
+      section_totals: sectionTotalsBody,
+      activity_mode: activityModeBody,
+      activity_target_at: activityTargetBody
     } = req.body || {};
 
     if (!['quiz', 'activity', 'exam'].includes(type)) {
       return res.status(400).json({ error: 'Type must be quiz, activity, or exam' });
+    }
+    let activityMode = null;
+    let activityTargetAt = null;
+    if (type === 'activity') {
+      activityMode = String(activityModeBody || '').toLowerCase();
+      if (activityMode !== 'classroom' && activityMode !== 'take_home') {
+        return res.status(400).json({ error: 'Choose Classroom activity or Take home' });
+      }
+      activityTargetAt = normalizeSqlDatetime(activityTargetBody);
+      if (!activityTargetAt) {
+        return res.status(400).json({ error: 'Set a target date' });
+      }
     }
     if (!grade_level || !section) {
       return res.status(400).json({ error: 'Grade and section are required' });
@@ -2762,6 +3228,13 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       assessmentId = result.insertId;
     }
 
+    if (activityMode && activityTargetAt) {
+      await db.query(
+        `UPDATE assessments SET activity_mode = ?, activity_target_at = ? WHERE id = ?`,
+        [activityMode, activityTargetAt, assessmentId]
+      );
+    }
+
     for (let i = 0; i < ordered.length; i++) {
       const it = ordered[i];
       const itemType = canonicalItemType(it.item_type || 'mcq');
@@ -2869,6 +3342,9 @@ async function ensureAssessmentSchema() {
   } catch (e) { /* column may already exist */ }
   try {
     await db.query(`ALTER TABLE assessments ADD COLUMN lesson_title VARCHAR(255) NULL`);
+  } catch (e) { /* column may already exist */ }
+  try {
+    await db.query(`ALTER TABLE assessments ADD COLUMN rubric JSON NULL`);
   } catch (e) { /* column may already exist */ }
   try {
     const { ensureQuizShareSchema } = require('../utils/quizShare');
@@ -2979,7 +3455,8 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     const { id } = req.params;
 
     const [[assessment]] = await db.query(
-      `SELECT id, title, grade_level, section, subject_id, share_token, share_enabled, created_by
+      `SELECT id, title, TYPE as type, grade_level, section, subject_id, share_token, share_enabled, created_by,
+              activity_mode, activity_target_at
        FROM assessments WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
@@ -3019,11 +3496,19 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
     }
 
     let token = assessment.share_token;
-    const { quiz_closes_at } = resolveQuizWindowsFromBody(req.body || {});
-    if (!quiz_closes_at) {
-      return res.status(400).json({
-        error: 'Set how many minutes the link stays open so it can close automatically.'
-      });
+    let quiz_closes_at;
+    if (String(assessment.activity_mode || '') === 'take_home') {
+      quiz_closes_at = normalizeSqlDatetime(assessment.activity_target_at);
+      if (!quiz_closes_at) {
+        return res.status(400).json({ error: 'Set a target date before enabling the link.' });
+      }
+    } else {
+      quiz_closes_at = resolveQuizWindowsFromBody(req.body || {}).quiz_closes_at;
+      if (!quiz_closes_at) {
+        return res.status(400).json({
+          error: 'Set how many minutes the link stays open so it can close automatically.'
+        });
+      }
     }
 
     const attendanceUpdates = [
@@ -3074,11 +3559,38 @@ router.post('/assessments/:id/assign-link', verifyToken, async (req, res) => {
       `token=${token}`
     );
 
+    let smsQueued = 0;
+    const kind = String(assessment.type || 'quiz').toLowerCase();
+    const shareSegment = kind === 'activity' || kind === 'exam' ? kind : 'quiz';
+    if (kind === 'activity' && String(assessment.activity_mode || '') === 'take_home') {
+      try {
+        const notice = await notifyTakeHomeLink({
+          title: assessment.title,
+          grade: assessment.grade_level,
+          section: assessment.section,
+          token,
+          origin: `${req.protocol}://${req.get('host')}`,
+          closesAt: quiz_closes_at
+        });
+        smsQueued = notice.queued;
+      } catch (err) {
+        console.error('Take-home link SMS error:', err.message);
+      }
+    }
+
+    const linkMessage = kind === 'activity' && String(assessment.activity_mode || '') === 'take_home'
+      ? (smsQueued
+        ? `Shared link is active. Texted the link to ${smsQueued} parent${smsQueued === 1 ? '' : 's'}.`
+        : 'Shared link is active.')
+      : 'Shared link is active. Present and Late students can open it.';
+
     res.json({
-      message: 'Shared link is active. Present and Late students can open it.',
+      message: linkMessage,
       share_token: token,
       share_enabled: true,
-      share_path: `/quiz/${token}`,
+      share_path: `/${shareSegment}/${token}`,
+      type: kind,
+      sms_queued: smsQueued,
       question_count: questions.length,
       attendance_date: today,
       attendance_session: slot.session,
@@ -3132,12 +3644,15 @@ router.post('/assessments/:id/quiz-windows', verifyToken, async (req, res) => {
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
     const [[assessment]] = await db.query(
-      `SELECT id, title, share_enabled FROM assessments WHERE id = ? AND created_by = ?`,
+      `SELECT id, title, share_enabled, activity_mode FROM assessments WHERE id = ? AND created_by = ?`,
       [id, teacherId]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
     if (!Number(assessment.share_enabled)) {
       return res.status(400).json({ error: 'Enable the shared link before updating deadlines.' });
+    }
+    if (String(assessment.activity_mode || '') === 'take_home') {
+      return res.status(400).json({ error: 'Take-home activities close on the target date.' });
     }
 
     const { quiz_closes_at } = resolveQuizWindowsFromBody(req.body || {});
@@ -3301,6 +3816,7 @@ router.get('/assessments', verifyToken, async (req, res) => {
     let sql = `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
                       a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                       a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
+                      a.activity_mode, a.activity_target_at,
                       s.NAME as subject_name,
                       (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count,
                       (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.id) as question_count
@@ -3345,8 +3861,9 @@ router.get('/assessments', verifyToken, async (req, res) => {
 
 router.post('/assessments', verifyToken, async (req, res) => {
   try {
+    await ensureAssessmentSchema();
     const teacherId = req.user?.id || req.user?.userId;
-    const { title, type, subject_id, grade_level, section, max_score, quarter, quiz_link, lesson_plan_id } = req.body;
+    const { title, type, subject_id, grade_level, section, max_score, quarter, quiz_link, lesson_plan_id, rubric } = req.body;
 
     if (!title || !String(title).trim()) {
       return res.status(400).json({ error: 'Title is required' });
@@ -3371,7 +3888,17 @@ router.post('/assessments', verifyToken, async (req, res) => {
       return res.status(e.status || 400).json({ error: e.message });
     }
 
-    const maxScore = Math.max(1, Number(max_score) || 100);
+    let maxScore = Math.max(1, Number(max_score) || 100);
+    let rubricJson = null;
+    if (type === 'activity') {
+      const rubricObj = normalizeRubric(rubric, maxScore);
+      if (!rubricObj?.categories?.length) {
+        return res.status(400).json({ error: 'Add at least one named rubric category.' });
+      }
+      const total = rubricPointsTotal(rubricObj, maxScore);
+      if (total > 0) maxScore = total;
+      rubricJson = JSON.stringify(rubricObj);
+    }
     const subjectId = subject_id ? Number(subject_id) : null;
     const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
@@ -3394,12 +3921,20 @@ router.post('/assessments', verifyToken, async (req, res) => {
       lessonTitle = String(lp.title || '').slice(0, 255) || null;
     }
 
+    const storeRubric = async (assessmentId) => {
+      if (!rubricJson || !assessmentId) return;
+      try {
+        await db.query('UPDATE assessments SET rubric = ? WHERE id = ?', [rubricJson, assessmentId]);
+      } catch (e) { /* column may be missing on a partial schema */ }
+    };
+
     try {
       const [result] = await db.query(
         `INSERT INTO assessments (title, TYPE, subject_id, grade_level, section, max_score, created_by, quarter, quiz_link, lesson_plan_id, lesson_title)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [String(title).trim(), type, subjectId, Number(grade_level), section, maxScore, teacherId, qtr, quizLink, lessonPlanId, lessonTitle]
       );
+      await storeRubric(result.insertId);
       await logActivity(
         db,
         teacherId,
@@ -3416,6 +3951,7 @@ router.post('/assessments', verifyToken, async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [String(title).trim(), type, subjectId, Number(grade_level), section, maxScore, teacherId, qtr]
         );
+        await storeRubric(result.insertId);
         return res.status(201).json({ id: result.insertId, message: 'Progress record created' });
       } catch (inner2) {
         const [result] = await db.query(
@@ -3423,6 +3959,7 @@ router.post('/assessments', verifyToken, async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [String(title).trim(), type, subjectId, Number(grade_level), section, maxScore, teacherId]
         );
+        await storeRubric(result.insertId);
         await logActivity(
           db,
           teacherId,
@@ -3514,6 +4051,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
                 a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                 a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id, a.quiz_makeup_student_ids,
                 a.quiz_closes_at, a.quiz_makeup_closes_at,
+                a.activity_mode, a.activity_target_at, a.rubric,
                 s.NAME as subject_name
          FROM assessments a
          LEFT JOIN subjects s ON a.subject_id = s.id
@@ -3533,6 +4071,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       assessment = row;
     }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    assessment.rubric = normalizeRubric(assessment.rubric, assessment.max_score);
     if (assessment.quiz_attendance_date != null && assessment.quiz_attendance_date !== '') {
       assessment.quiz_attendance_date = sqlDateToISO(assessment.quiz_attendance_date) || null;
     }

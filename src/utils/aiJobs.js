@@ -22,6 +22,7 @@ function createJob(teacherId, key) {
     status: 'running',
     error: null,
     result: null,
+    progress: { step: 1, total: 3, label: 'Reading the lesson' },
     createdAt: Date.now()
   });
   if (key) runningByKey.set(key, id);
@@ -42,12 +43,25 @@ function finishJob(jobId, patch) {
   if (job.status !== 'running' && job.key) runningByKey.delete(job.key);
 }
 
+function setJobProgress(jobId, progress) {
+  const job = jobs.get(String(jobId || ''));
+  if (!job || job.status !== 'running') return;
+  const step = Number(progress?.step) || 1;
+  const total = Number(progress?.total) || 3;
+  job.progress = {
+    step,
+    total,
+    label: String(progress?.label || '').trim() || 'Please wait...'
+  };
+}
+
 function publicJob(job) {
   if (!job) return null;
   return {
     jobId: job.id,
     status: job.status,
     error: job.error || null,
+    progress: job.progress || null,
     id: job.result?.id ?? null,
     message: job.result?.message || null,
     provider: job.result?.provider || null
@@ -86,4 +100,4 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-module.exports = { createJob, getJobForTeacher, finishJob, publicJob, runExclusive };
+module.exports = { createJob, getJobForTeacher, finishJob, setJobProgress, publicJob, runExclusive };

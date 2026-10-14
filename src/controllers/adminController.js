@@ -25,54 +25,13 @@ const { sendAccountDetails } = require('../utils/mail');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const {
   ensureTeachingModeEnum,
+  ensureAssignmentSlots,
   resolveTeachingMode,
   teachingModeLabel,
-  syncTeachingModeFromAssignments
+  syncTeachingModeFromAssignments,
+  homeSlotOf,
+  isOutsideSubjectRow
 } = require('../utils/teachingMode');
-
-// ============================================================
-// HELPERS: Subject auto-assignment for Grades 1-3
-// ============================================================
-
-// Check if a grade level matches applicable_grades string
-// Supports formats: "1-3", "4-6", "1-6", "1,2,3", "1"
-function gradeMatchesApplicableGrades(gradeLevel, applicableGrades) {
-  if (!applicableGrades) return false;
-  const grade = parseInt(gradeLevel, 10);
-  if (isNaN(grade)) return false;
-  const str = String(applicableGrades).trim();
-
-  // Range format: "1-3" or "4 - 6"
-  const rangeMatch = str.match(/^(\d+)\s*-\s*(\d+)$/);
-  if (rangeMatch) {
-    const start = parseInt(rangeMatch[1], 10);
-    const end = parseInt(rangeMatch[2], 10);
-    return grade >= start && grade <= end;
-  }
-
-  // Comma format: "1,2,3" or "4, 5, 6"
-  if (str.includes(',')) {
-    const grades = str.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
-    return grades.includes(grade);
-  }
-
-  // Single grade
-  return parseInt(str, 10) === grade;
-}
-
-// Get all subjects applicable to a specific grade level
-async function getSubjectsForGrade(conn, gradeLevel) {
-  try {
-    await ensureSoftDeleteSchema(conn);
-    const [subjects] = await conn.query(
-      'SELECT id, applicable_grades FROM subjects WHERE deleted_at IS NULL'
-    );
-    return subjects.filter(s => gradeMatchesApplicableGrades(gradeLevel, s.applicable_grades));
-  } catch (err) {
-    console.error('[getSubjectsForGrade] Error fetching subjects:', err);
-    return [];
-  }
-}
 
 // GET /api/admin/subjects
 exports.getSubjects = async (req, res) => {
@@ -117,6 +76,11 @@ exports.getSections = async (req, res) => {
   }
 };
 
+function publicTeacher(row) {
+  if (!row) return null;
+  return { id: row.id, first_name: row.first_name, last_name: row.last_name };
+}
+
 // GET /api/admin/class-adviser?grade_level=3&section=A
 exports.getClassAdviser = async (req, res) => {
   try {
@@ -125,68 +89,82 @@ exports.getClassAdviser = async (req, res) => {
       return res.status(400).json({ error: 'Grade level and section are required' });
     }
 
-    console.log(`[getClassAdviser] Request: grade_level=${grade_level}, section=${section}`);
+    await ensureAssignmentSlots();
+    let adviser = await getExistingSlot(db, grade_level, section, 'adviser');
+    const assistant = await getExistingSlot(db, grade_level, section, 'assistant');
 
-    // FALLBACK 1: Proper class adviser slot (subject_id IS NULL)
-    let [rows] = await db.query(
-      `SELECT u.id, u.first_name, u.last_name
-       FROM teacher_assignments ta
-       JOIN users u ON ta.teacher_id = u.id
-       WHERE ta.grade_level = ?
-       AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
-       AND ta.subject_id IS NULL
-       AND ta.school_year = '${schoolYear}'
-       AND u.STATUS = 'active'
-       LIMIT 1`,
-      [grade_level, section]
-    );
-    console.log(`[getClassAdviser] Fallback 1 (ta.subject_id IS NULL): ${rows.length} rows`);
-
-    // FALLBACK 2: teacher_profiles homeroom data
-    if (rows.length === 0) {
-      [rows] = await db.query(
+    if (!adviser) {
+      const [rows] = await db.query(
         `SELECT u.id, u.first_name, u.last_name
          FROM teacher_profiles tp
          JOIN users u ON tp.user_id = u.id
-         WHERE tp.homeroom_grade = ? 
+         WHERE tp.homeroom_grade = ?
          AND TRIM(UPPER(tp.homeroom_section)) = TRIM(UPPER(?))
+         AND (tp.homeroom_role = 'adviser' OR tp.homeroom_role IS NULL)
          AND u.STATUS = 'active'
          LIMIT 1`,
         [grade_level, section]
       );
-      console.log(`[getClassAdviser] Fallback 2 (teacher_profiles): ${rows.length} rows`);
+      adviser = rows[0] || null;
     }
 
-    // FALLBACK 3: Any teacher assignment for this grade/section (legacy / mis-saved data)
-    if (rows.length === 0) {
-      [rows] = await db.query(
-        `SELECT u.id, u.first_name, u.last_name
-         FROM teacher_assignments ta
-         JOIN users u ON ta.teacher_id = u.id
-         WHERE ta.grade_level = ?
-         AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
-         AND ta.school_year = '${schoolYear}'
-         AND u.STATUS = 'active'
-         LIMIT 1`,
-        [grade_level, section]
-      );
-      console.log(`[getClassAdviser] Fallback 3 (any assignment): ${rows.length} rows`);
-    }
-
-    if (rows.length === 0) {
-      console.log(`[getClassAdviser] No teacher found for Grade ${grade_level}-${section}`);
-      return res.json({ 
-        teacher: null, 
-        message: 'No class adviser assigned for this grade and section' 
+    if (!adviser) {
+      return res.json({
+        teacher: null,
+        assistant: publicTeacher(assistant),
+        message: 'No class adviser assigned for this grade and section'
       });
     }
 
-    console.log(`[getClassAdviser] Found: ${rows[0].first_name} ${rows[0].last_name} (ID: ${rows[0].id})`);
-    res.json({ teacher: rows[0] });
-
+    res.json({
+      teacher: publicTeacher(adviser),
+      assistant: publicTeacher(assistant)
+    });
   } catch (error) {
     console.error('Get class adviser error:', error);
     res.status(500).json({ error: 'Server error fetching class adviser' });
+  }
+};
+
+// GET /api/admin/class-slots?grade_level=4&section=A&exclude_teacher_id=12
+exports.getClassSlots = async (req, res) => {
+  try {
+    const { grade_level, section, exclude_teacher_id } = req.query;
+    if (!grade_level || !section) {
+      return res.status(400).json({ error: 'Grade level and section are required' });
+    }
+    await ensureAssignmentSlots();
+    const excludeId = exclude_teacher_id ? Number(exclude_teacher_id) : null;
+    const adviser = await getExistingSlot(db, grade_level, section, 'adviser', excludeId);
+    const assistant = await getExistingSlot(db, grade_level, section, 'assistant', excludeId);
+    let sql = `
+      SELECT ta.subject_id, ta.teacher_id, u.first_name, u.last_name
+      FROM teacher_assignments ta
+      JOIN users u ON u.id = ta.teacher_id
+      WHERE ta.grade_level = ?
+      AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
+      AND ta.subject_id IS NOT NULL
+      AND ta.school_year = ?
+      AND u.status = 'active'
+    `;
+    const params = [grade_level, section, schoolYear];
+    if (excludeId) {
+      sql += ' AND ta.teacher_id != ?';
+      params.push(excludeId);
+    }
+    const [taken] = await db.query(sql, params);
+    res.json({
+      adviser: publicTeacher(adviser),
+      assistant: publicTeacher(assistant),
+      taken_subjects: taken.map((row) => ({
+        subject_id: row.subject_id,
+        teacher_id: row.teacher_id,
+        teacher_name: `${row.first_name} ${row.last_name}`.trim()
+      }))
+    });
+  } catch (error) {
+    console.error('Get class slots error:', error);
+    res.status(500).json({ error: 'Server error fetching class assignments' });
   }
 };
 
@@ -299,7 +277,7 @@ async function createAccountRecord(body, actorId) {
 
     const {
       first_name, last_name, email, phone, password, role,
-      is_class_adviser, class_adviser_grade, class_adviser_section,
+      class_adviser_grade, class_adviser_section,
       is_subject_teacher, subject_assignments,
       address, emergency_contact
     } = body || {};
@@ -328,20 +306,25 @@ async function createAccountRecord(body, actorId) {
 
     // Teacher-specific validation
     if (role === 'teacher') {
-      const hasClassAdviser = is_class_adviser === true || is_class_adviser === 'true';
+      const homeRole = homeRoleFromBody(body);
       const hasSubjectTeacher = is_subject_teacher === true || is_subject_teacher === 'true';
 
-      if (!hasClassAdviser && !hasSubjectTeacher) {
-        throw accountError(400, 'Teacher must have at least one teaching role (Class Adviser or Subject Teacher)');
+      if (!homeRole && !hasSubjectTeacher) {
+        throw accountError(400, 'Teacher must be a Class Adviser or an Assistant Teacher');
       }
-      if (hasClassAdviser && (!class_adviser_grade || !class_adviser_section)) {
-        throw accountError(400, 'Class Adviser must have a grade level and section assigned');
+      if (homeRole && (!class_adviser_grade || !class_adviser_section)) {
+        throw accountError(400, `${slotLabel(homeRole)} must have a grade level and section assigned`);
       }
-      // Subject Teacher = Grades 4-6 subject rows (independent of 1-3 class adviser auto-subjects)
+      if (homeRole && isLowerGradeLevel(class_adviser_grade)) {
+        const picked = Array.isArray(body.class_adviser_subjects) ? body.class_adviser_subjects.filter(Boolean) : [];
+        if (!picked.length) {
+          throw accountError(400, 'Select at least one subject this teacher handles in Grades 1–3.');
+        }
+      }
       if (hasSubjectTeacher) {
         const stRows = normalizeSubjectAssignments(subject_assignments).filter(a => isUpperGradeLevel(a.grade_level));
         if (!stRows.length) {
-          throw accountError(400, 'Subject Teacher must have at least one Grades 4–6 subject assignment');
+          throw accountError(400, 'Subject rows must be Grades 4–6 subjects in other sections');
         }
       }
     }
@@ -371,21 +354,22 @@ async function createAccountRecord(body, actorId) {
 
     // Insert role-specific profile
     if (role === 'teacher') {
-      const hasClassAdviser = is_class_adviser === true || is_class_adviser === 'true';
+      const homeRole = homeRoleFromBody(body);
       const hasSubjectTeacher = is_subject_teacher === true || is_subject_teacher === 'true';
+      const hasHome = !!homeRole;
 
-      // === VALIDATION: One Class Adviser per Grade-Section ===
-      if (hasClassAdviser && class_adviser_grade && class_adviser_section) {
-        const existing = await getExistingClassAdviser(conn, class_adviser_grade, class_adviser_section);
+      await ensureAssignmentSlots(conn);
+      if (hasHome && class_adviser_grade && class_adviser_section) {
+        const existing = await getExistingSlot(conn, class_adviser_grade, class_adviser_section, homeRole);
         if (existing) {
-          throw accountError(409, `Grade ${class_adviser_grade}-${class_adviser_section} already has a Class Adviser: ${existing.first_name} ${existing.last_name} (${existing.email})`);
+          throw accountError(409, `Grade ${class_adviser_grade}-${class_adviser_section} already has ${slotLabel(homeRole) === 'Assistant Teacher' ? 'an' : 'a'} ${slotLabel(homeRole)}: ${existing.first_name} ${existing.last_name} (${existing.email})`);
         }
       }
 
       let effectiveSubjectAssignments;
       try {
         effectiveSubjectAssignments = await buildEffectiveSubjectAssignments(conn, {
-          hasClassAdviser,
+          homeRole,
           hasSubjectTeacher,
           class_adviser_grade,
           class_adviser_section,
@@ -397,10 +381,15 @@ async function createAccountRecord(body, actorId) {
         throw accountError(assignErr.status || 400, assignErr.message);
       }
 
+      const outsideCount = effectiveSubjectAssignments.filter((row) => {
+        if (!hasHome) return true;
+        return String(row.grade_level) !== String(class_adviser_grade)
+          || String(row.section || '').trim().toUpperCase() !== String(class_adviser_section || '').trim().toUpperCase();
+      }).length;
       let teaching_mode = resolveTeachingMode({
-        hasClassAdviser,
-        hasSubjectTeacher,
-        subjectCount: effectiveSubjectAssignments.length
+        hasClassAdviser: hasHome,
+        hasSubjectTeacher: outsideCount > 0,
+        subjectCount: outsideCount
       });
 
       await ensureTeachingModeEnum(conn);
@@ -409,7 +398,7 @@ async function createAccountRecord(body, actorId) {
       let subjects_taught = null;
       let grades_handled = null;
       const allGradeLevels = new Set();
-      if (hasClassAdviser && class_adviser_grade) allGradeLevels.add(String(class_adviser_grade));
+      if (hasHome && class_adviser_grade) allGradeLevels.add(String(class_adviser_grade));
 
       if (effectiveSubjectAssignments.length > 0) {
         const subjectIds = [...new Set(effectiveSubjectAssignments.map(a => a.subject_id).filter(Boolean))];
@@ -420,35 +409,31 @@ async function createAccountRecord(body, actorId) {
 
       await conn.query(
         `INSERT INTO teacher_profiles 
-         (user_id, teaching_mode, homeroom_grade, homeroom_section, specialization, subjects_taught, grades_handled)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (user_id, teaching_mode, homeroom_grade, homeroom_section, specialization, subjects_taught, grades_handled, homeroom_role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           userId,
           teaching_mode,
-          hasClassAdviser ? class_adviser_grade : null,
-          hasClassAdviser ? class_adviser_section : null,
-          null, // specialization no longer used in new form
+          hasHome ? class_adviser_grade : null,
+          hasHome ? class_adviser_section : null,
+          null,
           subjects_taught,
-          grades_handled
+          grades_handled,
+          hasHome ? homeRole : null
         ]
       );
 
-      // Insert class adviser slot (subject_id = NULL)
-      if (hasClassAdviser && class_adviser_grade && class_adviser_section) {
-        await conn.query(
-          `INSERT INTO teacher_assignments (teacher_id, grade_level, section, subject_id, school_year)
-           VALUES (?, ?, ?, NULL, '${schoolYear}')`,
-          [userId, class_adviser_grade, class_adviser_section]
-        );
+      if (hasHome && class_adviser_grade && class_adviser_section) {
+        await insertAssignmentRow(conn, userId, {
+          grade_level: class_adviser_grade,
+          section: class_adviser_section,
+          subject_id: null,
+          slot: homeRole
+        });
       }
 
-      // Insert subject assignments (auto-generated for Grades 1-3, or user-provided)
       for (const assignment of effectiveSubjectAssignments) {
-        await conn.query(
-          `INSERT INTO teacher_assignments (teacher_id, grade_level, section, subject_id, school_year)
-           VALUES (?, ?, ?, ?, '${schoolYear}')`,
-          [userId, assignment.grade_level, assignment.section, assignment.subject_id]
-        );
+        await insertAssignmentRow(conn, userId, { ...assignment, slot: 'subject' });
       }
     } else if (role === 'parent') {
       await conn.query(
@@ -536,6 +521,7 @@ exports.bulkCreateAccounts = async (req, res) => {
 
     const actorId = req.user?.id || req.user?.userId;
     const failed = [];
+    const accounts = [];
     let created = 0;
     let emailed = 0;
     for (const row of rows) {
@@ -561,6 +547,12 @@ exports.bulkCreateAccounts = async (req, res) => {
           subject_assignments
         }, actorId);
         created += 1;
+        accounts.push({
+          name: `${plainText(row.first_name)} ${plainText(row.last_name)}`.trim(),
+          email,
+          role,
+          password
+        });
         const mail = await sendAccountDetails({
           firstName: plainText(row.first_name),
           lastName: plainText(row.last_name),
@@ -577,7 +569,7 @@ exports.bulkCreateAccounts = async (req, res) => {
         });
       }
     }
-    res.json({ created, failed, emailed });
+    res.json({ created, failed, emailed, accounts });
   } catch (error) {
     console.error('Bulk create accounts error:', error);
     res.status(error.status || 500).json({ error: error.message || 'Server error importing accounts' });
@@ -587,9 +579,10 @@ exports.bulkCreateAccounts = async (req, res) => {
 // GET /api/admin/accounts
 exports.getAccounts = async (req, res) => {
   try {
+    await ensureAssignmentSlots();
     const [users] = await db.query(
       `SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.role, u.status, u.created_at,
-        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.specialization,
+        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.homeroom_role, tp.specialization,
         pp.address, pp.emergency_contact
        FROM users u
        LEFT JOIN teacher_profiles tp ON u.id = tp.user_id
@@ -607,11 +600,12 @@ exports.getAccounts = async (req, res) => {
 // GET /api/admin/accounts/:id
 exports.getAccountById = async (req, res) => {
   try {
+    await ensureAssignmentSlots();
     const { id } = req.params;
 
     const [users] = await db.query(
       `SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.role, u.status,
-        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.specialization,
+        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.homeroom_role, tp.specialization,
         pp.address, pp.emergency_contact
        FROM users u
        LEFT JOIN teacher_profiles tp ON u.id = tp.user_id
@@ -629,9 +623,9 @@ exports.getAccountById = async (req, res) => {
     // If teacher, also fetch assignments
     if (user.role === 'teacher') {
       const [assignments] = await db.query(
-        `SELECT grade_level, section, subject_id FROM teacher_assignments 
-         WHERE teacher_id = ? AND school_year = '${schoolYear}'`,
-        [id]
+        `SELECT grade_level, section, subject_id, slot FROM teacher_assignments 
+         WHERE teacher_id = ? AND school_year = ?`,
+        [id, schoolYear]
       );
       user.assignments = assignments;
     }
@@ -783,9 +777,11 @@ exports.updateAssignments = async (req, res) => {
 
     const { id } = req.params;
     const {
-      is_class_adviser, class_adviser_grade, class_adviser_section,
+      class_adviser_grade, class_adviser_section,
       is_subject_teacher, subject_assignments
     } = req.body;
+    const homeRole = homeRoleFromBody(req.body);
+    const hasHome = !!homeRole;
 
     // Verify user exists and is a teacher
     const [users] = await conn.query('SELECT role FROM users WHERE id = ?', [id]);
@@ -798,32 +794,38 @@ exports.updateAssignments = async (req, res) => {
       return res.status(400).json({ error: 'Only teacher accounts can have assignments' });
     }
 
-    const hasClassAdviser = is_class_adviser === true || is_class_adviser === 'true';
     const hasSubjectTeacher = is_subject_teacher === true || is_subject_teacher === 'true';
 
-    if (!hasClassAdviser && !hasSubjectTeacher) {
+    if (!hasHome && !hasSubjectTeacher) {
       await conn.rollback();
-      return res.status(400).json({ error: 'Teacher must have at least one teaching role (Class Adviser or Subject Teacher)' });
+      return res.status(400).json({ error: 'Teacher must be a Class Adviser or an Assistant Teacher' });
     }
-    if (hasClassAdviser && (!class_adviser_grade || !class_adviser_section)) {
+    if (hasHome && (!class_adviser_grade || !class_adviser_section)) {
       await conn.rollback();
-      return res.status(400).json({ error: 'Class Adviser must have a grade level and section assigned' });
+      return res.status(400).json({ error: `${slotLabel(homeRole)} must have a grade level and section assigned` });
+    }
+    if (hasHome && isLowerGradeLevel(class_adviser_grade)) {
+      const picked = Array.isArray(req.body.class_adviser_subjects) ? req.body.class_adviser_subjects.filter(Boolean) : [];
+      if (!picked.length) {
+        await conn.rollback();
+        return res.status(400).json({ error: 'Select at least one subject this teacher handles in Grades 1–3.' });
+      }
     }
     if (hasSubjectTeacher) {
       const stRows = normalizeSubjectAssignments(subject_assignments).filter(a => isUpperGradeLevel(a.grade_level));
       if (!stRows.length) {
         await conn.rollback();
-        return res.status(400).json({ error: 'Subject Teacher must have at least one Grades 4–6 subject assignment' });
+        return res.status(400).json({ error: 'Subject rows must be Grades 4–6 subjects in other sections' });
       }
     }
 
-    // One Class Adviser per Grade-Section (exclude current teacher)
-    if (hasClassAdviser && class_adviser_grade && class_adviser_section) {
-      const existing = await getExistingClassAdviser(conn, class_adviser_grade, class_adviser_section, id);
+    await ensureAssignmentSlots(conn);
+    if (hasHome && class_adviser_grade && class_adviser_section) {
+      const existing = await getExistingSlot(conn, class_adviser_grade, class_adviser_section, homeRole, id);
       if (existing) {
         await conn.rollback();
-        return res.status(409).json({ 
-          error: `Grade ${class_adviser_grade}-${class_adviser_section} already has a Class Adviser: ${existing.first_name} ${existing.last_name} (${existing.email})`
+        return res.status(409).json({
+          error: `Grade ${class_adviser_grade}-${class_adviser_section} already has ${slotLabel(homeRole) === 'Assistant Teacher' ? 'an' : 'a'} ${slotLabel(homeRole)}: ${existing.first_name} ${existing.last_name} (${existing.email})`
         });
       }
     }
@@ -831,7 +833,7 @@ exports.updateAssignments = async (req, res) => {
     let effectiveSubjectAssignments;
     try {
       effectiveSubjectAssignments = await buildEffectiveSubjectAssignments(conn, {
-        hasClassAdviser,
+        homeRole,
         hasSubjectTeacher,
         class_adviser_grade,
         class_adviser_section,
@@ -844,19 +846,23 @@ exports.updateAssignments = async (req, res) => {
       return res.status(assignErr.status || 400).json({ error: assignErr.message });
     }
 
+    const outsideCount = effectiveSubjectAssignments.filter((row) => {
+      if (!hasHome) return true;
+      return String(row.grade_level) !== String(class_adviser_grade)
+        || String(row.section || '').trim().toUpperCase() !== String(class_adviser_section || '').trim().toUpperCase();
+    }).length;
     let teaching_mode = resolveTeachingMode({
-      hasClassAdviser,
-      hasSubjectTeacher,
-      subjectCount: effectiveSubjectAssignments.length
+      hasClassAdviser: hasHome,
+      hasSubjectTeacher: outsideCount > 0,
+      subjectCount: outsideCount
     });
 
     await ensureTeachingModeEnum(conn);
 
-    // Prepare subjects_taught and grades_handled
     let subjects_taught = null;
     let grades_handled = null;
     const allGradeLevels = new Set();
-    if (hasClassAdviser && class_adviser_grade) allGradeLevels.add(String(class_adviser_grade));
+    if (hasHome && class_adviser_grade) allGradeLevels.add(String(class_adviser_grade));
 
     if (effectiveSubjectAssignments.length > 0) {
       const subjectIds = [...new Set(effectiveSubjectAssignments.map(a => a.subject_id).filter(Boolean))];
@@ -865,7 +871,6 @@ exports.updateAssignments = async (req, res) => {
       if (allGradeLevels.size > 0) grades_handled = JSON.stringify([...allGradeLevels].map(Number).sort((a, b) => a - b));
     }
 
-    // Upsert teacher_profiles (update may no-op if profile row is missing)
     const [profiles] = await conn.query(
       'SELECT id FROM teacher_profiles WHERE user_id = ? LIMIT 1',
       [id]
@@ -874,57 +879,53 @@ exports.updateAssignments = async (req, res) => {
       await conn.query(
         `UPDATE teacher_profiles 
          SET teaching_mode = ?, homeroom_grade = ?, homeroom_section = ?, 
-             specialization = ?, subjects_taught = ?, grades_handled = ?
+             specialization = ?, subjects_taught = ?, grades_handled = ?, homeroom_role = ?
          WHERE user_id = ?`,
         [
           teaching_mode,
-          hasClassAdviser ? class_adviser_grade : null,
-          hasClassAdviser ? class_adviser_section : null,
+          hasHome ? class_adviser_grade : null,
+          hasHome ? class_adviser_section : null,
           null,
           subjects_taught,
           grades_handled,
+          hasHome ? homeRole : null,
           id
         ]
       );
     } else {
       await conn.query(
         `INSERT INTO teacher_profiles 
-         (user_id, teaching_mode, homeroom_grade, homeroom_section, specialization, subjects_taught, grades_handled)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (user_id, teaching_mode, homeroom_grade, homeroom_section, specialization, subjects_taught, grades_handled, homeroom_role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           teaching_mode,
-          hasClassAdviser ? class_adviser_grade : null,
-          hasClassAdviser ? class_adviser_section : null,
+          hasHome ? class_adviser_grade : null,
+          hasHome ? class_adviser_section : null,
           null,
           subjects_taught,
-          grades_handled
+          grades_handled,
+          hasHome ? homeRole : null
         ]
       );
     }
 
-    // Delete old assignments for this school year
     await conn.query(
-      `DELETE FROM teacher_assignments WHERE teacher_id = ? AND school_year = '${schoolYear}'`,
-      [id]
+      `DELETE FROM teacher_assignments WHERE teacher_id = ? AND school_year = ?`,
+      [id, schoolYear]
     );
 
-    // Insert class adviser slot (subject_id = NULL)
-    if (hasClassAdviser && class_adviser_grade && class_adviser_section) {
-      await conn.query(
-        `INSERT INTO teacher_assignments (teacher_id, grade_level, section, subject_id, school_year)
-         VALUES (?, ?, ?, NULL, '${schoolYear}')`,
-        [id, class_adviser_grade, class_adviser_section]
-      );
+    if (hasHome && class_adviser_grade && class_adviser_section) {
+      await insertAssignmentRow(conn, id, {
+        grade_level: class_adviser_grade,
+        section: class_adviser_section,
+        subject_id: null,
+        slot: homeRole
+      });
     }
 
-    // Insert subject assignments (auto-generated for Grades 1-3, or user-provided)
     for (const assignment of effectiveSubjectAssignments) {
-      await conn.query(
-        `INSERT INTO teacher_assignments (teacher_id, grade_level, section, subject_id, school_year)
-         VALUES (?, ?, ?, ?, '${schoolYear}')`,
-        [id, assignment.grade_level, assignment.section, assignment.subject_id]
-      );
+      await insertAssignmentRow(conn, id, { ...assignment, slot: 'subject' });
     }
 
     await logActivity(conn, (req.user?.id || req.user?.userId), 'Updated teacher assignments', 'teacher', `Teacher ID ${id}`, null);
@@ -942,15 +943,16 @@ exports.updateAssignments = async (req, res) => {
 };
 
 async function listTeacherDuties(teacherId) {
+  await ensureAssignmentSlots();
   const [rows] = await db.query(
-    `SELECT ta.grade_level, ta.section, ta.subject_id, s.NAME AS subject_name
+    `SELECT ta.grade_level, ta.section, ta.subject_id, ta.slot, s.NAME AS subject_name
      FROM teacher_assignments ta
      LEFT JOIN subjects s ON s.id = ta.subject_id
      WHERE ta.teacher_id = ? AND ta.school_year = ?
      ORDER BY ta.grade_level, ta.section, ta.subject_id`,
     [teacherId, schoolYear]
   );
-  const adviserKeys = new Set(
+  const homeKeys = new Set(
     rows
       .filter((row) => row.subject_id == null)
       .map((row) => `${row.grade_level}|${String(row.section || '').trim()}`)
@@ -959,18 +961,19 @@ async function listTeacherDuties(teacherId) {
   for (const row of rows) {
     if (row.subject_id != null) continue;
     const section = String(row.section || '').trim();
+    const kind = row.slot === 'assistant' ? 'assistant' : 'adviser';
     duties.push({
-      kind: 'adviser',
+      kind,
       grade_level: row.grade_level,
       section,
       subject_id: null,
-      label: `Class adviser — Grade ${row.grade_level}-${section}`
+      label: `${kind === 'assistant' ? 'Assistant teacher' : 'Class adviser'} — Grade ${row.grade_level}-${section}`
     });
   }
   for (const row of rows) {
     if (row.subject_id == null) continue;
     const section = String(row.section || '').trim();
-    if (adviserKeys.has(`${row.grade_level}|${section}`)) continue;
+    if (homeKeys.has(`${row.grade_level}|${section}`)) continue;
     duties.push({
       kind: 'subject',
       grade_level: row.grade_level,
@@ -985,7 +988,7 @@ async function listTeacherDuties(teacherId) {
 
 async function attachTransferChoices(teacherId, duties) {
   for (const duty of duties) {
-    if (duty.kind === 'adviser') {
+    if (duty.kind === 'adviser' || duty.kind === 'assistant') {
       duty.candidates = [];
       continue;
     }
@@ -1005,20 +1008,21 @@ async function attachTransferChoices(teacherId, duties) {
 }
 
 async function refreshTeacherClassProfile(conn, teacherId) {
+  await ensureAssignmentSlots(conn);
   const [rows] = await conn.query(
-    `SELECT subject_id, grade_level, section
+    `SELECT subject_id, grade_level, section, slot
      FROM teacher_assignments
      WHERE teacher_id = ? AND school_year = ?`,
     [teacherId, schoolYear]
   );
-  const adviser = rows.find((row) => row.subject_id == null);
-  const subjectCount = rows.filter((row) => row.subject_id != null).length;
-  const hasSubjectTeacher = rows.some((row) => row.subject_id != null && Number(row.grade_level) >= 4);
+  const home = homeSlotOf(rows);
+  const outsideCount = rows.filter((row) => isOutsideSubjectRow(row, home)).length;
   const teachingMode = resolveTeachingMode({
-    hasClassAdviser: !!adviser,
-    hasSubjectTeacher: hasSubjectTeacher || subjectCount > 0,
-    subjectCount
+    hasClassAdviser: !!home,
+    hasSubjectTeacher: outsideCount > 0,
+    subjectCount: outsideCount
   });
+  const homeroomRole = home ? (home.slot === 'assistant' ? 'assistant' : 'adviser') : null;
   const [[profile]] = await conn.query(
     'SELECT user_id FROM teacher_profiles WHERE user_id = ?',
     [teacherId]
@@ -1026,25 +1030,27 @@ async function refreshTeacherClassProfile(conn, teacherId) {
   if (profile) {
     await conn.query(
       `UPDATE teacher_profiles
-       SET teaching_mode = ?, homeroom_grade = ?, homeroom_section = ?
+       SET teaching_mode = ?, homeroom_grade = ?, homeroom_section = ?, homeroom_role = ?
        WHERE user_id = ?`,
-      [teachingMode, adviser ? adviser.grade_level : null, adviser ? adviser.section : null, teacherId]
+      [teachingMode, home ? home.grade_level : null, home ? home.section : null, homeroomRole, teacherId]
     );
     return;
   }
   await conn.query(
-    `INSERT INTO teacher_profiles (user_id, teaching_mode, homeroom_grade, homeroom_section)
-     VALUES (?, ?, ?, ?)`,
-    [teacherId, teachingMode, adviser ? adviser.grade_level : null, adviser ? adviser.section : null]
+    `INSERT INTO teacher_profiles (user_id, teaching_mode, homeroom_grade, homeroom_section, homeroom_role)
+     VALUES (?, ?, ?, ?, ?)`,
+    [teacherId, teachingMode, home ? home.grade_level : null, home ? home.section : null, homeroomRole]
   );
 }
 
-async function moveAssignmentRow(conn, rowId, fromId, toId, grade, section, subjectId) {
+async function moveAssignmentRow(conn, rowId, fromId, toId, grade, section, subjectId, slot) {
   const matchParams = [toId, grade, section, schoolYear];
-  let subjectSql = 'subject_id IS NULL';
+  let subjectSql = 'subject_id IS NULL AND slot = ?';
   if (subjectId != null) {
     subjectSql = 'subject_id = ?';
     matchParams.push(subjectId);
+  } else {
+    matchParams.push(slot || 'adviser');
   }
   const [existing] = await conn.query(
     `SELECT id FROM teacher_assignments
@@ -1169,7 +1175,7 @@ exports.transferAndDeactivate = async (req, res) => {
           : Number(item.subject_id) === Number(duty.subject_id))
       );
       const rawReplacement = match?.replacement_id;
-      if (duty.kind === 'adviser' && String(rawReplacement) !== 'new') {
+      if ((duty.kind === 'adviser' || duty.kind === 'assistant') && String(rawReplacement) !== 'new') {
         await conn.rollback();
         return res.status(400).json({
           error: `${duty.label} can only transfer to a newly hired teacher.`
@@ -1223,7 +1229,7 @@ exports.transferAndDeactivate = async (req, res) => {
         ownedParams.push(duty.subject_id);
       }
       const [owned] = await conn.query(
-        `SELECT id, subject_id, grade_level, section
+        `SELECT id, subject_id, grade_level, section, slot
          FROM teacher_assignments
          WHERE teacher_id = ? AND grade_level = ? AND TRIM(section) = TRIM(?)
            AND school_year = ? AND ${subjectSql}`,
@@ -1237,7 +1243,8 @@ exports.transferAndDeactivate = async (req, res) => {
           replacementId,
           row.grade_level,
           row.section,
-          row.subject_id
+          row.subject_id,
+          row.slot
         );
       }
     }
@@ -1456,6 +1463,7 @@ exports.getTeacherDetail = async (req, res) => {
   try {
     const { id } = req.params;
     await ensureTeachingModeEnum();
+    await ensureAssignmentSlots();
     // Repair empty/invalid teaching_mode from live assignments
     try {
       await syncTeachingModeFromAssignments(db, id);
@@ -1465,7 +1473,7 @@ exports.getTeacherDetail = async (req, res) => {
 
     const [users] = await db.query(
       `SELECT u.id, u.first_name, u.last_name, u.email, u.phone, u.status, u.created_at,
-        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.specialization,
+        tp.teaching_mode, tp.homeroom_grade, tp.homeroom_section, tp.homeroom_role, tp.specialization,
         tp.subjects_taught, tp.grades_handled
        FROM users u
        LEFT JOIN teacher_profiles tp ON u.id = tp.user_id
@@ -1480,7 +1488,7 @@ exports.getTeacherDetail = async (req, res) => {
     const teacher = users[0];
 
     const [assignments] = await db.query(
-      `SELECT DISTINCT ta.grade_level, ta.section, ta.school_year, ta.subject_id, s.NAME as subject_name, s.CODE as subject_code
+      `SELECT DISTINCT ta.grade_level, ta.section, ta.school_year, ta.subject_id, ta.slot, s.NAME as subject_name, s.CODE as subject_code
        FROM teacher_assignments ta
        LEFT JOIN subjects s ON ta.subject_id = s.id
        WHERE ta.teacher_id = ?
@@ -1488,33 +1496,30 @@ exports.getTeacherDetail = async (req, res) => {
       [id]
     );
 
-    const classAdviserAssignments = assignments.filter(a => a.subject_id === null);
-    const subjectAssignments = assignments.filter(a => a.subject_id !== null);
+    const classAdviserAssignments = assignments.filter(a => a.subject_id == null && a.slot !== 'assistant');
+    const assistantAssignments = assignments.filter(a => a.subject_id == null && a.slot === 'assistant');
+    const subjectAssignments = assignments.filter(a => a.subject_id != null);
 
-    // Split: 1-3 subjects under CA class = adviser subjects; 4-6 with subject_id = subject teacher
-    const caKeys = new Set(
-      classAdviserAssignments.map(a => `${a.grade_level}|${String(a.section).trim().toUpperCase()}`)
-    );
+    const classKey = (row) => `${row.grade_level}|${String(row.section).trim().toUpperCase()}`;
+    const adviserKeys = new Set(classAdviserAssignments.map(classKey));
+    const assistantKeys = new Set(assistantAssignments.map(classKey));
     const adviserSubjects = [];
+    const assistantSubjects = [];
     const subjectTeacherOnly = [];
     for (const a of subjectAssignments) {
-      const key = `${a.grade_level}|${String(a.section).trim().toUpperCase()}`;
-      const grade = Number(a.grade_level);
-      if (caKeys.has(key) && grade >= 1 && grade <= 3) {
-        adviserSubjects.push(a);
-      } else if (caKeys.has(key) && grade >= 4 && grade <= 6) {
-        // Subjects the 4-6 CA also teaches in their own class
-        adviserSubjects.push(a);
-      } else {
-        subjectTeacherOnly.push(a);
-      }
+      const key = classKey(a);
+      if (adviserKeys.has(key)) adviserSubjects.push(a);
+      else if (assistantKeys.has(key)) assistantSubjects.push(a);
+      else subjectTeacherOnly.push(a);
     }
 
     res.json({
       ...teacher,
-      teaching_mode_label: teachingModeLabel(teacher.teaching_mode),
+      teaching_mode_label: teachingModeLabel(teacher.teaching_mode, teacher.homeroom_role),
       class_adviser_assignments: classAdviserAssignments,
       adviser_subjects: adviserSubjects,
+      assistant_assignments: assistantAssignments,
+      assistant_subjects: assistantSubjects,
       subject_assignments: subjectTeacherOnly
     });
   } catch (error) {
@@ -1563,8 +1568,39 @@ exports.getParentDetail = async (req, res) => {
   }
 };
 
-// Check if a class adviser already exists for grade/section
-async function getExistingClassAdviser(conn, gradeLevel, section, excludeTeacherId = null) {
+function flagOn(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function homeRoleFromBody(body) {
+  const role = String(body?.home_role || '').trim().toLowerCase();
+  if (role === 'assistant') return 'assistant';
+  if (role === 'adviser' || role === 'class_adviser') return 'adviser';
+  if (flagOn(body?.is_assistant) && !flagOn(body?.is_class_adviser)) return 'assistant';
+  if (flagOn(body?.is_class_adviser)) return 'adviser';
+  return null;
+}
+
+function slotLabel(slot) {
+  return slot === 'assistant' ? 'Assistant Teacher' : 'Class Adviser';
+}
+
+async function insertAssignmentRow(conn, teacherId, assignment) {
+  await conn.query(
+    `INSERT INTO teacher_assignments (teacher_id, grade_level, section, subject_id, school_year, slot)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      teacherId,
+      assignment.grade_level,
+      assignment.section,
+      assignment.subject_id == null ? null : assignment.subject_id,
+      schoolYear,
+      assignment.slot || 'subject'
+    ]
+  );
+}
+
+async function getExistingSlot(conn, gradeLevel, section, slot, excludeTeacherId = null) {
   let query = `
     SELECT u.id, u.first_name, u.last_name, u.email
     FROM teacher_assignments ta
@@ -1572,18 +1608,18 @@ async function getExistingClassAdviser(conn, gradeLevel, section, excludeTeacher
     WHERE ta.grade_level = ?
     AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
     AND ta.subject_id IS NULL
-    AND ta.school_year = '${schoolYear}'
+    AND ta.slot = ?
+    AND ta.school_year = ?
     AND u.status = 'active'
   `;
-  const params = [gradeLevel, section];
-  
+  const params = [gradeLevel, section, slot, schoolYear];
+
   if (excludeTeacherId) {
     query += ' AND ta.teacher_id != ?';
     params.push(excludeTeacherId);
   }
-  
+
   query += ' LIMIT 1';
-  
   const [rows] = await conn.query(query, params);
   return rows.length ? rows[0] : null;
 }
@@ -1640,9 +1676,9 @@ function isLowerGradeLevel(grade) {
   return ['1', '2', '3'].includes(String(grade));
 }
 
-/** Build merged subject rows: 1-3 CA auto-all, 4-6 CA selected, plus ST rows (4-6 only). */
+/** Home-class subjects for Grades 1–6, plus subject rows in other Grades 4–6 sections. */
 async function buildEffectiveSubjectAssignments(conn, {
-  hasClassAdviser,
+  homeRole,
   hasSubjectTeacher,
   class_adviser_grade,
   class_adviser_section,
@@ -1650,19 +1686,7 @@ async function buildEffectiveSubjectAssignments(conn, {
   subject_assignments
 }) {
   let effective = [];
-  const isLowerGrade = hasClassAdviser && isLowerGradeLevel(class_adviser_grade);
-  const isUpperGrade = hasClassAdviser && isUpperGradeLevel(class_adviser_grade);
-
-  if (hasClassAdviser && isLowerGrade && class_adviser_grade && class_adviser_section) {
-    const autoSubjects = await getSubjectsForGrade(conn, class_adviser_grade);
-    effective = effective.concat(autoSubjects.map(s => ({
-      subject_id: s.id,
-      grade_level: String(class_adviser_grade),
-      section: class_adviser_section
-    })));
-  }
-
-  if (hasClassAdviser && isUpperGrade && Array.isArray(class_adviser_subjects)) {
+  if (homeRole && class_adviser_grade && class_adviser_section && Array.isArray(class_adviser_subjects)) {
     effective = effective.concat(class_adviser_subjects.map(sid => ({
       subject_id: Number(sid),
       grade_level: String(class_adviser_grade),
@@ -1674,7 +1698,7 @@ async function buildEffectiveSubjectAssignments(conn, {
     const stRows = normalizeSubjectAssignments(subject_assignments);
     const invalidLower = stRows.find(a => isLowerGradeLevel(a.grade_level));
     if (invalidLower) {
-      const err = new Error('Subject teacher assignments are only for Grades 4–6. Grades 1–3 are covered by the class adviser.');
+      const err = new Error('Subject rows are only for Grades 4–6. Grades 1–3 are covered by the class adviser and assistant teacher.');
       err.status = 400;
       throw err;
     }

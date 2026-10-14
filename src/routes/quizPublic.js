@@ -6,7 +6,7 @@ const router = express.Router();
 const db = require('../../db');
 const {
   ensureQuizShareSchema,
-  publicQuestion,
+  publicQuestionsForQuiz,
   getAssessmentQuestions,
   shuffleQuestionsWithinSections,
   scoreSubmission,
@@ -79,7 +79,7 @@ router.get('/:token', async (req, res) => {
       grade_level: assessment.grade_level,
       section: assessment.section,
       max_score: Number(assessment.max_score) || 100,
-      questions: questions.map(publicQuestion),
+      questions: publicQuestionsForQuiz(questions),
       quiz_mode: makeupIds.length ? 'live_and_makeup' : 'live_only',
       identity_verification: 'lrn_first',
       live_statuses: ['Present', 'Late'],

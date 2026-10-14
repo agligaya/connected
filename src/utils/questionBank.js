@@ -52,6 +52,9 @@ async function ensureQuestionBankSchema(conn = db) {
     `);
 
     try {
+      await conn.query(`ALTER TABLE quiz_sets ADD COLUMN kind VARCHAR(20) NULL`);
+    } catch (e) { /* exists */ }
+    try {
       await conn.query(`ALTER TABLE question_bank ADD COLUMN quiz_set_id INT NULL`);
     } catch (e) { /* exists */ }
     try {
@@ -86,6 +89,24 @@ async function ensureQuestionBankSchema(conn = db) {
       await conn.query(`ALTER TABLE question_bank ADD COLUMN rubric JSON NULL`);
     } catch (e) { /* exists */ }
     try {
+      await conn.query(
+        `ALTER TABLE question_bank ADD COLUMN folder VARCHAR(20) NOT NULL DEFAULT 'quiz'`
+      );
+    } catch (e) { /* exists */ }
+    try {
+      await conn.query(
+        `UPDATE question_bank qb
+         INNER JOIN assessment_questions aq ON aq.question_bank_id = qb.id
+         INNER JOIN assessments a ON a.id = aq.assessment_id AND a.\`TYPE\` = 'exam'
+         SET qb.folder = 'exam'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM assessment_questions aq2
+           INNER JOIN assessments a2 ON a2.id = aq2.assessment_id AND a2.\`TYPE\` <> 'exam'
+           WHERE aq2.question_bank_id = qb.id
+         )`
+      );
+    } catch (e) { /* assessments link may be unavailable during first boot */ }
+    try {
       await conn.query(`ALTER TABLE assessment_questions ADD COLUMN rubric JSON NULL`);
     } catch (e) { /* exists */ }
 
@@ -108,7 +129,20 @@ async function ensureQuestionBankSchema(conn = db) {
 }
 
 /** Canonical classwork item types (quiz + activity). */
-const ITEM_TYPES = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
+const ITEM_TYPES = [
+  'mcq', 'true_false', 'fill_blank', 'matching', 'sequencing',
+  'identification', 'enumeration', 'short_answer', 'activity'
+];
+
+function storesChoiceList(type) {
+  const t = String(type || '').toLowerCase();
+  return ['mcq', 'true_false', 'fill_blank', 'matching', 'sequencing', 'identification'].includes(t);
+}
+
+function normalizeTrueFalseAnswer(raw) {
+  const a = String(raw || '').trim().toLowerCase();
+  return (a === 'false' || a === 'f' || a === 'no') ? 'False' : 'True';
+}
 
 function isActivityType(type) {
   const t = String(type || '').toLowerCase();
@@ -306,27 +340,57 @@ function rubricFromActivityDraft(part) {
 function quizItemsFromDraft(part) {
   if (!part || typeof part !== 'object') return [];
   const items = Array.isArray(part.items) ? part.items : [];
-  return items
+  const rows = items
     .map((it) => {
-      const question = String(it?.question || '').trim();
+      let question = String(it?.question || '').trim();
       if (!question) return null;
       const choices = normalizeChoices(it.choices);
       const answer = it.answer != null ? String(it.answer).trim().slice(0, 500) : null;
       const points = Math.max(0.5, Number(it.points) || 1);
       let item_type = canonicalItemType(it.type || it.item_type || '');
       if (!ITEM_TYPES.includes(item_type) || isActivityType(item_type)) {
-        item_type = choices && choices.length ? 'mcq' : 'identification';
+        item_type = choices && choices.length ? 'mcq' : 'short_answer';
+      }
+      let nextChoices = storesChoiceList(item_type) ? choices : null;
+      let nextAnswer = answer;
+      if (item_type === 'true_false') {
+        nextChoices = ['True', 'False'];
+        nextAnswer = normalizeTrueFalseAnswer(answer);
+      } else if (item_type === 'fill_blank' && question && !/_{3,}/.test(question)) {
+        question = `${question} _____`;
+      } else if (item_type === 'matching' && nextChoices && nextChoices.length) {
+        nextAnswer = nextChoices.join('; ').slice(0, 500);
+      } else if (item_type === 'sequencing' && nextChoices && nextChoices.length) {
+        nextAnswer = nextChoices.join(' | ').slice(0, 500);
       }
       return {
         item_type,
         question,
-        choices: item_type === 'mcq' ? choices : null,
-        answer,
+        choices: nextChoices,
+        answer: nextAnswer,
         points,
         rubric: null
       };
     })
     .filter(Boolean);
+  const idKeys = new Set(
+    rows
+      .filter((row) => row.item_type === 'identification')
+      .map((row) => String(row.answer || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const seenId = new Set();
+  return rows.filter((row) => {
+    if (row.item_type !== 'identification') return true;
+    const key = String(row.answer || '').trim().toLowerCase();
+    if (!key || seenId.has(key)) return false;
+    seenId.add(key);
+    if (Array.isArray(row.choices)) {
+      const extras = row.choices.filter((c) => !idKeys.has(String(c).trim().toLowerCase()));
+      row.choices = extras.length ? extras : null;
+    }
+    return true;
+  });
 }
 
 function activityFromDraft(part) {
@@ -349,11 +413,12 @@ const activityPromptFromDraft = activityFromDraft;
 
 async function insertBankItem(teacherId, setId, meta, item) {
   const rubricJson = item.rubric ? JSON.stringify(normalizeRubric(item.rubric, item.points) || item.rubric) : null;
+  const folder = String(meta.folder || '').toLowerCase() === 'exam' ? 'exam' : 'quiz';
   const [result] = await db.query(
     `INSERT INTO question_bank
       (teacher_id, quiz_set_id, subject_id, grade_level, lesson_plan_id, lesson_title,
-       item_type, question, choices, answer, points, rubric, source, ai_recommendation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       item_type, question, choices, answer, points, rubric, source, ai_recommendation_id, folder)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       teacherId,
       setId,
@@ -368,14 +433,15 @@ async function insertBankItem(teacherId, setId, meta, item) {
       item.points,
       rubricJson,
       meta.source || 'ai',
-      meta.aiRecommendationId || null
+      meta.aiRecommendationId || null,
+      folder
     ]
   );
   return result.insertId;
 }
 
 /**
- * Create a quiz set from an AI draft and attach all items under it.
+ * Save each present part of an AI draft as its own Classwork set.
  */
 async function saveDraftPartsToBank({
   teacherId,
@@ -385,92 +451,128 @@ async function saveDraftPartsToBank({
   lessonTitle,
   aiRecommendationId,
   content,
-  types = ['quiz', 'activity']
+  types = ['quiz', 'activity'],
+  folder = 'quiz',
+  title = ''
 }) {
   await ensureQuestionBankSchema();
 
-  if (aiRecommendationId) {
-    const [[existingSet]] = await db.query(
-      `SELECT id, title FROM quiz_sets
-       WHERE teacher_id = ? AND ai_recommendation_id = ? AND status = 'active'
-       LIMIT 1`,
-      [teacherId, aiRecommendationId]
-    );
-    if (existingSet) {
-      const [items] = await db.query(
-        `SELECT id FROM question_bank WHERE quiz_set_id = ? AND status = 'active'`,
-        [existingSet.id]
+  const examFolder = String(folder || '').toLowerCase() === 'exam';
+  const parts = [];
+  if (!examFolder && types.includes('activity') && content?.activity) {
+    parts.push({
+      kind: 'activity',
+      folder: 'quiz',
+      title: String(title || '').trim() ||
+        content.activity.title ||
+        (lessonTitle ? `Activity — ${lessonTitle}` : 'Activity')
+    });
+  }
+  if ((examFolder || types.includes('quiz')) && content?.quiz) {
+    parts.push({
+      kind: examFolder ? 'exam' : 'quizzes',
+      folder: examFolder ? 'exam' : 'quiz',
+      title: String(title || '').trim() ||
+        content.quiz.title ||
+        (lessonTitle ? `Quiz — ${lessonTitle}` : 'Quiz')
+    });
+  }
+  if (!parts.length) {
+    const fallbackTitle = String(title || lessonTitle || 'Classwork').trim().slice(0, 255) || 'Classwork';
+    return { created: 0, skipped: 0, ids: [], quiz_set_id: null, kind: null, title: fallbackTitle, sets: [] };
+  }
+
+  const saved = [];
+  for (const part of parts) {
+    const setTitle = String(part.title).trim().slice(0, 255) || 'Classwork';
+    if (aiRecommendationId) {
+      const [[existingSet]] = await db.query(
+        `SELECT id, title, kind FROM quiz_sets
+         WHERE teacher_id = ? AND ai_recommendation_id = ? AND status = 'active'
+           AND (kind = ? OR (kind IS NULL AND ? = 'quizzes'))
+         LIMIT 1`,
+        [teacherId, aiRecommendationId, part.kind, part.kind]
       );
-      return {
-        created: 0,
-        skipped: items.length,
-        ids: items.map((r) => r.id),
-        quiz_set_id: existingSet.id,
-        title: existingSet.title,
-        already_exists: true
-      };
+      if (existingSet) {
+        const [items] = await db.query(
+          `SELECT id FROM question_bank WHERE quiz_set_id = ? AND status = 'active'`,
+          [existingSet.id]
+        );
+        saved.push({
+          created: 0,
+          ids: items.map((r) => r.id),
+          quiz_set_id: existingSet.id,
+          kind: part.kind,
+          title: existingSet.title,
+          already_exists: true
+        });
+        continue;
+      }
     }
-  }
 
-  const quizTitle =
-    (content?.quiz && content.quiz.title) ||
-    (lessonTitle ? `Quiz — ${lessonTitle}` : 'Quiz set');
-  const setTitle = String(quizTitle).trim().slice(0, 255) || 'Quiz set';
-
-  const [setResult] = await db.query(
-    `INSERT INTO quiz_sets
-      (teacher_id, title, subject_id, grade_level, lesson_plan_id, lesson_title,
-       ai_recommendation_id, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'ai')`,
-    [
-      teacherId,
-      setTitle,
-      subjectId || null,
-      Number(gradeLevel),
-      lessonPlanId || null,
-      lessonTitle ? String(lessonTitle).slice(0, 255) : null,
-      aiRecommendationId || null
-    ]
-  );
-  const setId = setResult.insertId;
-  const meta = {
-    subjectId,
-    gradeLevel,
-    lessonPlanId,
-    lessonTitle,
-    aiRecommendationId,
-    source: 'ai'
-  };
-
-  const inserted = [];
-
-  if (types.includes('quiz') && content?.quiz) {
-    for (const item of quizItemsFromDraft(content.quiz)) {
-      const id = await insertBankItem(teacherId, setId, meta, item);
-      inserted.push({ id, skipped: false, item_type: item.item_type });
+    const [setResult] = await db.query(
+      `INSERT INTO quiz_sets
+        (teacher_id, title, subject_id, grade_level, lesson_plan_id, lesson_title,
+         ai_recommendation_id, source, kind)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'ai', ?)`,
+      [
+        teacherId,
+        setTitle,
+        subjectId || null,
+        Number(gradeLevel),
+        lessonPlanId || null,
+        lessonTitle ? String(lessonTitle).slice(0, 255) : null,
+        aiRecommendationId || null,
+        part.kind
+      ]
+    );
+    const setId = setResult.insertId;
+    const meta = {
+      subjectId,
+      gradeLevel,
+      lessonPlanId,
+      lessonTitle,
+      aiRecommendationId,
+      source: 'ai',
+      folder: part.folder
+    };
+    const inserted = [];
+    if (part.kind === 'activity') {
+      const prompt = activityPromptFromDraft(content.activity);
+      if (prompt) {
+        const id = await insertBankItem(teacherId, setId, meta, prompt);
+        inserted.push(id);
+      }
+    } else {
+      for (const item of quizItemsFromDraft(content.quiz)) {
+        const id = await insertBankItem(teacherId, setId, meta, item);
+        inserted.push(id);
+      }
     }
-  }
-
-  if (types.includes('activity') && content?.activity) {
-    const prompt = activityPromptFromDraft(content.activity);
-    if (prompt) {
-      const id = await insertBankItem(teacherId, setId, meta, prompt);
-      inserted.push({ id, skipped: false, item_type: prompt.item_type });
+    if (!inserted.length) {
+      await db.query(`UPDATE quiz_sets SET status = 'archived' WHERE id = ?`, [setId]);
+      continue;
     }
+    saved.push({
+      created: inserted.length,
+      ids: inserted,
+      quiz_set_id: setId,
+      kind: part.kind,
+      title: setTitle,
+      already_exists: false
+    });
   }
 
-  // Drop empty set
-  if (!inserted.length) {
-    await db.query(`UPDATE quiz_sets SET status = 'archived' WHERE id = ?`, [setId]);
-    return { created: 0, skipped: 0, ids: [], quiz_set_id: null, title: setTitle };
-  }
-
+  const primary = saved[0] || null;
   return {
-    created: inserted.length,
-    skipped: 0,
-    ids: inserted.map((r) => r.id),
-    quiz_set_id: setId,
-    title: setTitle
+    created: saved.reduce((sum, row) => sum + row.created, 0),
+    skipped: saved.filter((row) => row.already_exists).reduce((sum, row) => sum + row.ids.length, 0),
+    ids: saved.flatMap((row) => row.ids),
+    quiz_set_id: primary ? primary.quiz_set_id : null,
+    kind: primary ? primary.kind : null,
+    title: primary ? primary.title : parts[0].title,
+    already_exists: saved.length > 0 && saved.every((row) => row.already_exists),
+    sets: saved
   };
 }
 
@@ -548,6 +650,10 @@ async function migrateOrphanBankItems(teacherId) {
 function bankItemTypeLabel(type) {
   const t = canonicalItemType(type);
   if (t === 'mcq') return 'Multiple choice';
+  if (t === 'true_false') return 'True or False';
+  if (t === 'fill_blank') return 'Fill in the blank';
+  if (t === 'matching') return 'Matching';
+  if (t === 'sequencing') return 'Sequencing';
   if (t === 'identification') return 'Identification';
   if (t === 'enumeration') return 'Enumeration';
   if (t === 'short_answer') return 'Short answer';
@@ -555,7 +661,10 @@ function bankItemTypeLabel(type) {
   return type ? String(type) : 'Multiple choice';
 }
 
-const TYPE_ORDER = ['mcq', 'identification', 'enumeration', 'short_answer', 'activity'];
+const TYPE_ORDER = [
+  'mcq', 'true_false', 'fill_blank', 'matching', 'sequencing',
+  'identification', 'enumeration', 'short_answer', 'activity'
+];
 
 function groupItemsByType(items) {
   const map = new Map();
@@ -583,9 +692,12 @@ function groupItemsByType(items) {
 function groupItemsByCategory(items) {
   const quizItems = [];
   const activityItems = [];
+  const examItems = [];
   for (const item of items || []) {
     if (isActivityType(item.item_type)) {
       activityItems.push({ ...item, item_type: 'activity' });
+    } else if (String(item.folder || '').toLowerCase() === 'exam') {
+      examItems.push(item);
     } else {
       quizItems.push(item);
     }
@@ -605,6 +717,14 @@ function groupItemsByCategory(items) {
       label: 'Activity',
       item_count: activityItems.length,
       groups: groupItemsByType(activityItems)
+    });
+  }
+  if (examItems.length) {
+    categories.push({
+      category: 'exam',
+      label: 'Exam',
+      item_count: examItems.length,
+      groups: groupItemsByType(examItems)
     });
   }
   return categories;
@@ -633,6 +753,8 @@ module.exports = {
   isActivityType,
   canonicalItemType,
   isAllowedItemType,
+  storesChoiceList,
+  normalizeTrueFalseAnswer,
   ITEM_TYPES,
   TYPE_ORDER,
   DEFAULT_RUBRIC_LEVEL_LABELS

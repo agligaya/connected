@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261010m5" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261013e9" />
 
 </head>
 <body data-view="login">
@@ -237,6 +237,27 @@
                       </div>
                     </div>
                     <div class="teacher-progress-all" id="teacher-progress-all" hidden></div>
+                  </div>
+
+                  <div class="chart-card teacher-progress-card" id="teacher-subject-reports" hidden>
+                    <h3 class="page-heading font-heading" style="font-size:1rem;margin:0 0 4px;">Subject teachers</h3>
+                    <p class="page-subheading" id="teacher-subject-reports-empty" hidden>No other subject teachers are assigned to this class yet.</p>
+                    <div id="teacher-subject-reports-body">
+                      <div class="subject-record-meta">
+                        <label for="teacher-subject-record-select">Subject
+                          <select id="teacher-subject-record-select"></select>
+                        </label>
+                        <div class="subject-record-field">
+                          <span>Section</span>
+                          <strong id="teacher-subject-record-section"></strong>
+                        </div>
+                        <div class="subject-record-field">
+                          <span>Teacher</span>
+                          <strong id="teacher-subject-record-teacher"></strong>
+                        </div>
+                      </div>
+                      <div id="teacher-subject-record-sheets"></div>
+                    </div>
                   </div>
 
                   <div class="chart-card teacher-progress-card" id="teacher-today-inbox-card">
@@ -540,7 +561,6 @@
                     </div>
                     <div class="qb-header-actions">
                       <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-add-quiz-btn">+ Add Classwork</button>
-                      <button type="button" class="btn-toolbar btn-toolbar--outline" id="qb-create-exam-btn">+ Create Exam</button>
                       <button type="button" class="btn-toolbar btn-toolbar--solid" id="qb-create-progress-btn" hidden disabled>Next</button>
                     </div>
                   </div>
@@ -553,6 +573,10 @@
                     <div class="download-menu" id="qb-filter-subject-menu">
                       <button type="button" class="chip-ghost" id="qb-filter-subject-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by subject">All Subjects ▾</button>
                       <div class="download-menu-panel download-menu-panel--scroll" id="qb-filter-subject-panel" hidden></div>
+                    </div>
+                    <div class="download-menu" id="qb-filter-kind-menu">
+                      <button type="button" class="chip-ghost" id="qb-filter-kind-btn" aria-haspopup="true" aria-expanded="false" aria-label="Filter by quiz, activity, or exam">All types ▾</button>
+                      <div class="download-menu-panel" id="qb-filter-kind-panel" hidden></div>
                     </div>
                   </div>
 
@@ -1190,35 +1214,55 @@
   <div id="ai-generate-count-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:440px;">
       <h3 class="font-heading" id="ai-generate-modal-title">Generate AI Draft</h3>
-      <p class="page-subheading">How many items should the draft include?</p>
+      <p class="page-subheading" id="ai-generate-lead">Choose a quiz or an activity.</p>
       <input type="hidden" id="ai-generate-lesson-id" />
       <input type="hidden" id="ai-generate-mode" value="generate" />
       <input type="hidden" id="ai-generate-rec-id" />
-      <div class="ai-count-chips" id="ai-generate-count-chips" role="group" aria-label="Item count">
-        <button type="button" class="chip-ghost ai-count-chip active" data-count="10">10</button>
-        <button type="button" class="chip-ghost ai-count-chip" data-count="20">20</button>
-        <button type="button" class="chip-ghost ai-count-chip" data-count="30">30</button>
+      <div class="ai-kind-choice" id="ai-generate-kind" role="group" aria-label="Draft kind">
+        <button type="button" class="btn-solid" id="ai-generate-kind-quiz">Quiz</button>
+        <button type="button" class="btn-outline" id="ai-generate-kind-activity">Activity</button>
       </div>
-      <div class="field-small" style="margin-top:12px;">
-        <label for="ai-generate-count-custom">Or custom (5–30)</label>
-        <input type="number" id="ai-generate-count-custom" min="5" max="30" placeholder="e.g. 15" />
-      </div>
-      <div class="field-small" style="margin-top:14px;">
+      <div class="field-small" id="ai-generate-quiz-fields" style="margin-top:14px;">
         <span class="page-subheading" style="display:block;margin:0 0 8px;">Quiz item types (pick one or more)</span>
         <div class="ai-type-checks" role="group" aria-label="Quiz item types">
-          <label class="ai-type-check">
-            <input type="checkbox" name="ai-quiz-type" value="mcq" checked />
-            Multiple choice
-          </label>
-          <label class="ai-type-check">
-            <input type="checkbox" name="ai-quiz-type" value="identification" checked />
-            Identification
-          </label>
-          <label class="ai-type-check">
-            <input type="checkbox" name="ai-quiz-type" value="enumeration" checked />
-            Enumeration
-          </label>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="mcq" /> Multiple choice</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="mcq" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="true_false" /> True or False</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="true_false" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="fill_blank" /> Fill in the blank</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="fill_blank" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="matching" /> Matching</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="matching" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="sequencing" /> Sequencing</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="sequencing" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="identification" /> Identification</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="identification" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="enumeration" /> Enumeration</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="enumeration" min="1" max="20" placeholder="Items" hidden />
+          </div>
+          <div class="ai-type-check">
+            <label><input type="checkbox" name="ai-quiz-type" value="short_answer" /> Short answer</label>
+            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="short_answer" min="1" max="20" placeholder="Items" hidden />
+          </div>
         </div>
+      </div>
+      <p class="page-subheading" id="ai-generate-activity-note" hidden>This generates one classroom activity with a rubric.</p>
+      <div class="field-small">
+        <label for="ai-generate-focus">Description</label>
+        <textarea id="ai-generate-focus" rows="2" maxlength="500"></textarea>
       </div>
       <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="ai-generate-count-cancel" data-modal-cancel>Cancel</button>
@@ -1227,13 +1271,14 @@
     </div>
   </div>
 
-  <div id="ai-generating-modal" class="modal-overlay modal-overlay--blocking" hidden aria-live="polite" aria-busy="true">
+  <div id="ai-generating-modal" class="ai-generating-dock" hidden aria-live="polite" aria-busy="true">
     <div class="modal-card ai-generating-card" role="status">
       <div class="ai-generating-spinner" aria-hidden="true"></div>
       <h3 class="font-heading" id="ai-generating-title">Generating AI Draft</h3>
-      <p class="page-subheading" id="ai-generating-message">
-        Please wait...
-      </p>
+      <div class="ai-generating-track" aria-hidden="true">
+        <div class="ai-generating-fill" id="ai-generating-fill"></div>
+      </div>
+      <p class="page-subheading" id="ai-generating-message">Reading the lesson</p>
     </div>
   </div>
 
@@ -1318,7 +1363,7 @@
   </div>
 
   <div id="progress-create-modal" class="modal-overlay" hidden>
-    <div class="modal-card" style="max-width:480px;">
+    <div class="modal-card modal-card--wide">
       <h3 class="font-heading">New Record</h3>
       <p class="page-subheading">Manual score entry for the selected class. For a live ConnectED link, create from Classwork instead.</p>
       <div class="field-small">
@@ -1350,13 +1395,119 @@
         </div>
         <div class="field-small">
           <label for="progress-max">Total score</label>
-          <input type="number" id="progress-max" min="1" max="999" value="100" />
+          <input type="number" id="progress-max" min="0" max="999" value="0" />
         </div>
+      </div>
+      <div id="progress-rubric-wrap" hidden>
+        <div class="qb-rubric-header">
+          <h4 class="progress-detail-section-title" style="margin:0;">Rubric</h4>
+        </div>
+        <p class="page-subheading" style="margin:6px 0 8px;">Score each criterion. The total is the sum of the category max points.</p>
+        <div id="progress-rubric-list" class="qb-rubric-list"></div>
+        <button type="button" class="chip-ghost" id="progress-rubric-add" style="margin-top:8px;">+ Add Category</button>
       </div>
       <p id="progress-create-msg" class="inline-message"></p>
       <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="progress-create-cancel" data-modal-cancel>Cancel</button>
         <button type="button" class="btn-solid" id="progress-create-save">Create Record</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-exam-choice-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:420px;">
+      <h3 class="font-heading">Create Exam</h3>
+      <p class="page-subheading">Choose how to build this exam questionnaire.</p>
+      <div class="qb-exam-choice-actions">
+        <button type="button" class="btn-solid" id="qb-exam-choice-ai">Generate with AI</button>
+        <button type="button" class="btn-outline" id="qb-exam-choice-type">Type each question</button>
+        <button type="button" class="btn-outline" id="qb-exam-choice-cancel" data-modal-cancel>Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-exam-ai-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:520px;">
+      <h3 class="font-heading">Generate exam with AI</h3>
+      <p class="page-subheading">Use lessons already in Materials, or upload files for this exam.</p>
+      <div class="qb-exam-choice-actions" id="qb-exam-ai-modes">
+        <button type="button" class="btn-solid" id="qb-exam-ai-mode-lessons">Existing lessons</button>
+        <button type="button" class="btn-outline" id="qb-exam-ai-mode-files">Upload files</button>
+      </div>
+      <div id="qb-exam-ai-lessons-panel">
+        <div class="field-small">
+          <label for="qb-exam-ai-lesson-subject">Subject</label>
+          <select id="qb-exam-ai-lesson-subject">
+            <option value="">-- Select Subject --</option>
+          </select>
+        </div>
+        <div id="qb-exam-ai-lesson-list" class="qb-exam-ai-lesson-list" role="group" aria-label="Lessons" hidden></div>
+        <p class="page-subheading" id="qb-exam-ai-lesson-empty" hidden>No lesson files yet. Upload files instead, or add one in Materials.</p>
+      </div>
+      <div id="qb-exam-ai-files-panel" hidden>
+        <div class="field-small">
+          <label for="qb-exam-ai-grade">Grade</label>
+          <select id="qb-exam-ai-grade"></select>
+        </div>
+        <div class="field-small">
+          <label for="qb-exam-ai-subject">Subject</label>
+          <select id="qb-exam-ai-subject"></select>
+          <p class="page-subheading">These files are saved under this subject in Materials.</p>
+        </div>
+        <div class="field-small">
+          <label for="qb-exam-ai-files">Files</label>
+          <input type="file" id="qb-exam-ai-files" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple />
+          <p class="page-subheading">PDF, DOC, or DOCX. You can choose more than one.</p>
+        </div>
+      </div>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" id="qb-exam-ai-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-solid" id="qb-exam-ai-go" disabled>Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-exam-ai-save-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:460px;">
+      <h3 class="font-heading">Save to Classwork</h3>
+      <p class="page-subheading" id="qb-exam-ai-save-note">Save these questions in Classwork so you can check and edit them before they go to Records.</p>
+      <div class="field-small">
+        <label for="qb-exam-ai-save-title">Exam title</label>
+        <input type="text" id="qb-exam-ai-save-title" />
+      </div>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" id="qb-exam-ai-save-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-solid" id="qb-exam-ai-save-go">Save to Classwork</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="qb-exam-write-modal" class="modal-overlay" hidden>
+    <div class="modal-card" style="max-width:520px;">
+      <h3 class="font-heading">Type exam questions</h3>
+      <p class="page-subheading">Add questions one at a time, using the same form as a quiz. Then create the exam.</p>
+      <div class="field-small">
+        <label for="qb-exam-write-title">Exam title</label>
+        <input type="text" id="qb-exam-write-title" placeholder="e.g., Q1 Science exam" />
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-write-class">Class</label>
+        <select id="qb-exam-write-class"></select>
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-write-subject">Subject</label>
+        <select id="qb-exam-write-subject"></select>
+      </div>
+      <div class="field-small">
+        <label for="qb-exam-write-quarter">Grading period</label>
+        <select id="qb-exam-write-quarter"></select>
+      </div>
+      <p class="page-subheading" id="qb-exam-write-count" style="margin:12px 0 6px;">No questions yet.</p>
+      <ol id="qb-exam-write-list" class="qb-exam-write-list"></ol>
+      <div class="modal-form-actions modal-form-actions--match">
+        <button type="button" class="btn-outline" id="qb-exam-write-cancel" data-modal-cancel>Cancel</button>
+        <button type="button" class="btn-outline" id="qb-exam-write-add">Add question</button>
+        <button type="button" class="btn-solid" id="qb-exam-write-create" disabled>Create exam</button>
       </div>
     </div>
   </div>
@@ -1428,13 +1579,24 @@
         <label for="qb-create-title">Title</label>
         <input type="text" id="qb-create-title" placeholder="e.g., Quiz — Algebra week 1" />
       </div>
-      <div class="field-small">
+      <div class="field-small" id="qb-create-type-field">
         <label for="qb-create-type">Type</label>
         <select id="qb-create-type">
           <option value="quiz">Quiz</option>
           <option value="activity">Activity</option>
           <option value="exam">Exam</option>
         </select>
+      </div>
+      <div id="qb-create-activity-fields" hidden>
+        <div class="field-small">
+          <span id="qb-create-activity-mode-label">Setting</span>
+          <label><input type="radio" name="qb-create-activity-mode" value="classroom" /> Classroom activity</label>
+          <label><input type="radio" name="qb-create-activity-mode" value="take_home" /> Take home</label>
+        </div>
+        <div class="field-small">
+          <label for="qb-create-target">Target date</label>
+          <input type="datetime-local" id="qb-create-target" />
+        </div>
       </div>
       <div class="field-small">
         <label for="qb-create-class">Class (assigned only)</label>
@@ -1463,8 +1625,17 @@
   <div id="qb-add-quiz-modal" class="modal-overlay" hidden>
     <div class="modal-card" style="max-width:460px;">
       <h3 class="font-heading">Add Classwork</h3>
-      <p class="page-subheading">Create a blank classwork set you can fill with quiz and activity items.</p>
+      <p class="page-subheading">Create a quiz, activity, or exam.</p>
       <form id="qb-add-quiz-form">
+        <div class="field-small">
+          <label for="qb-add-kind">Type</label>
+          <select id="qb-add-kind" required>
+            <option value="quizzes">Quiz</option>
+            <option value="activity">Activity</option>
+            <option value="exam">Exam</option>
+          </select>
+        </div>
+        <div id="qb-add-details">
         <div class="field-small">
           <label for="qb-add-title">Title</label>
           <input type="text" id="qb-add-title" placeholder="e.g., Fractions Week 2" required />
@@ -1483,9 +1654,10 @@
             </select>
           </div>
         </div>
+        </div>
         <div class="modal-form-actions modal-form-actions--match">
           <button type="button" class="btn-outline" id="qb-add-quiz-cancel" data-modal-cancel>Cancel</button>
-          <button type="submit" class="btn-solid">Create Set</button>
+          <button type="submit" class="btn-solid" id="qb-add-submit">Create</button>
         </div>
       </form>
     </div>
@@ -1502,6 +1674,10 @@
             <label for="qb-edit-type">Item type</label>
             <select id="qb-edit-type">
               <option value="mcq">Multiple choice</option>
+              <option value="true_false">True or False</option>
+              <option value="fill_blank">Fill in the blank</option>
+              <option value="matching">Matching</option>
+              <option value="sequencing">Sequencing</option>
               <option value="identification">Identification</option>
               <option value="enumeration">Enumeration</option>
               <option value="short_answer">Short answer</option>
@@ -1517,15 +1693,20 @@
         </div>
         <div class="form-row" id="qb-edit-choices-wrap">
           <div class="field-small span-full">
-            <label>Choices</label>
+            <label id="qb-edit-choices-label">Choices</label>
             <div id="qb-edit-choices-list" class="qb-choices-list"></div>
-            <p class="page-subheading">Enter adds the next letter (A, B, C…). Long text wraps in the same box.</p>
+            <p class="page-subheading" id="qb-edit-choices-hint">Enter adds the next letter (A, B, C…). Long text wraps in the same box.</p>
           </div>
         </div>
         <div class="form-row" id="qb-edit-answer-wrap">
           <div class="field-small span-full">
-            <label for="qb-edit-answer">Correct Answer</label>
+            <label for="qb-edit-answer" id="qb-edit-answer-label">Correct Answer</label>
             <input type="text" id="qb-edit-answer" placeholder="A" autocomplete="off" />
+            <select id="qb-edit-answer-tf" hidden>
+              <option value="True">True</option>
+              <option value="False">False</option>
+            </select>
+            <textarea id="qb-edit-answer-long" rows="3" hidden placeholder="Model answer the teacher can compare"></textarea>
           </div>
         </div>
         <div class="form-row admin-edit-form-row-2">
@@ -1648,15 +1829,15 @@
 
       <div class="form-row" style="margin-bottom:16px;">
         <div class="field-small span-full">
-          <label class="teaching-role-heading">Teaching Role <small>(check all that apply)</small></label>
+          <label class="teaching-role-heading">Home class</label>
           <div id="edit-teaching-role-list" style="margin-top:6px;">
             <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-              <input type="checkbox" id="edit-role-class-adviser" onchange="toggleEditClassAdviser()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+              <input type="radio" name="edit-teacher-home-role" id="edit-role-adviser" value="adviser" onchange="toggleEditClassAdviser()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
               <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Class Adviser</span>
             </label>
             <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-              <input type="checkbox" id="edit-role-subject-teacher" onchange="toggleEditSubjectTeacher()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
-              <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Subject Teacher</span>
+              <input type="radio" name="edit-teacher-home-role" id="edit-role-assistant" value="assistant" onchange="toggleEditClassAdviser()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+              <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Assistant Teacher</span>
             </label>
           </div>
         </div>
@@ -1664,7 +1845,7 @@
 
       <!-- Class Adviser Assignment -->
       <div id="edit-class-adviser-fields" class="form-row" style="display:none;">
-        <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;">Class Adviser Assignment</div>
+        <div id="edit-class-adviser-fields-title" style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;grid-column:1 / -1;">Class Adviser Assignment</div>
         <div class="field-small">
           <label for="edit-class-adviser-grade">Grade Level</label>
           <select id="edit-class-adviser-grade" onchange="loadEditClassAdviserSections()">
@@ -1679,32 +1860,38 @@
         </div>
         <div class="field-small">
           <label for="edit-class-adviser-section">Section</label>
-          <div id="edit-class-adviser-section-wrap">
-            <select id="edit-class-adviser-section" disabled onchange="handleSectionSelect(this, 'edit-class-adviser-new-section')">
+            <div id="edit-class-adviser-section-wrap">
+            <select id="edit-class-adviser-section" disabled onchange="onClassAdviserSectionChange(this, 'edit-class-adviser-new-section', 'edit')">
               <option value="">-- Select Grade First --</option>
             </select>
+            <input type="text" id="edit-class-adviser-new-section" placeholder="e.g., A, Bonifacio" hidden maxlength="10">
           </div>
-          <input type="text" id="edit-class-adviser-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
           <small id="edit-class-adviser-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
         </div>
       </div>
 
       <p id="edit-class-adviser-auto-note" class="inline-message" style="display:none;margin:4px 0 8px;">
-        Grades 1–3: this class adviser automatically teaches all subjects for the class. Subject teacher rows are only for Grades 4–6.
+        Grades 1–3: only the class adviser and assistant teacher cover this class. Each one selects the subjects they handle.
       </p>
 
-      <!-- Subjects Taught by Class Adviser (Grades 4-6) -->
+      <!-- Subjects taught in this class (Grades 1-6) -->
       <div id="edit-class-adviser-subjects-wrap" class="form-row" style="display:none;margin-top:8px;">
         <div class="field-small span-full">
-          <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects Taught by this Class Adviser (Grades 4–6)</label>
+          <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects this teacher handles in this class</label>
+          <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">Select the subjects you handle in your class.</p>
           <div id="edit-class-adviser-subjects-list" class="admin-subject-check-grid"></div>
         </div>
       </div>
 
+      <label id="edit-teacher-also-teaches-wrap" style="display:none;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+        <input type="checkbox" id="edit-teacher-also-teaches" onchange="syncEditSubjectPanel()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+        <span id="edit-teacher-also-teaches-label" style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Also handles subjects in other grade levels or sections</span>
+      </label>
+
       <!-- Subject Teacher Assignments -->
       <div id="edit-subject-teacher-fields" style="display:none;">
-        <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6 only)</div>
-        <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser.</p>
+        <div id="edit-subject-teacher-title" style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6)</div>
+        <p id="edit-subject-teacher-help" style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser and assistant teacher.</p>
         <div id="edit-subject-assignments-container">
           <!-- Dynamic rows inserted here -->
         </div>
@@ -1721,7 +1908,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261010m8" type="module"></script>
+  <script src="/js/app.js?v=20261013e11" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -2024,21 +2211,21 @@
       <div id="teacher-fields">
         <div class="form-row" style="margin-bottom:16px;">
           <div class="field-small span-full">
-            <label class="teaching-role-heading">Teaching Role <small>(check all that apply)</small></label>
+            <label class="teaching-role-heading">Home class</label>
             <div id="teaching-role-list" style="margin-top:6px;">
               <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-                <input type="checkbox" id="teacher-role-class-adviser" onchange="toggleClassAdviserFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+                <input type="radio" name="teacher-home-role" id="teacher-role-adviser" value="adviser" onchange="toggleClassAdviserFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
                 <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Class Adviser</span>
               </label>
               <label style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
-                <input type="checkbox" id="teacher-role-subject-teacher" onchange="toggleSubjectTeacherFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
-                <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Subject Teacher</span>
+                <input type="radio" name="teacher-home-role" id="teacher-role-assistant" value="assistant" onchange="toggleClassAdviserFields()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+                <span style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Assistant Teacher</span>
               </label>
             </div>
           </div>
         </div>
         <div id="class-adviser-fields" class="form-row" style="display:none;">
-          <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;">Class Adviser Assignment</div>
+          <div id="class-adviser-fields-title" style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:4px 0 8px;width:100%;grid-column:1 / -1;">Class Adviser Assignment</div>
           <div class="field-small">
             <label for="class-adviser-grade">Grade Level</label>
             <select id="class-adviser-grade" onchange="loadClassAdviserSections()">
@@ -2054,26 +2241,31 @@
           <div class="field-small">
             <label for="class-adviser-section">Section</label>
             <div id="class-adviser-section-wrap">
-              <select id="class-adviser-section" disabled onchange="handleSectionSelect(this, 'class-adviser-new-section')">
+              <select id="class-adviser-section" disabled onchange="onClassAdviserSectionChange(this, 'class-adviser-new-section', 'create')">
                 <option value="">-- Select Grade First --</option>
               </select>
+              <input type="text" id="class-adviser-new-section" placeholder="e.g., A, Bonifacio" hidden maxlength="10">
             </div>
-            <input type="text" id="class-adviser-new-section" placeholder="e.g., A, Bonifacio" style="display:none;width:100%;padding:6px;font-size:0.85rem;border:1px solid var(--border-maroon);border-radius:6px;margin-top:4px;" maxlength="10">
             <small id="class-adviser-section-error" style="color:#b71c1c;font-size:0.75rem;display:none;"></small>
           </div>
         </div>
         <p id="class-adviser-auto-note" class="inline-message" style="display:none;margin:4px 0 8px;width:100%;">
-          Grades 1–3: this class adviser automatically teaches all subjects for the class. Subject teacher rows are only for Grades 4–6.
+          Grades 1–3: only the class adviser and assistant teacher cover this class. Each one selects the subjects they handle.
         </p>
         <div id="class-adviser-subjects-wrap" class="form-row" style="display:none;margin-top:8px;">
           <div class="field-small span-full">
-            <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects Taught by this Class Adviser (Grades 4–6)</label>
+            <label style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;">Subjects this teacher handles in this class</label>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">Select the subjects you handle in your class.</p>
             <div id="class-adviser-subjects-list" class="admin-subject-check-grid"></div>
           </div>
         </div>
+        <label id="teacher-also-teaches-wrap" style="display:none;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-maroon);cursor:pointer;font-size:0.9rem;width:100%;box-sizing:border-box;">
+          <input type="checkbox" id="teacher-also-teaches" onchange="syncCreateSubjectPanel()" style="width:18px;height:18px;cursor:pointer;flex-shrink:0;">
+          <span id="teacher-also-teaches-label" style="font-size:0.76rem;color:var(--text-muted);font-weight:400;">Also handles subjects in other grade levels or sections</span>
+        </label>
         <div id="subject-teacher-fields" style="display:none;">
-          <div style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6 only)</div>
-          <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser.</p>
+          <div id="subject-teacher-title" style="font-size:0.85rem;color:var(--maroon-deep);font-weight:600;margin:12px 0 4px;">Subject Teacher Assignments (Grades 4–6)</div>
+          <p id="subject-teacher-help" style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">One teacher per subject per class. Grades 1–3 are covered by the class adviser and assistant teacher.</p>
           <div id="subject-assignments-container"></div>
           <button type="button" class="chip-ghost" id="add-subject-btn" onclick="addSubjectAssignment()" style="margin-top:8px;">+ Add Another Subject</button>
         </div>
@@ -2382,7 +2574,7 @@
       <h2>SMS</h2>
       <p>If the school enables SMS, a parent’s Philippine mobile number and the alert text are sent through the configured provider (for example Semaphore). Delivery depends on that provider and a valid <code>09XXXXXXXXX</code> number.</p>
       <h2>AI drafts</h2>
-      <p>Generate AI Draft sends lesson title, objectives, and an excerpt of the lesson file to the school’s configured model (local Ollama or a cloud API). Student names and LRNs are not included in that prompt. Drafts stay in the teacher account until reviewed and saved to Classwork. Teachers must check AI output before learners use it. Quiz and activity Records are created from Classwork, not from the draft itself.</p>
+      <p>Generate AI Draft sends lesson title, objectives, and an excerpt of the lesson file to Google Gemini. Student names and LRNs are not included in that prompt. Drafts stay in the teacher account until reviewed and saved to Classwork. Teachers must check AI output before learners use it. Quiz and activity Records are created from Classwork, not from the draft itself.</p>
       <h2>Shared quiz links</h2>
       <p>A classwork share link can be opened without a ConnectED login. Anyone who has the link can open that quiz. Treat the URL like a password.</p>
       <h2>Browser storage</h2>

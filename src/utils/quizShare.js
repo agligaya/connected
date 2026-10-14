@@ -54,6 +54,50 @@ function publicQuestion(row) {
   };
 }
 
+function identificationReviewBank(questions) {
+  const ids = (questions || []).filter((q) => String(q.item_type || '').toLowerCase() === 'identification');
+  const seen = new Set();
+  const answers = [];
+  const add = (raw, list) => {
+    const text = String(raw || '').trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(text);
+  };
+  ids.forEach((q) => add(q.answer != null ? q.answer : q.expected, answers));
+  if (!answers.length) return [];
+  const words = answers.slice();
+  ids.forEach((q) => {
+    const extras = Array.isArray(q.choices) ? q.choices : parseChoicesColumn(q.choices) || [];
+    extras.forEach((word) => add(word, words));
+  });
+  return words;
+}
+
+function identificationAnswerBank(questions) {
+  const words = identificationReviewBank(questions).slice();
+  for (let i = words.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = words[i];
+    words[i] = words[j];
+    words[j] = tmp;
+  }
+  return words;
+}
+
+function publicQuestionsForQuiz(questions) {
+  const bank = identificationAnswerBank(questions);
+  return (questions || []).map((q) => {
+    const pub = publicQuestion(q);
+    if (String(q.item_type || '').toLowerCase() === 'identification') {
+      pub.choices = bank.length ? bank.slice() : [];
+    }
+    return pub;
+  });
+}
+
 function shuffleQuestionsWithinSections(questions) {
   const groups = [];
   const map = new Map();
@@ -182,6 +226,38 @@ function normalizeTypedAnswer(value) {
     .trim();
 }
 
+function splitAnswerParts(raw, pattern) {
+  return String(raw || '')
+    .split(pattern)
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function fillBlankAnswersMatch(given, expected) {
+  const left = splitAnswerParts(given, /\s*(?:,|;|\n)\s*/);
+  const right = splitAnswerParts(expected, /\s*(?:,|;|\n)\s*/);
+  if (!left.length || left.length !== right.length) return false;
+  return left.every((p, i) => p === right[i]);
+}
+
+function matchingAnswersMatch(given, expected) {
+  const parse = (raw) => splitAnswerParts(raw, /\s*;\s*/).map((pair) => {
+    const bits = pair.split('|').map((p) => p.trim());
+    return `${bits[0] || ''}|${bits[1] || ''}`;
+  });
+  const left = parse(given);
+  const right = parse(expected);
+  if (!left.length || left.length !== right.length) return false;
+  return left.every((p, i) => p === right[i]);
+}
+
+function sequencingAnswersMatch(given, expected) {
+  const left = splitAnswerParts(given, /\s*\|\s*/);
+  const right = splitAnswerParts(expected, /\s*\|\s*/);
+  if (!left.length || left.length !== right.length) return false;
+  return left.every((p, i) => p === right[i]);
+}
+
 function typedAnswersMatch(given, expected) {
   const a = normalizeTypedAnswer(given);
   const b = normalizeTypedAnswer(expected);
@@ -215,15 +291,27 @@ function scoreSubmission(questions, answersInput) {
     let autoScored = false;
     const type = String(q.item_type || '').toLowerCase();
     const isMcq = type === 'mcq' || type === 'multiple_choice';
-    const isTyped = type === 'identification' || type === 'enumeration' || type === 'short_answer';
-    if (isTyped) {
+    const isTyped = type === 'identification' || type === 'enumeration';
+    if (type === 'short_answer' || isActivityItemType(type)) {
+      autoScored = false;
+    } else if (type === 'fill_blank') {
+      autoScored = true;
+      correct = fillBlankAnswersMatch(given, q.answer);
+    } else if (type === 'matching') {
+      autoScored = true;
+      correct = matchingAnswersMatch(given, q.answer);
+    } else if (type === 'sequencing') {
+      autoScored = true;
+      correct = sequencingAnswersMatch(given, q.answer);
+    } else if (type === 'true_false') {
+      autoScored = true;
+      correct = mcqAnswersMatch(given, q.answer, ['True', 'False']);
+    } else if (isTyped) {
       autoScored = true;
       correct = typedAnswersMatch(given, q.answer);
     } else if (isMcq || (Array.isArray(q.choices) && q.choices.length && !isActivityItemType(type))) {
       autoScored = true;
       correct = mcqAnswersMatch(given, q.answer, q.choices);
-    } else if (isActivityItemType(type)) {
-      // not auto-scored
     }
     if (autoScored && correct) earned += pts;
     detail.push({
@@ -317,6 +405,8 @@ module.exports = {
   ensureQuizShareSchema,
   generateShareToken,
   publicQuestion,
+  publicQuestionsForQuiz,
+  identificationReviewBank,
   shuffleQuestionsWithinSections,
   getAssessmentQuestions,
   scoreSubmission,

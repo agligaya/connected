@@ -66,8 +66,9 @@ async function partsByLesson(db, studentId) {
     const earnedN = Number(earned);
     if (maxN <= 0 || !Number.isFinite(earnedN)) return;
     const key = lessonLookupKey(lesson);
-    if (!buckets.has(key)) buckets.set(key, { quiz: new Map(), activity: new Map() });
-    const parts = buckets.get(key)[kind === 'activity' ? 'activity' : 'quiz'];
+    if (!buckets.has(key)) buckets.set(key, { quiz: new Map(), activity: new Map(), exam: new Map() });
+    const bucket = buckets.get(key);
+    const parts = bucket[kind === 'activity' ? 'activity' : kind === 'exam' ? 'exam' : 'quiz'];
     const name = String(part || '').trim() || 'Part';
     if (!parts.has(name)) parts.set(name, { earned: 0, max: 0 });
     const slot = parts.get(name);
@@ -80,7 +81,7 @@ async function partsByLesson(db, studentId) {
   try {
     await ensureQuizShareSchema();
     [submissions] = await db.query(
-      `SELECT qs.assessment_id, qs.answers, a.lesson_title, a.title
+      `SELECT qs.assessment_id, qs.answers, a.lesson_title, a.title, a.TYPE as type
        FROM quiz_submissions qs
        JOIN assessments a ON a.id = qs.assessment_id
        WHERE qs.student_id = ?`,
@@ -91,8 +92,11 @@ async function partsByLesson(db, studentId) {
   }
 
   try {
+    try {
+      await db.query(`ALTER TABLE assessments ADD COLUMN rubric JSON NULL`);
+    } catch (e) { /* column may already exist */ }
     [rubricRows] = await db.query(
-      `SELECT sc.assessment_id, sc.rubric_scores, a.lesson_title, a.title
+      `SELECT sc.assessment_id, sc.rubric_scores, a.lesson_title, a.title, a.rubric
        FROM assessment_scores sc
        JOIN assessments a ON a.id = sc.assessment_id
        WHERE sc.student_id = ? AND sc.rubric_scores IS NOT NULL`,
@@ -142,7 +146,8 @@ async function partsByLesson(db, studentId) {
       const scored = byId.get(Number(q.id));
       if (!scored || scored.correct == null) continue;
       const pts = Number(q.points) || 1;
-      add(lesson, 'quiz', bankItemTypeLabel(q.item_type), scored.correct ? pts : 0, pts);
+      const kind = String(sub.type || '').trim().toLowerCase() === 'exam' ? 'exam' : 'quiz';
+      add(lesson, kind, bankItemTypeLabel(q.item_type), scored.correct ? pts : 0, pts);
     }
   }
 
@@ -163,6 +168,16 @@ async function partsByLesson(db, studentId) {
         });
       });
     });
+    if (!cats.length) {
+      const rubric = normalizeRubric(row.rubric);
+      (rubric?.categories || []).forEach((c, ci) => {
+        cats.push({
+          key: `a0_${ci}`,
+          name: String(c.name || '').trim() || 'Category',
+          max: Math.max(1, Number(c.max_points) || 1)
+        });
+      });
+    }
     const used = new Set();
     for (const [key, val] of Object.entries(scores)) {
       if (!/^a\d+_\d+$/.test(key)) continue;
@@ -198,7 +213,8 @@ async function partsByLesson(db, studentId) {
   for (const [lesson, grouped] of buckets) {
     out.set(lesson, {
       quiz: toParts(grouped.quiz),
-      activity: toParts(grouped.activity)
+      activity: toParts(grouped.activity),
+      exam: toParts(grouped.exam)
     });
   }
   return out;

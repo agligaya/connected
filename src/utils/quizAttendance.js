@@ -36,7 +36,9 @@ async function ensureQuizAttendanceSchema(conn = db) {
       `ALTER TABLE assessments ADD COLUMN quiz_subject_id INT NULL`,
       `ALTER TABLE assessments ADD COLUMN quiz_makeup_student_ids JSON NULL`,
       `ALTER TABLE assessments ADD COLUMN quiz_closes_at DATETIME NULL`,
-      `ALTER TABLE assessments ADD COLUMN quiz_makeup_closes_at DATETIME NULL`
+      `ALTER TABLE assessments ADD COLUMN quiz_makeup_closes_at DATETIME NULL`,
+      `ALTER TABLE assessments ADD COLUMN activity_mode VARCHAR(20) NULL`,
+      `ALTER TABLE assessments ADD COLUMN activity_target_at DATETIME NULL`
     ];
     for (const sql of alters) {
       try {

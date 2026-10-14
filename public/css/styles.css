@@ -526,6 +526,10 @@ body[data-view="admin"] .page-shell {
 }
 
 @media (max-width: 640px) {
+  #lp-subjects-list {
+    grid-template-columns: 1fr;
+  }
+
   .login-hero-logo {
     width: clamp(150px, 46vw, 200px);
     height: auto;
@@ -1711,6 +1715,7 @@ select:disabled {
   align-items: center;
 }
 
+.progress-share-windows[hidden] { display: none !important; }
 .progress-share-windows {
   margin: 0 0 12px;
 }
@@ -2161,7 +2166,8 @@ html.layout-mobile .admin-student-filter-select {
   table-layout: fixed;
 }
 
-#progress-scores-table.progress-scores-table--rubric {
+#progress-scores-table.progress-scores-table--rubric,
+#progress-scores-table.progress-scores-table--work {
   table-layout: auto;
 }
 
@@ -2363,11 +2369,20 @@ html.layout-mobile .admin-student-filter-select {
 }
 
 .progress-work-cell {
-  white-space: normal;
+  position: relative;
+  z-index: 3;
+  white-space: nowrap;
+  width: auto;
+  min-width: 7.5rem;
 }
 
 .progress-work-cell .chip-ghost {
+  position: relative;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
   margin: 0;
+  pointer-events: auto;
 }
 
 .progress-quiz-choices {
@@ -2379,6 +2394,34 @@ html.layout-mobile .admin-student-filter-select {
 
 .progress-quiz-choices li {
   margin: 2px 0;
+}
+
+.progress-id-box {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 2px solid #5c1010;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.progress-id-box-label {
+  margin: 0 0 8px;
+  font-weight: 600;
+  color: #5c1010;
+}
+
+.progress-id-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.progress-id-words span {
+  padding: 6px 10px;
+  border: 1px solid #5c1010;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.9rem;
 }
 
 .ai-count-chips {
@@ -2408,10 +2451,45 @@ html.layout-mobile .admin-student-filter-select {
   cursor: pointer;
 }
 
-.ai-type-check input {
+.ai-type-check label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.ai-type-check input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
   accent-color: var(--maroon);
+}
+
+.field-small .ai-type-count {
+  width: 4.75rem;
+  height: 2rem;
+  margin-left: auto;
+  padding: 0 8px;
+}
+
+.ai-kind-choice {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ai-kind-choice .btn-solid,
+.ai-kind-choice .btn-outline {
+  flex: 1;
+}
+
+#ai-generate-kind[hidden],
+#ai-generate-quiz-fields[hidden],
+#ai-generate-activity-note[hidden] {
+  display: none !important;
+}
+
+.ai-type-count[hidden] {
+  display: none !important;
 }
 
 .modal-overlay--blocking {
@@ -2419,13 +2497,30 @@ html.layout-mobile .admin-student-filter-select {
   pointer-events: auto;
 }
 
+.ai-generating-dock {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 7000;
+  width: min(320px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.ai-generating-dock[hidden] {
+  display: none;
+}
+
 .ai-generating-card {
-  max-width: 400px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  pointer-events: auto;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  box-shadow: var(--shadow-card);
 }
 
 .ai-generating-spinner {
@@ -2435,6 +2530,22 @@ html.layout-mobile .admin-student-filter-select {
   border-top-color: var(--maroon-deep, #800020);
   border-radius: 50%;
   animation: ai-spin 0.85s linear infinite;
+}
+
+.ai-generating-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(128, 0, 32, 0.15);
+  overflow: hidden;
+}
+
+.ai-generating-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--maroon-deep, #800020);
+  transition: width 0.35s ease;
 }
 
 @keyframes ai-spin {
@@ -2667,6 +2778,25 @@ html.layout-mobile .admin-student-filter-select {
 
 .qb-next-step-bar[hidden] {
   display: none !important;
+}
+
+#qb-create-activity-fields[hidden],
+#qb-create-type-field[hidden],
+#qb-add-details[hidden] { display: none !important; }
+#qb-create-activity-fields label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: fit-content;
+  margin: 6px 0;
+  font-size: 0.95rem;
+  color: inherit;
+}
+#qb-create-activity-fields label input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
 }
 
 .qb-set-card {
@@ -3324,6 +3454,166 @@ tbody tr:nth-child(even) {
 
 .teacher-progress-card {
   margin-top: 18px;
+}
+
+.subject-record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: flex-end;
+  margin: 12px 0 14px;
+}
+
+.subject-record-meta label,
+.subject-record-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.subject-record-meta select {
+  min-width: 240px;
+  background-color: #fff7f4;
+  color: var(--maroon-deep);
+  font-weight: 600;
+  border-color: rgba(93, 17, 13, 0.35);
+}
+
+.subject-record-field strong {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 8px 11px;
+  border: 1px solid var(--border-maroon);
+  border-radius: 10px;
+  background: #fff7f4;
+  color: var(--maroon-deep);
+  font-size: 0.84rem;
+}
+
+.subject-record-sheets {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.subject-record-sheet {
+  border: 1px solid #1f1f1f;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.subject-record-sheet-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--maroon);
+}
+
+.subject-record-sheet h4 {
+  grid-column: 2;
+  margin: 0;
+  padding: 4px 8px;
+  text-align: center;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--orange);
+}
+
+.subject-record-quarter {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.subject-record-kind {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.subject-record-quarter select,
+.subject-record-kind select {
+  min-width: 132px;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 28px 4px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--orange);
+  background-color: #fff;
+  color: var(--maroon-deep);
+  font-size: 0.78rem;
+  font-weight: 600;
+  background-position: right 10px center;
+}
+
+.subject-record-quarter select {
+  min-width: 76px;
+}
+
+.subject-record-meta select:focus-visible,
+.subject-record-quarter select:focus-visible,
+.subject-record-kind select:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.subject-record-sheet-scroll {
+  overflow-x: auto;
+}
+
+.subject-record-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.subject-record-sheet th,
+.subject-record-sheet td {
+  border: 1px solid #222;
+  padding: 6px 8px;
+  text-align: center;
+  min-width: 64px;
+  background: #fff;
+}
+
+.subject-record-sheet thead th {
+  background: #faf7f7;
+  color: var(--maroon-deep);
+  font-weight: 600;
+}
+
+.subject-record-sheet th:first-child,
+.subject-record-sheet td:first-child {
+  text-align: left;
+  min-width: 150px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #fff;
+}
+
+.subject-record-sheet thead th:first-child {
+  z-index: 2;
+  background: #faf7f7;
+  color: var(--maroon-deep);
 }
 
 .teacher-progress-layout {
@@ -4128,6 +4418,130 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+#lp-subjects-list,
+#progress-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#qb-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#qb-list > .empty-state,
+#lp-subjects-list > .empty-state,
+#progress-list > .empty-state {
+  grid-column: 1 / -1;
+}
+
+#qb-list .qb-set-card .page-heading {
+  font-size: calc(1.1rem - 2px);
+}
+
+@media (max-width: 640px) {
+  #qb-list,
+  #progress-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+#progress-list > .lesson-plan-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  height: 176px;
+  min-height: 176px;
+  max-height: 176px;
+  padding: 12px 16px;
+  overflow: hidden;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+#progress-list .progress-card-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  width: 100%;
+}
+
+#progress-list .progress-card-status p,
+#progress-list .progress-card-status .page-subheading {
+  margin: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#progress-list .progress-card-top {
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  width: 100%;
+}
+
+#progress-list .progress-card-top-left {
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#progress-list .progress-card-top-left > h4 {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#progress-list .progress-card-top .row-menu-wrap {
+  align-self: flex-start;
+  margin-left: 8px;
+}
+
+#progress-list .lesson-plan-card > p {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#progress-list .progress-card-status,
+#progress-list .progress-card-top,
+#progress-list .lesson-plan-card > p,
+#progress-list .lesson-plan-card-actions {
+  flex-shrink: 0;
+}
+
+#progress-list .lesson-plan-card-actions {
+  margin-top: auto;
+}
+
+.lp-subject-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  height: 100%;
+  cursor: pointer;
+}
+
+.lp-subject-card .page-heading {
+  margin: 0;
+}
+
+.lp-subject-card .chip-ghost {
+  margin-top: auto;
+  pointer-events: none;
 }
 
 .announcement-item {
@@ -5049,6 +5463,76 @@ button.link-usant {
   margin-top: 16px;
 }
 
+.qb-exam-choice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.qb-exam-choice-actions .btn-solid,
+.qb-exam-choice-actions .btn-outline {
+  width: 100%;
+  min-height: 44px;
+}
+
+.qb-exam-write-list {
+  margin: 0 0 8px;
+  padding-left: 1.2rem;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.qb-exam-write-list li {
+  margin: 0 0 6px;
+}
+
+#qb-exam-ai-lessons-panel[hidden],
+#qb-exam-ai-files-panel[hidden] {
+  display: none !important;
+}
+
+.qb-exam-ai-subject {
+  margin: 12px 0 4px;
+  font-weight: 700;
+  color: var(--text-dark);
+}
+
+.qb-exam-ai-lesson-list {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 12px;
+}
+
+#qb-exam-ai-lesson-list[hidden],
+#qb-exam-ai-lesson-empty[hidden] {
+  display: none !important;
+}
+
+.qb-exam-ai-lesson-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0 0 8px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.qb-exam-ai-lesson-row input {
+  width: auto;
+  margin-top: 3px;
+}
+
+#qb-exam-ai-files {
+  width: 100%;
+}
+#qb-exam-choice-modal[hidden],
+#qb-exam-ai-modal[hidden],
+#qb-exam-ai-save-modal[hidden],
+#qb-exam-write-modal[hidden] {
+  display: none !important;
+}
+
 .modal-form-actions--match .btn-outline,
 .modal-form-actions--match .btn-solid {
   margin-top: 0;
@@ -5764,8 +6248,15 @@ html.layout-mobile .attendance-matrix-table col.att-col-name {
   font-size: 0.88rem;
 }
 
+.ai-draft-type { margin-top: 12px; }
+.ai-draft-type-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--maroon-deep);
+  font-size: 0.84rem;
+}
 .ai-draft-items {
-  margin: 8px 0 0 1.1rem;
+  margin: 4px 0 0 1.1rem;
   padding: 0;
   font-size: 0.82rem;
   color: var(--text-dark);

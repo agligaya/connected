@@ -1294,7 +1294,8 @@ CREATE TABLE `teacher_assignments` (
   `subject_id` int(11) DEFAULT NULL,
   `grade_level` int(11) NOT NULL,
   `section` varchar(10) NOT NULL,
-  `school_year` varchar(20) DEFAULT '2025-2026'
+  `school_year` varchar(20) DEFAULT '2025-2026',
+  `slot` enum('adviser','assistant','subject') NOT NULL DEFAULT 'subject'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -1347,7 +1348,8 @@ CREATE TABLE `teacher_profiles` (
   `homeroom_section` varchar(10) DEFAULT NULL,
   `specialization` varchar(100) DEFAULT NULL,
   `subjects_taught` longtext DEFAULT NULL,
-  `grades_handled` longtext DEFAULT NULL
+  `grades_handled` longtext DEFAULT NULL,
+  `homeroom_role` enum('adviser','assistant') DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

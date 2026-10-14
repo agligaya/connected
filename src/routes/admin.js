@@ -26,6 +26,7 @@ router.post('/accounts/:id/reset-password', verifyToken, requireRole('admin'), a
 router.get('/sections', verifyToken, requireRole('admin'), adminController.getSections);
 router.get('/subjects', verifyToken, requireRole('admin'), adminController.getSubjects);
 router.get('/class-adviser', verifyToken, requireRole('admin'), adminController.getClassAdviser);
+router.get('/class-slots', verifyToken, requireRole('admin'), adminController.getClassSlots);
 
 // Activity & Inbox
 router.get('/overview-charts', verifyToken, requireRole('admin'), adminController.getOverviewCharts);
