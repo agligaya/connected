@@ -1,8 +1,10 @@
+const bcrypt = require('bcryptjs');
 const db = require('../../db');
 const { schoolYear } = require('../config');
 const { plainText } = require('../utils/plainText');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const { ensureAssignmentSlots } = require('../utils/teachingMode');
+const { ensureStudentRoleSchema } = require('../utils/studentAccounts');
 
 function studentError(status, message) {
   const err = new Error(message);
@@ -145,14 +147,18 @@ exports.getStudents = async (req, res) => {
   try {
     await ensureSoftDeleteSchema();
     await ensureAssignmentSlots();
+    await ensureStudentRoleSchema();
     const [students] = await db.query(
       `SELECT s.id, s.lrn, s.first_name, s.middle_name, s.last_name, s.grade_level, s.section, s.gender, s.dob, s.STATUS as status,
         MAX(psl.parent_id) as parent_id,
         MAX(p.first_name) as parent_first, MAX(p.last_name) as parent_last,
-        MAX(t.first_name) as teacher_first, MAX(t.last_name) as teacher_last
+        MAX(t.first_name) as teacher_first, MAX(t.last_name) as teacher_last,
+        MAX(su.id) as login_user_id,
+        MAX(su.STATUS) as login_status
        FROM students s
        LEFT JOIN parent_student_links psl ON s.id = psl.student_id
        LEFT JOIN users p ON psl.parent_id = p.id
+       LEFT JOIN users su ON su.student_id = s.id AND su.role = 'student'
        LEFT JOIN (
          SELECT teacher_id, grade_level, section
          FROM teacher_assignments
@@ -257,51 +263,144 @@ exports.updateStudent = async (req, res) => {
         await ensureAdviserSlot(homeroom_teacher_id, grade_level, sectionNorm);
       }
     } else {
-      if (parent_id) {
-        const [links] = await db.query(
-          'SELECT parent_id FROM parent_student_links WHERE student_id = ?',
-          [id]
-        );
-        if (links.length) {
-          const already = links.some((row) => Number(row.parent_id) === Number(parent_id));
-          if (!already) {
-            return res.status(409).json({ error: 'Student is already linked to a parent' });
-          }
-        } else {
-          const [parents] = await db.query(
-            `SELECT id FROM users WHERE id = ? AND role = 'parent' AND STATUS = 'active'`,
-            [parent_id]
-          );
-          if (!parents.length) {
-            return res.status(400).json({ error: 'Select a registered parent account' });
-          }
-        }
-      }
-
       await db.query(
         `UPDATE students SET lrn = ?, first_name = ?, middle_name = ?, last_name = ?
          WHERE id = ?`,
         [lrn || null, firstName, middleName || null, lastName, id]
       );
 
-      if (parent_id) {
-        const [links] = await db.query(
-          'SELECT id FROM parent_student_links WHERE student_id = ? AND parent_id = ?',
-          [id, parent_id]
-        );
-        if (!links.length) {
-          await db.query(
-            'INSERT INTO parent_student_links (parent_id, student_id) VALUES (?, ?)',
-            [parent_id, id]
-          );
-        }
+      if (Object.prototype.hasOwnProperty.call(req.body, 'parent_id')) {
+        await setParentLink(id, parent_id);
       }
     }
+
+    await syncStudentLogin(id, lrn || null, firstName, lastName);
 
     res.json({ message: isReenroll ? 'Student re-enrolled successfully' : 'Student updated successfully' });
   } catch (error) {
     console.error('Update student error:', error);
-    res.status(500).json({ error: 'Server error updating student' });
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Server error updating student' });
+  }
+};
+
+async function setParentLink(studentId, parentId) {
+  const nextId = parentId ? Number(parentId) : null;
+  await db.query('DELETE FROM parent_student_links WHERE student_id = ?', [studentId]);
+  if (!nextId) return;
+  const [parents] = await db.query(
+    `SELECT id FROM users WHERE id = ? AND role = 'parent' AND STATUS = 'active'`,
+    [nextId]
+  );
+  if (!parents.length) throw studentError(400, 'Select a registered parent account');
+  await db.query(
+    'INSERT INTO parent_student_links (parent_id, student_id) VALUES (?, ?)',
+    [nextId, studentId]
+  );
+}
+
+async function syncStudentLogin(studentId, lrn, firstName, lastName) {
+  await ensureStudentRoleSchema();
+  const [logins] = await db.query(
+    `SELECT id, email FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+    [studentId]
+  );
+  if (!logins.length) return;
+  if (!lrn || !/^\d{12}$/.test(String(lrn))) {
+    throw studentError(400, 'This student has a login. Keep the 12-digit LRN.');
+  }
+  if (logins[0].email !== lrn) {
+    const [taken] = await db.query('SELECT id FROM users WHERE email = ? AND id != ?', [lrn, logins[0].id]);
+    if (taken.length) throw studentError(409, 'That LRN is already used as a login.');
+  }
+  await db.query(
+    'UPDATE users SET email = ?, first_name = ?, last_name = ? WHERE id = ?',
+    [lrn, firstName, lastName, logins[0].id]
+  );
+}
+
+async function studentForLogin(id) {
+  await ensureSoftDeleteSchema();
+  await ensureStudentRoleSchema();
+  const [rows] = await db.query(
+    `SELECT id, lrn, first_name, last_name, STATUS as status
+     FROM students WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+exports.createStudentLogin = async (req, res) => {
+  try {
+    const student = await studentForLogin(req.params.id);
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    const lrn = String(student.lrn || '');
+    if (!/^\d{12}$/.test(lrn)) {
+      return res.status(400).json({ error: 'Add a 12-digit LRN and save it before creating a login.' });
+    }
+    const password = String(req.body?.password || '');
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Temporary password must be at least 6 characters.' });
+    }
+    const [existing] = await db.query(
+      `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+      [student.id]
+    );
+    if (existing.length) return res.status(409).json({ error: 'This student already has a login.' });
+    const [emailTaken] = await db.query('SELECT id FROM users WHERE email = ?', [lrn]);
+    if (emailTaken.length) return res.status(409).json({ error: 'That LRN is already used as a login.' });
+    const password_hash = await bcrypt.hash(password, 10);
+    await db.query(
+      `INSERT INTO users (first_name, last_name, email, password_hash, role, STATUS, must_change_password, student_id)
+       VALUES (?, ?, ?, ?, 'student', 'active', 1, ?)`,
+      [student.first_name, student.last_name, lrn, password_hash, student.id]
+    );
+    res.status(201).json({ message: 'Student login created. The child signs in with the LRN.' });
+  } catch (error) {
+    console.error('Create student login error:', error);
+    res.status(error.status || 500).json({ error: error.status ? error.message : 'Server error creating login' });
+  }
+};
+
+exports.resetStudentLogin = async (req, res) => {
+  try {
+    const student = await studentForLogin(req.params.id);
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    const password = String(req.body?.password || '');
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Temporary password must be at least 6 characters.' });
+    }
+    const [logins] = await db.query(
+      `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+      [student.id]
+    );
+    if (!logins.length) return res.status(404).json({ error: 'This student has no login yet.' });
+    const password_hash = await bcrypt.hash(password, 10);
+    await db.query(
+      'UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?',
+      [password_hash, logins[0].id]
+    );
+    res.json({ message: 'Temporary password saved. The child must set a new one at sign-in.' });
+  } catch (error) {
+    console.error('Reset student login error:', error);
+    res.status(500).json({ error: 'Server error resetting login' });
+  }
+};
+
+exports.setStudentLoginStatus = async (req, res) => {
+  try {
+    const student = await studentForLogin(req.params.id);
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    const status = String(req.body?.status || '').toLowerCase() === 'inactive' ? 'inactive' : 'active';
+    const [logins] = await db.query(
+      `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+      [student.id]
+    );
+    if (!logins.length) return res.status(404).json({ error: 'This student has no login yet.' });
+    await db.query('UPDATE users SET STATUS = ? WHERE id = ?', [status, logins[0].id]);
+    res.json({ message: status === 'active' ? 'Login enabled.' : 'Login disabled.', status });
+  } catch (error) {
+    console.error('Set student login status error:', error);
+    res.status(500).json({ error: 'Server error updating login' });
   }
 };
 

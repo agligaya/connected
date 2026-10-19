@@ -1,4 +1,4 @@
-import { bootRouting } from './auth/routeGuard.js?v=20261008r1';
+import { bootRouting } from './auth/routeGuard.js?v=20261019a';
 import { createSessionSync } from './auth/sessionSync.js';
 
 const sessionSync = createSessionSync(Math.random().toString(36).slice(2));
@@ -218,8 +218,154 @@ function enterPortal(user) {
   if (user.role === 'admin') switchView('admin');
   else if (user.role === 'teacher') switchView('teacher');
   else if (user.role === 'parent') switchView('parent');
+  else if (user.role === 'student') {
+    switchView('student');
+    loadStudentPortal();
+  }
   maybeForcePasswordChange(user);
 }
+
+let studentSubjects = [];
+let studentSubjectId = null;
+
+function studentWorkTypeLabel(type) {
+  const kind = String(type || '').toLowerCase();
+  if (kind === 'activity') return 'Activity';
+  if (kind === 'exam') return 'Exam';
+  return 'Quiz';
+}
+
+function studentWorkStateLabel(item) {
+  if (item.state === 'open') return 'Open';
+  if (item.state === 'closed') return 'Closed';
+  return 'Not open';
+}
+
+function renderStudentWorkCard(item, submitted) {
+  const type = studentWorkTypeLabel(item.type);
+  let detail = '';
+  let action = '';
+  if (submitted) {
+    detail = item.score_pending
+      ? 'Submitted. Score is not in yet.'
+      : `Score ${item.score} / ${item.max_score}`;
+  } else {
+    detail = studentWorkStateLabel(item);
+    if (item.state === 'open' && item.path) {
+      action = `<a class="btn-orange-solid" style="display:inline-block;text-decoration:none;" href="${escapeHtml(item.path)}">Open</a>`;
+    }
+  }
+  return `<div class="chart-card" style="margin-bottom:12px;">
+    <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(type)}</p>
+    <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 6px;">${escapeHtml(item.title || 'Classwork')}</h3>
+    <p class="page-subheading" style="margin:0 0 10px;">${escapeHtml(detail)}</p>
+    ${action}
+  </div>`;
+}
+
+function setStudentBackVisible(visible) {
+  const back = document.getElementById('student-back-btn');
+  if (back) back.style.display = visible ? 'inline-flex' : 'none';
+}
+
+function renderStudentDashboard() {
+  const content = document.getElementById('student-content');
+  if (!content) return;
+  setStudentBackVisible(false);
+  studentSubjectId = null;
+  if (!studentSubjects.length) {
+    content.innerHTML = '<p class="page-subheading">No subjects for your class yet.</p>';
+    return;
+  }
+  content.innerHTML = `
+    <h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 14px;">Dashboard</h2>
+    <div class="student-subject-grid">
+      ${studentSubjects.map((subject) => {
+        const due = Number(subject.due_count) || 0;
+        const dueLabel = due === 1 ? '1 due' : `${due} due`;
+        const teacher = subject.teacher_name || 'No teacher assigned';
+        return `<button type="button" class="chart-card student-subject-card" data-student-subject="${subject.id}">
+          <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(subject.code || '')}</p>
+          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 6px;">${escapeHtml(subject.name || 'Subject')}</h3>
+          <p class="page-subheading" style="margin:0;">${escapeHtml(teacher)}</p>
+          ${due > 0 ? `<span class="student-due-flag">${escapeHtml(dueLabel)}</span>` : ''}
+        </button>`;
+      }).join('')}
+    </div>`;
+}
+
+async function loadStudentClasswork(subjectId) {
+  const content = document.getElementById('student-content');
+  const subject = studentSubjects.find((row) => Number(row.id) === Number(subjectId));
+  if (!content) return;
+  setStudentBackVisible(true);
+  content.innerHTML = `<h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 12px;">${escapeHtml(subject?.name || 'Subject')}</h2><p class="page-subheading">Loading classwork…</p>`;
+  try {
+    const res = await fetch(`${API_URL}/student/subjects/${subjectId}/classwork`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load classwork');
+    const open = Array.isArray(data.to_submit) ? data.to_submit : [];
+    const done = Array.isArray(data.submitted) ? data.submitted : [];
+    const openHtml = open.length
+      ? open.map((item) => renderStudentWorkCard(item, false)).join('')
+      : '<p class="page-subheading">Nothing to submit in this subject.</p>';
+    const doneHtml = done.length
+      ? done.map((item) => renderStudentWorkCard(item, true)).join('')
+      : '<p class="page-subheading">No submitted classwork yet.</p>';
+    content.innerHTML = `
+      <h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 4px;">${escapeHtml(subject?.name || 'Subject')}</h2>
+      <p class="page-subheading" style="margin:0 0 14px;">${escapeHtml(subject?.teacher_name || '')}</p>
+      <div class="parent-analytics-row">
+        <div>
+          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">To submit</h3>
+          ${openHtml}
+        </div>
+        <div>
+          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">Submitted</h3>
+          ${doneHtml}
+        </div>
+      </div>`;
+  } catch (err) {
+    content.innerHTML = `<p class="page-subheading">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function loadStudentPortal() {
+  const nameEl = document.getElementById('student-portal-name');
+  const classEl = document.getElementById('student-portal-class');
+  const content = document.getElementById('student-content');
+  if (content) content.innerHTML = '<p class="page-subheading">Loading your subjects…</p>';
+  try {
+    const res = await fetch(`${API_URL}/student/subjects`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load your subjects');
+    const student = data.student || {};
+    if (nameEl) nameEl.textContent = `${student.last_name || ''}, ${student.first_name || ''}`.replace(/^, |, $/g, '').trim() || 'Student';
+    if (classEl) classEl.textContent = `Grade ${student.grade_level || '—'} · ${student.section || '—'}`;
+    studentSubjects = Array.isArray(data.subjects) ? data.subjects : [];
+    renderStudentDashboard();
+  } catch (err) {
+    setStudentBackVisible(false);
+    if (content) content.innerHTML = `<p class="page-subheading">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+document.getElementById('student-content')?.addEventListener('click', (e) => {
+  const card = e.target.closest('[data-student-subject]');
+  if (!card) return;
+  studentSubjectId = Number(card.getAttribute('data-student-subject'));
+  loadStudentClasswork(studentSubjectId);
+});
+
+document.getElementById('student-back-btn')?.addEventListener('click', () => {
+  loadStudentPortal();
+});
+
+document.getElementById('student-dashboard-tab')?.addEventListener('click', () => {
+  loadStudentPortal();
+  const frame = document.querySelector('.dash-frame[data-portal="student"]');
+  if (frame && window.innerWidth <= 900) closeMobileNav(frame);
+});
 
 // ========== VIEW ROUTER ==========
 function switchView(viewName) {
@@ -292,7 +438,7 @@ document.getElementById('login-signin-btn')?.addEventListener('click', async () 
   if (openSharedAccount()) return;
 
   if (!email || !password) {
-    msgEl.textContent = 'Please enter email and password';
+    msgEl.textContent = 'Please enter your email or LRN and password';
     return;
   }
 
@@ -548,6 +694,22 @@ if (parentAvatarBtn && parentSettingsDropdown) {
   document.addEventListener('click', (e) => {
     if (!parentSettingsDropdown.contains(e.target) && e.target !== parentAvatarBtn) {
       parentSettingsDropdown.setAttribute('hidden', '');
+    }
+  });
+}
+
+const studentAvatarBtn = document.getElementById('student-avatar-btn');
+const studentSettingsDropdown = document.getElementById('student-settings-dropdown');
+if (studentAvatarBtn && studentSettingsDropdown) {
+  studentAvatarBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isHidden = studentSettingsDropdown.hasAttribute('hidden');
+    if (isHidden) studentSettingsDropdown.removeAttribute('hidden');
+    else studentSettingsDropdown.setAttribute('hidden', '');
+  });
+  document.addEventListener('click', (e) => {
+    if (!studentSettingsDropdown.contains(e.target) && e.target !== studentAvatarBtn) {
+      studentSettingsDropdown.setAttribute('hidden', '');
     }
   });
 }
@@ -3049,29 +3211,38 @@ window.startEditStudent = function(id) {
   if (classText) {
     classText.textContent = `Grade ${student.grade_level || '—'} · ${student.section || '—'}`;
   }
-  const parentText = document.getElementById('edit-student-parent-text');
-  const parentField = document.getElementById('edit-student-parent-field');
   const parentSelect = document.getElementById('edit-student-parent');
-  const unlinked = student.parent_id == null || student.parent_id === '';
-  if (parentText) {
-    parentText.textContent = student.parent_last
-      ? `${student.parent_last}, ${student.parent_first || ''}`.trim()
-      : 'Unlinked';
-  }
-  if (parentField) parentField.hidden = !unlinked;
   if (parentSelect) parentSelect.value = '';
-  if (unlinked) loadEditStudentParents();
+  loadEditStudentParents(student.parent_id || '');
+  paintStudentLoginControls(student);
   if (subtitle) {
-    subtitle.textContent = unlinked
-      ? `${student.last_name || ''}, ${student.first_name || ''} has no parent. You can link a registered parent.`
-      : `Editing ${student.last_name || ''}, ${student.first_name || ''}`;
+    subtitle.textContent = `Editing ${student.last_name || ''}, ${student.first_name || ''}`;
   }
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   modal?.removeAttribute('hidden');
   document.getElementById('edit-student-last')?.focus();
 };
 
-async function loadEditStudentParents() {
+function paintStudentLoginControls(student) {
+  const status = document.getElementById('edit-student-login-status');
+  const createBlock = document.getElementById('edit-student-login-create');
+  const manageBlock = document.getElementById('edit-student-login-manage');
+  const toggleBtn = document.getElementById('edit-student-login-toggle-btn');
+  const hasLogin = student.login_user_id != null && student.login_user_id !== '';
+  const enabled = String(student.login_status || '').toLowerCase() !== 'inactive';
+  if (createBlock) createBlock.hidden = hasLogin;
+  if (manageBlock) manageBlock.hidden = !hasLogin;
+  if (!hasLogin) fillTempPasswordInput('edit-student-login-password');
+  else fillTempPasswordInput('edit-student-login-reset');
+  if (status) {
+    status.textContent = hasLogin
+      ? (enabled ? 'Login is on. The child signs in with the LRN.' : 'Login is off. The LRN cannot sign in until you enable it.')
+      : 'No login yet. Save a 12-digit LRN, then create one. The child signs in with that LRN.';
+  }
+  if (toggleBtn) toggleBtn.textContent = enabled ? 'Disable login' : 'Enable login';
+}
+
+async function loadEditStudentParents(selectedId) {
   const parentSelect = document.getElementById('edit-student-parent');
   if (!parentSelect) return;
   parentSelect.innerHTML = '<option value="">Loading parents...</option>';
@@ -3084,14 +3255,12 @@ async function loadEditStudentParents() {
       const status = String(p.status || p.STATUS || 'active').toLowerCase();
       return status === 'active';
     });
-    parentSelect.innerHTML = '<option value="">-- Select Parent --</option>' +
+    parentSelect.innerHTML = '<option value="">No parent</option>' +
       active.map((p) => `<option value="${p.id}">${escapeHtml(p.last_name)}, ${escapeHtml(p.first_name)} (${escapeHtml(p.email)})</option>`).join('');
-    if (!active.length) {
-      parentSelect.innerHTML = '<option value="">No registered parents</option>';
-    }
+    parentSelect.value = selectedId ? String(selectedId) : '';
   } catch (err) {
     console.error('Load edit student parents error:', err);
-    parentSelect.innerHTML = '<option value="">Failed to load parents</option>';
+    parentSelect.innerHTML = '<option value="">No parent</option>';
   } finally {
     parentSelect.disabled = false;
   }
@@ -3102,8 +3271,6 @@ function closeEditStudentModal() {
   modal?.setAttribute('hidden', '');
   document.getElementById('edit-student-form')?.reset();
   document.getElementById('edit-student-id').value = '';
-  const parentField = document.getElementById('edit-student-parent-field');
-  if (parentField) parentField.hidden = true;
   const errEl = document.getElementById('edit-student-error');
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
 }
@@ -3119,15 +3286,14 @@ document.getElementById('edit-student-form')?.addEventListener('submit', async (
   const errEl = document.getElementById('edit-student-error');
   if (!id) return;
 
+  const parentRaw = document.getElementById('edit-student-parent')?.value || '';
   const payload = {
     lrn: document.getElementById('edit-student-lrn')?.value.trim() || null,
     last_name: document.getElementById('edit-student-last')?.value.trim(),
     first_name: document.getElementById('edit-student-first')?.value.trim(),
-    middle_name: document.getElementById('edit-student-middle')?.value.trim() || null
+    middle_name: document.getElementById('edit-student-middle')?.value.trim() || null,
+    parent_id: parentRaw ? Number(parentRaw) : null
   };
-  const parentField = document.getElementById('edit-student-parent-field');
-  const parentId = document.getElementById('edit-student-parent')?.value || '';
-  if (parentField && !parentField.hidden && parentId) payload.parent_id = Number(parentId);
 
   if (!payload.last_name || !payload.first_name) {
     if (errEl) { errEl.hidden = false; errEl.textContent = 'First and last name are required.'; }
@@ -3152,12 +3318,96 @@ document.getElementById('edit-student-form')?.addEventListener('submit', async (
     if (!res.ok) throw new Error(data.error || 'Failed to update student');
 
     closeEditStudentModal();
-    showToast(payload.parent_id ? 'Student updated and linked to parent.' : 'Student updated.');
+    showToast('Student updated.');
     await refreshSchoolData({ students: true, teachers: true, overview: true });
   } catch (err) {
     if (errEl) { errEl.hidden = false; errEl.textContent = err.message; }
     else alert(err.message);
   }
+});
+
+async function studentLoginRequest(path, body) {
+  const id = Number(document.getElementById('edit-student-id').value);
+  const errEl = document.getElementById('edit-student-error');
+  if (!id) return;
+  const res = await fetch(`${API_URL}/admin/students/${id}${path}`, {
+    method: path.endsWith('/login') && !path.includes('reset') && body.status ? 'PATCH' : 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (errEl) { errEl.hidden = false; errEl.textContent = data.error || 'Could not update the login.'; }
+    return;
+  }
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  showToast(data.message || 'Login updated.');
+  await refreshSchoolData({ students: true });
+  const student = lastStudentsData.find((row) => Number(row.id) === id);
+  if (student) paintStudentLoginControls(student);
+}
+
+async function copyTempPassword(inputId) {
+  const el = document.getElementById(inputId);
+  const pw = el?.value?.trim() || '';
+  if (!pw) return;
+  try {
+    await navigator.clipboard.writeText(pw);
+    showToast('Temporary password copied.');
+  } catch {
+    el?.select?.();
+    showToast('Select and copy the password manually.');
+  }
+}
+
+document.getElementById('edit-student-login-password-regen')?.addEventListener('click', () => {
+  fillTempPasswordInput('edit-student-login-password');
+});
+document.getElementById('edit-student-login-password-copy')?.addEventListener('click', () => {
+  copyTempPassword('edit-student-login-password');
+});
+document.getElementById('edit-student-login-reset-regen')?.addEventListener('click', () => {
+  fillTempPasswordInput('edit-student-login-reset');
+});
+document.getElementById('edit-student-login-reset-copy')?.addEventListener('click', () => {
+  copyTempPassword('edit-student-login-reset');
+});
+
+document.getElementById('edit-student-login-create-btn')?.addEventListener('click', () => {
+  const id = Number(document.getElementById('edit-student-id').value);
+  const student = lastStudentsData.find((row) => Number(row.id) === id);
+  const typed = document.getElementById('edit-student-lrn')?.value.trim() || '';
+  const errEl = document.getElementById('edit-student-error');
+  if (String(student?.lrn || '') !== typed) {
+    if (errEl) { errEl.hidden = false; errEl.textContent = 'Save the LRN first, then create the login.'; }
+    return;
+  }
+  const password = document.getElementById('edit-student-login-password')?.value || '';
+  studentLoginRequest('/login', { password });
+});
+document.getElementById('edit-student-login-reset-btn')?.addEventListener('click', () => {
+  const password = document.getElementById('edit-student-login-reset')?.value || '';
+  studentLoginRequest('/login/reset', { password });
+});
+document.getElementById('edit-student-login-toggle-btn')?.addEventListener('click', () => {
+  const id = Number(document.getElementById('edit-student-id').value);
+  const student = lastStudentsData.find((row) => Number(row.id) === id);
+  const enabled = String(student?.login_status || '').toLowerCase() !== 'inactive';
+  const errEl = document.getElementById('edit-student-error');
+  fetch(`${API_URL}/admin/students/${id}/login`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ status: enabled ? 'inactive' : 'active' })
+  }).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not update the login.');
+    showToast(data.message || 'Login updated.');
+    await refreshSchoolData({ students: true });
+    const next = lastStudentsData.find((row) => Number(row.id) === id);
+    if (next) paintStudentLoginControls(next);
+  }).catch((err) => {
+    if (errEl) { errEl.hidden = false; errEl.textContent = err.message; }
+  });
 });
 
 window.unenrollStudent = async function(id) {
@@ -3453,7 +3703,7 @@ window.deleteStudent = async function(id) {
 
 function formatActivityRole(role) {
   if (!role) return '';
-  const labels = { admin: 'Admin', teacher: 'Teacher', parent: 'Parent' };
+  const labels = { admin: 'Admin', teacher: 'Teacher', parent: 'Parent', student: 'Student' };
   return labels[String(role).toLowerCase()] || role;
 }
 
@@ -16657,6 +16907,10 @@ document.getElementById('teacher-change-password-btn')?.addEventListener('click'
 document.getElementById('parent-change-password-btn')?.addEventListener('click', () => {
   openChangePasswordModal(false);
   parentSettingsDropdown?.setAttribute('hidden', '');
+});
+document.getElementById('student-change-password-btn')?.addEventListener('click', () => {
+  openChangePasswordModal(false);
+  studentSettingsDropdown?.setAttribute('hidden', '');
 });
 document.getElementById('teacher-edit-profile-btn')?.addEventListener('click', () => {
   document.getElementById('admin-profile-modal')?.removeAttribute('hidden');

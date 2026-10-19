@@ -5,6 +5,7 @@ const VIEW_PATH = {
   admin: '/admin',
   teacher: '/teacher',
   parent: '/parent',
+  student: '/student',
   login: '/login'
 };
 

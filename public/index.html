@@ -61,10 +61,10 @@
                     <img class="login-card-logo" src="/assets/connectED.png" alt="ConnectED" width="64" height="64" />
                     <h1 class="login-title-usant font-heading">ConnectED</h1>
                   </div>
-                  <p class="login-subtitle-usant">Sign in with your school email and temporary password.</p>
+                  <p class="login-subtitle-usant">Sign in with your school email, or your LRN if you are a student.</p>
                   <div class="form-field">
-                    <label class="field-label-usant" for="login-email">Email</label>
-                    <input class="input-usant" id="login-email" type="email" placeholder="Enter your email" />
+                    <label class="field-label-usant" for="login-email">Email or LRN</label>
+                    <input class="input-usant" id="login-email" type="text" autocomplete="username" placeholder="Enter your email or LRN" />
                   </div>
                   <div class="form-field">
                     <label class="field-label-usant" for="login-password">Password</label>
@@ -699,6 +699,73 @@
               <div class="dash-body-inner">
                 <section class="parent-main" id="parent-content" data-parent-tab-container>
                   <!-- Loaded dynamically -->
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== STUDENT VIEW ========== -->
+      <section id="view-student" class="app-view" data-view="student" aria-label="Student Portal" hidden>
+        <div class="dash-frame" data-portal="student">
+          <div class="mobile-nav-backdrop" data-mobile-backdrop hidden></div>
+          <aside class="dash-sidebar">
+            <div class="dash-sidebar-brand dash-sidebar-brand--stack">
+              <span class="dash-sidebar-brand-accent">ConnectED</span>
+              <span class="dash-sidebar-brand-subtitle">Student Portal</span>
+            </div>
+            <div class="parent-sidebar-child">
+              <div class="dash-sidebar-heading">My Class</div>
+              <div class="parent-name parent-name--sidebar">
+                <div id="student-portal-name">Loading…</div>
+                <small id="student-portal-class"></small>
+              </div>
+            </div>
+            <div>
+              <nav class="sidebar-nav sidebar-nav--icons" aria-label="Student sections">
+                <button type="button" class="sidebar-item active" id="student-dashboard-tab"><span class="nav-ico">▦</span> Dashboard</button>
+              </nav>
+            </div>
+            <div class="portal-sidebar-footer-links">
+              <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
+              <div class="footer-links-row">
+                <button type="button" data-legal-open="privacy">Privacy Policy</button>
+                <button type="button" data-legal-open="terms">Terms</button>
+                <button type="button" data-legal-open="help">Help</button>
+              </div>
+            </div>
+          </aside>
+
+          <div class="dash-main">
+            <header class="dash-topbar">
+              <div class="dash-topbar-left">
+                <button type="button" class="mobile-nav-toggle" data-mobile-nav="student" aria-label="Open menu" title="Menu">☰</button>
+                <button type="button" class="topbar-back-btn" id="student-back-btn" title="Go back" style="display:none;">← Back</button>
+                <span class="dash-topbar-role">Student Portal</span>
+              </div>
+              <div class="dash-topbar-right">
+                <div class="dash-topbar-profile">
+                  <button type="button" class="topbar-avatar-btn" id="student-avatar-btn" aria-label="Open settings">
+                    <img id="student-topbar-avatar-img" data-topbar-avatar src="" alt="Student" style="display:none;" onload="this.style.display='block';this.nextElementSibling.style.display='none';" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                    <span class="topbar-avatar-initial" data-user-initial style="display:flex;">S</span>
+                  </button>
+                  <div class="settings-dropdown" id="student-settings-dropdown" hidden>
+                    <div class="settings-dropdown-header">
+                      <span class="settings-dropdown-name" data-user-name>Student</span>
+                      <span class="settings-dropdown-role">Student</span>
+                    </div>
+                    <div class="settings-dropdown-divider"></div>
+                    <button type="button" class="settings-dropdown-item" id="student-change-password-btn">🔒 Change Password</button>
+                    <button type="button" class="settings-dropdown-item" data-action="logout">⎋ Logout</button>
+                  </div>
+                </div>
+              </div>
+            </header>
+            <div class="dash-body parent-dash-body">
+              <div class="dash-body-inner">
+                <section class="parent-main" id="student-content">
+                  <p class="page-subheading">Loading your subjects…</p>
                 </section>
               </div>
             </div>
@@ -1908,7 +1975,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261013e11" type="module"></script>
+  <script src="/js/app.js?v=20261019c" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -2374,17 +2441,36 @@
           <span class="edit-student-meta-label">Grade / Section</span>
           <div id="edit-student-class-text">—</div>
         </div>
-        <div>
-          <span class="edit-student-meta-label">Parent</span>
-          <div id="edit-student-parent-text">—</div>
-        </div>
       </div>
-      <div class="field-small" id="edit-student-parent-field" hidden>
-        <label for="edit-student-parent">Link to registered parent</label>
+      <div class="field-small" id="edit-student-parent-field">
+        <label for="edit-student-parent">Parent</label>
         <select id="edit-student-parent">
-          <option value="">-- Select Parent --</option>
+          <option value="">No parent</option>
         </select>
-        <small style="color:var(--text-muted);font-size:0.75rem;">This student has no parent on record. Choose a registered parent account to link them.</small>
+        <small style="color:var(--text-muted);font-size:0.75rem;">Choose a registered parent, or No parent to unlink.</small>
+      </div>
+      <div class="field-small" id="edit-student-login-block">
+        <label>Student login</label>
+        <p class="page-subheading" id="edit-student-login-status" style="margin:0 0 8px;">The child signs in with the LRN.</p>
+        <div id="edit-student-login-create">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="edit-student-login-password" type="text" placeholder="Auto-generated" autocomplete="off" minlength="6" />
+            <button type="button" class="chip-ghost" id="edit-student-login-password-regen" title="Generate new password">↻</button>
+            <button type="button" class="chip-ghost" id="edit-student-login-password-copy" title="Copy password" aria-label="Copy password">📋</button>
+          </div>
+          <button type="button" class="btn-outline" id="edit-student-login-create-btn" style="margin-top:8px;">Create login</button>
+        </div>
+        <div id="edit-student-login-manage" hidden>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="edit-student-login-reset" type="text" placeholder="Auto-generated" autocomplete="off" minlength="6" />
+            <button type="button" class="chip-ghost" id="edit-student-login-reset-regen" title="Generate new password">↻</button>
+            <button type="button" class="chip-ghost" id="edit-student-login-reset-copy" title="Copy password" aria-label="Copy password">📋</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            <button type="button" class="btn-outline" id="edit-student-login-reset-btn">Reset password</button>
+            <button type="button" class="btn-outline" id="edit-student-login-toggle-btn">Disable login</button>
+          </div>
+        </div>
       </div>
       <div class="modal-form-actions modal-form-actions--match">
         <button type="button" class="btn-outline" id="edit-student-cancel" data-modal-cancel>Cancel</button>
@@ -2553,7 +2639,7 @@
       <h3 class="font-heading legal-heading">Privacy Policy</h3>
       <p>ConnectED is a school portal for elementary teachers, parents, and administrators. This policy describes personal data the system stores and how it is used. It is information about the product, not legal advice. A school that deploys ConnectED for live records should review this text with its Data Protection Officer under the Data Privacy Act of 2012 (Republic Act No. 10173).</p>
       <h2>Who this covers</h2>
-      <p>Admin, teacher, and parent accounts. Learners in Grades 1–6 do not log in, but the school stores their academic records in ConnectED.</p>
+      <p>Admin, teacher, parent, and student accounts. A learner signs in with the LRN on the student record. Parents still see progress summaries.</p>
       <h2>Data we process</h2>
       <ul>
         <li><strong>Accounts:</strong> name, school email, hashed password, role, status, optional avatar, parent mobile number.</li>

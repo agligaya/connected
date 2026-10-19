@@ -1,7 +1,8 @@
 export const ROLE_HOME = {
   admin: '/admin',
   teacher: '/teacher',
-  parent: '/parent'
+  parent: '/parent',
+  student: '/student'
 };
 
 export const ROUTES = [
@@ -9,7 +10,8 @@ export const ROUTES = [
   { path: '/login', public: true, roles: null },
   { path: '/admin', public: false, roles: ['admin'] },
   { path: '/teacher', public: false, roles: ['teacher'] },
-  { path: '/parent', public: false, roles: ['parent'] }
+  { path: '/parent', public: false, roles: ['parent'] },
+  { path: '/student', public: false, roles: ['student'] }
 ];
 
 export function normalizePath(pathname) {

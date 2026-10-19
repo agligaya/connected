@@ -141,6 +141,24 @@ exports.login = async (req, res) => {
       return res.status(403).json({ error: 'Account deactivated' });
     }
 
+    if (user.role === 'student') {
+      const { ensureStudentRoleSchema } = require('../utils/studentAccounts');
+      const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
+      await ensureStudentRoleSchema();
+      await ensureSoftDeleteSchema();
+      const [linked] = await db.query(
+        `SELECT s.STATUS as status
+         FROM students s
+         WHERE s.id = ? AND s.deleted_at IS NULL
+         LIMIT 1`,
+        [user.student_id]
+      );
+      const studentStatus = String(linked[0]?.status || '').toLowerCase();
+      if (!linked.length || studentStatus !== 'active') {
+        return res.status(403).json({ error: 'Account deactivated' });
+      }
+    }
+
     const validPassword = await verifyPassword(password, user.password_hash);
     if (!validPassword) {
       recordLoginFailure(email);

@@ -3,7 +3,8 @@
 const ROLE_HOME = {
   admin: '/admin',
   teacher: '/teacher',
-  parent: '/parent'
+  parent: '/parent',
+  student: '/student'
 };
 
 const ROUTES = [
@@ -11,10 +12,11 @@ const ROUTES = [
   { path: '/login', public: true, roles: null, loggedIn: 'home' },
   { path: '/admin', public: false, roles: ['admin'] },
   { path: '/teacher', public: false, roles: ['teacher'] },
-  { path: '/parent', public: false, roles: ['parent'] }
+  { path: '/parent', public: false, roles: ['parent'] },
+  { path: '/student', public: false, roles: ['student'] }
 ];
 
-const PORTAL_PAGES = ['/login', '/admin', '/teacher', '/parent'];
+const PORTAL_PAGES = ['/login', '/admin', '/teacher', '/parent', '/student'];
 
 function normalizePath(pathname) {
   const path = String(pathname || '/');

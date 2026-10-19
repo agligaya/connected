@@ -44,6 +44,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/admin', require('./routes/students'));
 app.use('/api/teacher', require('./routes/teacher'));
 app.use('/api/parent', require('./routes/parent'));
+app.use('/api/student', require('./routes/student'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/subjects', require('./routes/subjects'));
 app.use('/api/quiz', require('./routes/quizPublic'));
@@ -120,5 +121,11 @@ app.listen(PORT, async () => {
     await ensureQuizShareSchema();
   } catch (e) {
     console.error('[startup] quizShare:', e.message);
+  }
+  try {
+    const { ensureStudentRoleSchema } = require('./utils/studentAccounts');
+    await ensureStudentRoleSchema();
+  } catch (e) {
+    console.error('[startup] studentAccounts:', e.message);
   }
 });

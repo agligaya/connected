@@ -37,6 +37,7 @@ body {
 
 body[data-view="teacher"],
 body[data-view="parent"],
+body[data-view="student"],
 body[data-view="admin"] {
   background: var(--cream);
   height: 100vh;
@@ -85,6 +86,7 @@ body[data-view="register"] .page-shell {
 
 body[data-view="teacher"] .page-shell,
 body[data-view="parent"] .page-shell,
+body[data-view="student"] .page-shell,
 body[data-view="admin"] .page-shell {
   min-height: 100vh;
 }
@@ -3350,6 +3352,35 @@ tbody tr:nth-child(even) {
   gap: 12px;
 }
 
+.student-subject-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.student-subject-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+}
+
+.student-subject-card:hover {
+  border-color: var(--maroon);
+}
+
+.student-due-flag {
+  display: inline-block;
+  margin-top: 10px;
+  background: var(--active-pill);
+  color: var(--white);
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
 .kpi-card {
   border-radius: var(--radius-lg);
   padding: 12px 14px;
@@ -4627,6 +4658,10 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .student-subject-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .parent-charts {
     grid-template-columns: 1fr;
   }
@@ -4897,7 +4932,8 @@ textarea {
   }
 
   .teacher-stats--branded,
-  .parent-kpis {
+  .parent-kpis,
+  .student-subject-grid {
     grid-template-columns: 1fr;
   }
 

@@ -15,6 +15,9 @@ router.post('/students', verifyToken, requireRole('admin'), studentController.cr
 router.post('/students/bulk', verifyToken, requireRole('admin'), acceptBulkFile, studentController.bulkEnrollStudents);
 router.get('/students', verifyToken, requireRole('admin'), studentController.getStudents);
 router.put('/students/:id', verifyToken, requireRole('admin'), studentController.updateStudent);
+router.post('/students/:id/login', verifyToken, requireRole('admin'), studentController.createStudentLogin);
+router.post('/students/:id/login/reset', verifyToken, requireRole('admin'), studentController.resetStudentLogin);
+router.patch('/students/:id/login', verifyToken, requireRole('admin'), studentController.setStudentLoginStatus);
 router.patch('/students/:id/status', verifyToken, requireRole('admin'), studentController.updateStudentStatus);
 router.delete('/students/:id', verifyToken, requireRole('admin'), studentController.deleteStudent);
 router.get('/parents', verifyToken, requireRole('admin'), studentController.getParents);
