@@ -54,6 +54,8 @@ function publicQuestion(row) {
   };
 }
 
+const IDENTIFICATION_EXTRA_WORDS = 2;
+
 function identificationReviewBank(questions) {
   const ids = (questions || []).filter((q) => String(q.item_type || '').toLowerCase() === 'identification');
   const seen = new Set();
@@ -68,12 +70,16 @@ function identificationReviewBank(questions) {
   };
   ids.forEach((q) => add(q.answer != null ? q.answer : q.expected, answers));
   if (!answers.length) return [];
+  // One word per identification item, plus at most two extra words for the whole box.
   const words = answers.slice();
+  const extraWords = [];
   ids.forEach((q) => {
     const extras = Array.isArray(q.choices) ? q.choices : parseChoicesColumn(q.choices) || [];
-    extras.forEach((word) => add(word, words));
+    extras.forEach((word) => {
+      if (extraWords.length < IDENTIFICATION_EXTRA_WORDS) add(word, extraWords);
+    });
   });
-  return words;
+  return words.concat(extraWords);
 }
 
 function identificationAnswerBank(questions) {
@@ -251,6 +257,37 @@ function matchingAnswersMatch(given, expected) {
   return left.every((p, i) => p === right[i]);
 }
 
+/**
+ * How many pairs of a matching answer are right. Matching is scored per pair, so a set of
+ * 10 pairs is worth 10 items.
+ */
+function matchingPairCredit(given, expected) {
+  const parse = (raw) => splitAnswerParts(raw, /\s*;\s*/).map((pair) => {
+    const bits = pair.split('|').map((p) => p.trim());
+    return { left: bits[0] || '', right: bits.slice(1).join('|').trim() };
+  });
+  const key = parse(expected).filter((p) => p.left);
+  const got = new Map(parse(given).map((p) => [p.left, p.right]));
+  const right = key.filter((p) => p.right && got.get(p.left) === p.right).length;
+  return { right, total: key.length };
+}
+
+/**
+ * The correct answer text for an item. Matching and sequencing answers are rebuilt from the
+ * saved pairs/steps, because the stored answer column is limited to 500 characters and a long
+ * set would otherwise be cut off.
+ */
+function expectedAnswerText(q) {
+  const type = String(q.item_type || '').toLowerCase();
+  const choices = Array.isArray(q.choices) ? q.choices.map((c) => String(c)) : [];
+  if (type === 'matching') {
+    const pairs = choices.filter((c) => c.includes('|'));
+    if (pairs.length) return pairs.join('; ');
+  }
+  if (type === 'sequencing' && choices.length) return choices.join(' | ');
+  return q.answer != null ? String(q.answer) : '';
+}
+
 function sequencingAnswersMatch(given, expected) {
   const left = splitAnswerParts(given, /\s*\|\s*/);
   const right = splitAnswerParts(expected, /\s*\|\s*/);
@@ -289,6 +326,7 @@ function scoreSubmission(questions, answersInput) {
     const given = answerMap.has(Number(q.id)) ? answerMap.get(Number(q.id)) : '';
     let correct = false;
     let autoScored = false;
+    let credit = null; // fraction of the points earned when only part of an item is right
     const type = String(q.item_type || '').toLowerCase();
     const isMcq = type === 'mcq' || type === 'multiple_choice';
     const isTyped = type === 'identification' || type === 'enumeration';
@@ -299,10 +337,12 @@ function scoreSubmission(questions, answersInput) {
       correct = fillBlankAnswersMatch(given, q.answer);
     } else if (type === 'matching') {
       autoScored = true;
-      correct = matchingAnswersMatch(given, q.answer);
+      const pairs = matchingPairCredit(given, expectedAnswerText(q));
+      correct = pairs.total > 0 && pairs.right === pairs.total;
+      credit = pairs.total > 0 ? pairs.right / pairs.total : 0;
     } else if (type === 'sequencing') {
       autoScored = true;
-      correct = sequencingAnswersMatch(given, q.answer);
+      correct = sequencingAnswersMatch(given, expectedAnswerText(q));
     } else if (type === 'true_false') {
       autoScored = true;
       correct = mcqAnswersMatch(given, q.answer, ['True', 'False']);
@@ -313,15 +353,22 @@ function scoreSubmission(questions, answersInput) {
       autoScored = true;
       correct = mcqAnswersMatch(given, q.answer, q.choices);
     }
-    if (autoScored && correct) earned += pts;
+    let got = 0;
+    if (autoScored) {
+      if (correct) got = pts;
+      else if (credit != null) got = Math.round(pts * credit * 100) / 100;
+    }
+    earned += got;
     detail.push({
       question_id: q.id,
       given,
       correct: autoScored ? correct : null,
-      points: pts
+      points: pts,
+      earned: got
     });
   }
 
+  earned = Math.round(earned * 100) / 100;
   return { earned, maxScore, detail };
 }
 
@@ -338,7 +385,7 @@ function quizTakenFromSubmission(answersPayload, questions) {
       item_type: q.item_type || 'mcq',
       question: q.question || '',
       choices: Array.isArray(q.choices) ? q.choices : [],
-      expected: q.answer != null ? String(q.answer) : '',
+      expected: expectedAnswerText(q),
       given: d.given || '',
       correct: d.correct === true ? true : d.correct === false ? false : null,
       points: Number(q.points) || 1

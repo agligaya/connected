@@ -219,7 +219,6 @@ const QUIZ_DRAFT_TYPE_ORDER = [
   'true_false',
   'fill_blank',
   'matching',
-  'sequencing',
   'identification',
   'enumeration',
   'short_answer'
@@ -246,15 +245,10 @@ const QUIZ_TYPE_SPECS = {
     schema: '{ type: "matching", question, choices: [3 to 5 strings "left | right"], answer (same pairs joined by "; "), points }',
     rule: 'Matching: 3 to 5 short pairs from the lesson. Each side is a few words. Put the correct pair in choices as "left | right". Every right side must be a different word or phrase.'
   },
-  sequencing: {
-    label: 'sequencing',
-    schema: '{ type: "sequencing", question, choices: [3 to 5 short steps in the correct order], answer (those steps joined by " | "), points }',
-    rule: 'Sequencing: 3 to 5 short steps from the lesson, already in the correct order.'
-  },
   identification: {
     label: 'identification',
-    schema: '{ type: "identification", question, choices: [1 or 2 extra words that are not a correct answer], answer (one short word or phrase, different from every other identification answer), points }',
-    rule: 'Identification: one short factual answer from the lesson. Each identification answer in the quiz must be different. choices are one or two extra words for a shared answer box; do not repeat any correct answer there.'
+    schema: '{ type: "identification", question, choices (empty list [] on every identification item except the FIRST one, which has exactly 2 extra words that are not a correct answer), answer (one short word or phrase, different from every other identification answer), points }',
+    rule: 'Identification: one short factual answer from the lesson. Each identification answer in the quiz must be different. All identification answers go into one shared answer box. Only the FIRST identification item has choices: exactly 2 extra words for that box that are not a correct answer. Every other identification item has choices: [].'
   },
   enumeration: {
     label: 'enumeration',
@@ -387,35 +381,29 @@ function mockGenerate({ title, gradeLevel, subjectName, sourceText, quizItemCoun
       points: 1
     });
   }
-  for (let i = 1; i <= counts.matching; i++) {
+  if (counts.matching > 0) {
+    // One matching set; the count is how many pairs (rows) it has.
     const pairs = [
       `${topic} | main lesson idea`,
       `${subject} | subject`,
       `Grade ${grade} | grade level`
     ];
+    for (let k = pairs.length + 1; k <= counts.matching; k++) {
+      pairs.push(`Key idea ${k} | part ${k} of the lesson`);
+    }
     items.push({
       type: 'matching',
       question: `Match each term from "${topic}" with its meaning.`,
       choices: pairs,
       answer: pairs.join('; '),
-      points: 1
-    });
-  }
-  for (let i = 1; i <= counts.sequencing; i++) {
-    const steps = ['Read the lesson idea', 'Try one example', 'Share with a partner'];
-    items.push({
-      type: 'sequencing',
-      question: `Put these steps for "${topic}" in order.`,
-      choices: steps,
-      answer: steps.join(' | '),
-      points: 1
+      points: pairs.length
     });
   }
   for (let i = 1; i <= counts.identification; i++) {
     items.push({
       type: 'identification',
       question: `Identify term ${i} from the lesson "${topic}".`,
-      choices: [`extra word ${i}`],
+      choices: i === 1 ? ['extra word 1', 'extra word 2'] : null,
       answer: `Term ${i} from ${topic}`,
       points: 1
     });
@@ -514,14 +502,16 @@ function canonicalQuizItemType(raw) {
   if (['true_false', 'true_or_false', 'tf', 'truefalse'].includes(t)) return 'true_false';
   if (['fill_blank', 'fill_in_the_blank', 'fill_in_blank', 'cloze', 'word_bank'].includes(t)) return 'fill_blank';
   if (['matching', 'match', 'matching_type'].includes(t)) return 'matching';
-  if (['sequencing', 'sequence', 'ordering', 'order'].includes(t)) return 'sequencing';
   if (['identification', 'identify', 'id'].includes(t)) return 'identification';
   if (['enumeration', 'enumerate', 'enum'].includes(t)) return 'enumeration';
   if (['short_answer', 'shortanswer', 'essay', 'essay_question'].includes(t)) return 'short_answer';
   return '';
 }
 
-function uniqueMatchingPairs(choices) {
+const MATCHING_MAX_PAIRS = 20;
+
+/** "left | right" strings with every right side different. */
+function uniqueMatchingPairs(choices, max = MATCHING_MAX_PAIRS) {
   const seen = new Set();
   const out = [];
   for (const raw of choices || []) {
@@ -535,7 +525,7 @@ function uniqueMatchingPairs(choices) {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(`${left} | ${right}`);
-    if (out.length >= 5) break;
+    if (out.length >= max) break;
   }
   return out;
 }
@@ -560,10 +550,6 @@ function sanitizeGeneratedItem(item, type) {
     choices = uniqueMatchingPairs(choices);
     if (choices.length < 3) return null;
     answer = choices.join('; ');
-  } else if (type === 'sequencing') {
-    choices = choices.slice(0, 5);
-    if (choices.length < 3) return null;
-    answer = choices.join(' | ');
   } else if (type === 'mcq') {
     if (choices.length < 2 || !answer) return null;
   } else if (type === 'identification') {
@@ -599,9 +585,18 @@ function restrictQuizItems(items, mix) {
   const kept = {};
   const seenId = new Set();
   const out = [];
+  // The matching count is the number of pairs (rows) in ONE matching set. Pairs from any
+  // matching items the AI returned are merged into that single set.
+  const matchPairs = [];
+  let matchQuestion = '';
   for (const item of items || []) {
     if (!item || typeof item !== 'object') continue;
     const type = canonicalQuizItemType(item.type || item.item_type);
+    if (type === 'matching' && limits.matching) {
+      if (Array.isArray(item.choices)) item.choices.forEach((c) => matchPairs.push(String(c || '').trim()));
+      if (!matchQuestion) matchQuestion = String(item.question || '').trim();
+      continue;
+    }
     if (!type || !limits[type] || (kept[type] || 0) >= limits[type]) continue;
     const clean = sanitizeGeneratedItem(item, type);
     if (!clean) continue;
@@ -613,10 +608,37 @@ function restrictQuizItems(items, mix) {
     kept[type] = (kept[type] || 0) + 1;
     out.push(clean);
   }
+  if (limits.matching) {
+    const pairs = uniqueMatchingPairs(matchPairs, Math.max(3, limits.matching));
+    if (pairs.length >= 3) {
+      out.push({
+        type: 'matching',
+        question: matchQuestion || 'Match Column A with the corresponding item in Column B.',
+        choices: pairs,
+        answer: pairs.join('; '),
+        points: pairs.length
+      });
+    }
+  }
+  // The shared answer box holds one word per identification item plus two extra words,
+  // so keep only two distinct extras for the whole section (on the first identification item).
+  const extraSeen = new Set();
+  const extraWords = [];
   for (const item of out) {
     if (item.type !== 'identification' || !Array.isArray(item.choices)) continue;
-    const extras = item.choices.filter((c) => !seenId.has(String(c).trim().toLowerCase()));
-    item.choices = extras.length ? extras : null;
+    for (const c of item.choices) {
+      const text = String(c || '').trim();
+      const key = text.toLowerCase();
+      if (!text || seenId.has(key) || extraSeen.has(key) || extraWords.length >= 2) continue;
+      extraSeen.add(key);
+      extraWords.push(text);
+    }
+  }
+  let extrasPlaced = false;
+  for (const item of out) {
+    if (item.type !== 'identification') continue;
+    item.choices = !extrasPlaced && extraWords.length ? extraWords : null;
+    extrasPlaced = true;
   }
   return sortQuizItems(out);
 }
@@ -730,7 +752,12 @@ ${sourceText || '(title/objectives only)'}${teacherFocusInstruction(teacherFocus
   QUIZ_DRAFT_TYPE_ORDER.forEach((type) => {
     const spec = QUIZ_TYPE_SPECS[type];
     const n = mix.counts[type] || 0;
-    if (n > 0) {
+    if (n > 0 && type === 'matching') {
+      const rows = Math.max(3, n);
+      typeParts.push(`1 matching set with exactly ${rows} pairs`);
+      itemSchemas.push(`{ type: "matching", question (one short direction line), choices: [exactly ${rows} strings "left | right"], answer (same pairs joined by "; "), points }`);
+      typeRules.push(`Matching: write ONE matching item (not several). It must have exactly ${rows} pairs from the lesson, in choices as "left | right". Each side is a few words. Every right side must be a different word or phrase, so no two pairs share the same right side.`);
+    } else if (n > 0) {
       typeParts.push(`${n} ${spec.label}`);
       itemSchemas.push(spec.schema);
       typeRules.push(spec.rule);
@@ -759,7 +786,7 @@ Return ONLY valid JSON with key: quiz.
 
 Rules by grade level:
 - Grade ${grade}: use vocabulary and sentence length suitable for that grade.
-- Quiz MUST have exactly ${mix.total} items total: ${mixLine} — drawn from the uploaded lesson material below.
+- Quiz MUST have exactly ${mix.total} questions in total: ${mixLine} — drawn from the uploaded lesson material below. Each matching pair counts as one question.
 - Every quiz item type must be one of: ${mix.types.join(', ')}. ${omitLine}
 - ${typeRules.join('\n- ')}
 - Use facts, terms, and steps that appear in the source material. Do not invent a different topic.
@@ -778,11 +805,55 @@ ${sourceText || '(title/objectives only)'}${teacherFocusInstruction(teacherFocus
 
   const parsed = await callGroqChat({ system, user });
 
-  return normalizeGeneratedContent(parsed, {
+  const content = normalizeGeneratedContent(parsed, {
     ...fallback,
     quizItemCount: mix.total,
     quizItemTypes: mix.types
   });
+
+  // If the AI gave fewer matching pairs than requested (or some were dropped for repeating a
+  // right side), ask once for the missing pairs and add them to the same matching set.
+  const wanted = mix.counts.matching ? Math.max(3, mix.counts.matching) : 0;
+  const matchItem = wanted && content.quiz && Array.isArray(content.quiz.items)
+    ? content.quiz.items.find((it) => it && it.type === 'matching')
+    : null;
+  if (matchItem && Array.isArray(matchItem.choices) && matchItem.choices.length < wanted) {
+    // Up to 3 short requests. Ask for a few extra pairs because some will repeat a right side.
+    // The lesson text is trimmed so these calls stay under the model's per-minute token limit.
+    const shortSource = String(sourceText || '').slice(0, 3500);
+    for (let attempt = 1; attempt <= 3 && matchItem.choices.length < wanted; attempt += 1) {
+      try {
+        const missing = wanted - matchItem.choices.length;
+        const extra = await callGroqChat({
+          system: `You are an education assistant for a Philippine Montessori elementary school (Grades 1–6).
+Return ONLY valid JSON: { "pairs": ["left | right", ...] } with ${missing + 3} NEW matching pairs from the lesson.
+Each pair is one string written as "left | right". Each side is a few words.
+Every right side must be a different word or phrase, and different from the right sides already used.
+Grade ${grade}: use vocabulary suitable for that grade.`,
+          user: `Lesson: ${title}
+Pairs already used (do not repeat their right sides):
+${matchItem.choices.join('\n')}
+
+Source material (no student PII):
+${shortSource || '(title/objectives only)'}`
+        });
+        const rawPairs = Array.isArray(extra?.pairs) ? extra.pairs : [];
+        const more = rawPairs.map((p) => (p && typeof p === 'object'
+          ? `${p.left ?? p.term ?? ''} | ${p.right ?? p.match ?? p.meaning ?? ''}`
+          : String(p || '')));
+        const merged = uniqueMatchingPairs([...matchItem.choices, ...more], wanted);
+        console.log(`[ai] matching top-up attempt ${attempt}: ${matchItem.choices.length} -> ${merged.length} of ${wanted} pairs`);
+        matchItem.choices = merged;
+        matchItem.answer = merged.join('; ');
+        matchItem.points = merged.length;
+      } catch (err) {
+        console.warn(`[ai] matching top-up attempt ${attempt} failed:`, err.message);
+        break;
+      }
+    }
+  }
+
+  return content;
 }
 
 async function generateActivityRubric({

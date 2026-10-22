@@ -48,6 +48,11 @@
     .quiz-nav:not([hidden]) { display: flex; gap: 10px; margin-top: 8px; }
     .quiz-nav[hidden],
     #quiz-change-lrn[hidden] { display: none !important; }
+    html.quiz-signed-in #quiz-change-lrn { display: none !important; }
+    .quiz-group-head { margin: 0 0 12px; font-weight: 700; color: var(--maroon-deep, #4b0a06); }
+    .quiz-group-head[hidden] { display: none !important; }
+    #quiz-back-portal { display: none; margin-top: 12px; }
+    html.quiz-signed-in #quiz-back-portal { display: inline-block; }
     .quiz-nav button { flex: 1; min-height: 46px; font-size: 16px; }
     .quiz-nav button:disabled { opacity: 0.45; cursor: default; }
     html.quiz-lock, html.quiz-lock body { height: 100%; background: #f4ebe4; }
@@ -106,9 +111,19 @@
       color: #5c1010; font: inherit; font-weight: 600; cursor: pointer;
     }
     .quiz-id-picked[hidden] { display: none !important; }
-    .quiz-match-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-    .quiz-match-row span { flex: 1; }
-    .quiz-match-select { flex: 1; min-height: 40px; font: inherit; font-size: 16px; }
+    .quiz-match { display: flex; gap: 24px; align-items: flex-start; }
+    .quiz-match-col { flex: 1; min-width: 0; }
+    .quiz-match-colhead { margin: 0 0 6px; font-weight: 700; font-size: 14px; opacity: .75; }
+    .quiz-match-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; min-height: 40px; }
+    .quiz-match-num { flex: 0 0 auto; min-width: 22px; }
+    .quiz-match-left { flex: 1; min-width: 0; }
+    .quiz-match-select { flex: 0 0 76px; width: 76px; min-height: 40px; font: inherit; font-size: 16px; }
+    .quiz-match-choice { margin: 8px 0; min-height: 40px; display: flex; align-items: center; gap: 6px; }
+    .quiz-match-set[hidden] { display: none !important; }
+    .quiz-match-set { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid #eee; }
+    .quiz-match-directions { margin: 0 0 10px; font-size: 14px; opacity: .8; }
+    .quiz-match-set .quiz-q { margin: 0; padding: 0; border-bottom: none; }
+    @media (max-width: 520px) { .quiz-match { flex-direction: column; gap: 8px; } .quiz-match-col { width: 100%; } }
     .quiz-seq { list-style: none; padding: 0; margin: 0; }
     .quiz-seq li { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
     .quiz-seq-moves button { margin-left: 4px; min-height: 36px; }
@@ -179,6 +194,7 @@
     <div id="quiz-done" class="quiz-card" hidden>
       <h2 class="font-heading quiz-success">Submitted</h2>
       <p id="quiz-done-msg"></p>
+      <a id="quiz-back-portal" class="btn-solid" href="/" style="text-decoration:none;">Back to my subjects</a>
     </div>
   </main>
 
@@ -216,7 +232,9 @@
       let quizData = null;
       let identified = null;
       let confirmedLrn = '';
-      let quizIndex = 0;
+      let signedIn = false;
+      let quizIndex = 0; // index of the current page (a page holds one item, or all matching / all sequencing items)
+      let quizPages = [];
       let quizStarted = false;
 
       function isSteppedQuiz() {
@@ -281,6 +299,51 @@
         return !!(ta && ta.value.trim());
       }
 
+      // Every item is its own page, except that all matching items share one page
+      // and all sequencing items share one page.
+      function buildPages() {
+        quizPages = [];
+        let matchingPage = null;
+        let sequencingPage = null;
+        questionBlocks().forEach(function (block) {
+          const kind = block.getAttribute('data-kind');
+          if (kind === 'matching') {
+            if (!matchingPage) { matchingPage = []; quizPages.push(matchingPage); }
+            matchingPage.push(block);
+          } else if (kind === 'sequencing') {
+            if (!sequencingPage) { sequencingPage = []; quizPages.push(sequencingPage); }
+            sequencingPage.push(block);
+          } else {
+            quizPages.push([block]);
+          }
+        });
+      }
+
+      function pageNumbers(page) {
+        const nums = page.map(function (b) { return Number(b.getAttribute('data-num')) || 0; });
+        const first = nums[0];
+        const last = nums[nums.length - 1];
+        const contiguous = nums.every(function (n, i) { return n === first + i; });
+        if (nums.length === 1) return String(first);
+        return contiguous ? (first + '-' + last) : nums.join(', ');
+      }
+
+      function pageAnswered(index) {
+        const page = quizPages[index];
+        return !!(page && page.length && page.every(blockAnswered));
+      }
+
+      function pageNotAnsweredMessage(index) {
+        const page = quizPages[index];
+        return page && page.length > 1
+          ? 'Answer every item on this page before continuing.'
+          : 'Answer this question before continuing.';
+      }
+
+      function hideGroupHeads() {
+        qBox.querySelectorAll('.quiz-group-head').forEach(function (h) { h.hidden = true; });
+      }
+
       function setIdentificationBoxVisible(show) {
         const box = document.getElementById('quiz-id-box');
         if (!box) return;
@@ -296,6 +359,8 @@
       function showStartStep() {
         quizStarted = false;
         questionBlocks().forEach(function (block) { block.hidden = true; });
+        syncMatchSets();
+        hideGroupHeads();
         setIdentificationBoxVisible(false);
         if (startStep) startStep.hidden = false;
         if (progressEl) progressEl.hidden = true;
@@ -310,6 +375,8 @@
         if (progressEl) progressEl.hidden = true;
         if (navEl) navEl.hidden = true;
         questionBlocks().forEach(function (block) { block.hidden = false; });
+        syncMatchSets();
+        hideGroupHeads();
         placeIdentificationBoxBefore(qBox.querySelector('.quiz-q[data-kind="identification"]'));
         setIdentificationBoxVisible(!!document.getElementById('quiz-id-box'));
         syncIdentificationWords();
@@ -322,24 +389,40 @@
       function showQuestion(index) {
         const blocks = questionBlocks();
         if (!blocks.length) return;
+        if (!quizPages.length) buildPages();
         if (index < 0) index = 0;
-        if (index > blocks.length - 1) index = blocks.length - 1;
+        if (index > quizPages.length - 1) index = quizPages.length - 1;
         quizIndex = index;
+        const page = quizPages[index];
         if (startStep) startStep.hidden = true;
         if (changeLrnBtn) changeLrnBtn.hidden = true;
-        blocks.forEach(function (block, i) { block.hidden = i !== index; });
-        const current = blocks[index];
+        blocks.forEach(function (block) { block.hidden = page.indexOf(block) === -1; });
+        syncMatchSets();
+        hideGroupHeads();
+        const groupKind = page.length > 1 ? page[0].getAttribute('data-kind') : '';
+        if (groupKind) {
+          const head = qBox.querySelector('.quiz-group-head[data-group="' + groupKind + '"]');
+          if (head) {
+            head.textContent = groupKind === 'matching'
+              ? 'Matching Type'
+              : 'Sequencing · Items ' + pageNumbers(page);
+            head.hidden = false;
+          }
+        }
+        const current = page[0];
         const showIdBox = !!(current && current.getAttribute('data-kind') === 'identification');
         if (showIdBox) placeIdentificationBoxBefore(current);
         setIdentificationBoxVisible(showIdBox);
         syncIdentificationWords();
         if (progressEl) {
           progressEl.hidden = false;
-          progressEl.textContent = 'Question ' + (index + 1) + ' of ' + blocks.length;
+          progressEl.textContent = page.length > 1
+            ? 'Items ' + pageNumbers(page) + ' of ' + blocks.length
+            : 'Question ' + pageNumbers(page) + ' of ' + blocks.length;
         }
         if (navEl) navEl.hidden = false;
         if (backBtn) backBtn.disabled = index === 0;
-        const last = index === blocks.length - 1;
+        const last = index === quizPages.length - 1;
         if (nextBtn) nextBtn.hidden = last;
         if (submitBtn) {
           submitBtn.hidden = !last;
@@ -487,7 +570,7 @@
 
       function identificationTarget() {
         if (isSteppedQuiz()) {
-          const current = questionBlocks()[quizIndex];
+          const current = (quizPages[quizIndex] || [])[0];
           if (current && current.getAttribute('data-kind') === 'identification') return current;
           return null;
         }
@@ -547,20 +630,69 @@
         first.parentNode.insertBefore(box, first);
       }
 
-      function matchingBody(q) {
-        const pairs = (q.choices || []).map(function (c) {
+      function matchingPairs(q) {
+        return (q.choices || []).map(function (c) {
           const bits = String(c).split('|');
           const left = (bits[0] || '').trim();
           const right = bits.slice(1).join('|').trim();
           return { left: left, right: right };
         }).filter(function (p) { return p.left && p.right; });
-        const rights = shuffleList(uniqueMatchRights(pairs));
-        const options = '<option value="">Choose</option>' + rights.map(function (r) {
-          return '<option value="' + esc(r) + '">' + esc(r) + '</option>';
+      }
+
+      function matchLetter(i) {
+        return String.fromCharCode(97 + (i % 26));
+      }
+
+      // All matching items form ONE matching set: Column A lists every row (numbered 1, 2, 3...)
+      // and Column B lists every answer once (lettered a, b, c...). The student writes the letter.
+      // Each row still belongs to its own item, and the option value stays the matching text,
+      // so scoring and the saved answers are unchanged.
+      function matchingPool() {
+        const pairs = [];
+        (quizData.questions || []).forEach(function (q) {
+          if (String(q.item_type || '').toLowerCase() === 'matching') {
+            matchingPairs(q).forEach(function (p) { pairs.push(p); });
+          }
+        });
+        return shuffleList(uniqueMatchRights(pairs));
+      }
+
+      function matchingBody(q, startNum, rights) {
+        const options = '<option value="">—</option>' + rights.map(function (r, i) {
+          return '<option value="' + esc(r) + '">' + matchLetter(i) + '</option>';
         }).join('');
-        return '<div class="quiz-match">' + pairs.map(function (p) {
-          return '<label class="quiz-match-row"><span>' + esc(p.left) + '</span><select class="quiz-match-select" data-left="' + esc(p.left) + '">' + options + '</select></label>';
-        }).join('') + '</div>';
+        return matchingPairs(q).map(function (p, i) {
+          return '<label class="quiz-match-row"><span class="quiz-match-num">' + (startNum + i) + '.</span>' +
+            '<select class="quiz-match-select" data-left="' + esc(p.left) + '" aria-label="Answer for ' + esc(p.left) + '">' + options + '</select>' +
+            '<span class="quiz-match-left">' + esc(p.left) + '</span></label>';
+        }).join('');
+      }
+
+      // Wrap every matching item in one two-column set (Column A rows | Column B lettered answers).
+      function mountMatchingSet(rights) {
+        const blocks = [...qBox.querySelectorAll('.quiz-q[data-kind="matching"]')];
+        if (!blocks.length) return;
+        const set = document.createElement('div');
+        set.className = 'quiz-match-set';
+        set.hidden = true;
+        set.innerHTML =
+          '<p class="quiz-match-directions">Match Column A with the corresponding item in Column B. Choose the letter of your answer for each number.</p>' +
+          '<div class="quiz-match">' +
+          '<div class="quiz-match-col quiz-match-a"><p class="quiz-match-colhead">Column A</p></div>' +
+          '<div class="quiz-match-col quiz-match-b"><p class="quiz-match-colhead">Column B</p>' +
+          rights.map(function (r, i) {
+            return '<p class="quiz-match-choice"><strong>' + matchLetter(i) + '.</strong> ' + esc(r) + '</p>';
+          }).join('') + '</div></div>';
+        blocks[0].parentNode.insertBefore(set, blocks[0]);
+        const colA = set.querySelector('.quiz-match-a');
+        blocks.forEach(function (block) { colA.appendChild(block); });
+      }
+
+      // Show the matching set only while one of its items is on screen.
+      function syncMatchSets() {
+        qBox.querySelectorAll('.quiz-match-set').forEach(function (set) {
+          set.hidden = ![...set.querySelectorAll('.quiz-q')].some(function (b) { return !b.hidden; });
+        });
       }
 
       function sequencingBody(q) {
@@ -571,6 +703,8 @@
       }
 
       function renderQuestions() {
+        const matchRights = matchingPool();
+        let matchRowNum = 1;
         qBox.innerHTML = (quizData.questions || []).map(function (q, i) {
           const type = String(q.item_type || '').toLowerCase();
           let kind = 'text';
@@ -586,7 +720,8 @@
             body = fillBlankBody(q);
           } else if (type === 'matching') {
             kind = 'matching';
-            body = matchingBody(q);
+            body = matchingBody(q, matchRowNum, matchRights);
+            matchRowNum += matchingPairs(q).length;
           } else if (type === 'sequencing') {
             kind = 'sequencing';
             body = sequencingBody(q);
@@ -602,13 +737,31 @@
             body = '<textarea class="quiz-sa" data-qid="' + q.id + '" placeholder="' +
               (type === 'short_answer' ? 'Write your answer' : 'Your answer') + '"></textarea>';
           }
-          const head = type === 'fill_blank'
+          const head = type === 'matching'
+            ? ''
+            : type === 'fill_blank'
             ? '<p><strong>' + (i + 1) + '.</strong> <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>'
             : '<p><strong>' + (i + 1) + '.</strong> ' + esc(q.question) +
               ' <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>';
-          return '<div class="quiz-q" data-qid="' + q.id + '" data-kind="' + kind + '">' + head + body + '</div>';
+          return '<div class="quiz-q" data-qid="' + q.id + '" data-kind="' + kind + '" data-num="' + (i + 1) + '">' + head + body + '</div>';
         }).join('');
         mountIdentificationBox();
+        // One heading per grouped page, shown only while that page is on screen.
+        ['matching', 'sequencing'].forEach(function (groupKind) {
+          const first = qBox.querySelector('.quiz-q[data-kind="' + groupKind + '"]');
+          if (!first) return;
+          const head = document.createElement('p');
+          head.className = 'quiz-group-head';
+          head.setAttribute('data-group', groupKind);
+          head.hidden = true;
+          first.parentNode.insertBefore(head, first);
+        });
+        mountMatchingSet(matchRights);
+        // mountMatchingSet moved the matching items into the set; keep the heading above the set.
+        const matchHead = qBox.querySelector('.quiz-group-head[data-group="matching"]');
+        const matchSet = qBox.querySelector('.quiz-match-set');
+        if (matchHead && matchSet) matchSet.parentNode.insertBefore(matchHead, matchSet);
+        buildPages();
       }
 
       qBox.addEventListener('change', function (e) {
@@ -721,6 +874,21 @@
           document.getElementById('quiz-meta').textContent = metaBits;
           if (lrnInput) lrnInput.value = '';
           resetIdentity();
+          if (hasStudentSession()) {
+            lrnStep.hidden = true;
+            try {
+              await identifyAsSignedIn({ silent: false });
+            } catch (err) {
+              // Expired sign-in or not this student's class: fall back to the LRN form.
+              signedIn = false;
+              document.documentElement.classList.remove('quiz-signed-in');
+              resetIdentity();
+              if (err && err.status === 403) {
+                identifyErr.textContent = err.message;
+                identifyErr.hidden = false;
+              }
+            }
+          }
         } catch (e) {
           statusEl.textContent = e.message || 'Failed to load link.';
         }
@@ -738,6 +906,45 @@
         });
       }
 
+      // Students who are signed in to the portal skip the LRN step.
+      function portalAuthHeaders() {
+        var t = localStorage.getItem('token') || sessionStorage.getItem('token');
+        var headers = { 'Content-Type': 'application/json' };
+        if (t && t !== 'null' && t !== 'undefined') headers.Authorization = 'Bearer ' + t;
+        return headers;
+      }
+
+      function hasStudentSession() {
+        var raw = localStorage.getItem('user') || sessionStorage.getItem('user');
+        if (!raw) return false;
+        try {
+          var user = JSON.parse(raw);
+          return !!(user && user.role === 'student');
+        } catch (_) {
+          return false;
+        }
+      }
+
+      async function identifyAsSignedIn(opts) {
+        const silent = !!(opts && opts.silent);
+        if (!silent) blockMsg.hidden = true;
+        const res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/identify-me', {
+          method: 'POST',
+          headers: portalAuthHeaders(),
+          credentials: 'same-origin',
+          body: '{}'
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const err = new Error(data.error || 'Could not load your details');
+          err.status = res.status;
+          throw err;
+        }
+        signedIn = true;
+        document.documentElement.classList.add('quiz-signed-in');
+        return applyIdentity(data);
+      }
+
       async function identifyWithLrn(lrn, opts) {
         const silent = !!(opts && opts.silent);
         if (!silent) {
@@ -752,8 +959,12 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Could not verify LRN');
 
-        identified = data;
         confirmedLrn = lrn;
+        return applyIdentity(data);
+      }
+
+      function applyIdentity(data) {
+        identified = data;
         lrnStep.hidden = true;
         identityBox.hidden = false;
         document.getElementById('quiz-student-name').textContent = data.student_name || 'Student';
@@ -802,12 +1013,14 @@
       // Re-check attendance when tab is focused so Present→Absent corrections apply without full reload.
       let recheckBusy = false;
       async function recheckEligibility() {
-        if (recheckBusy || !confirmedLrn || confirmedLrn.length !== 12) return;
+        if (recheckBusy || (!signedIn && (!confirmedLrn || confirmedLrn.length !== 12))) return;
         if (doneWrap && !doneWrap.hidden) return;
         recheckBusy = true;
         try {
           const prevEligible = identified && identified.eligible;
-          const data = await identifyWithLrn(confirmedLrn, { silent: true });
+          const data = signedIn
+            ? await identifyAsSignedIn({ silent: true })
+            : await identifyWithLrn(confirmedLrn, { silent: true });
           if (prevEligible && data && !data.eligible) {
             qBox.innerHTML = '';
           }
@@ -854,9 +1067,8 @@
       });
 
       nextBtn?.addEventListener('click', function () {
-        const current = questionBlocks()[quizIndex];
-        if (!blockAnswered(current)) {
-          errEl.textContent = 'Answer this question before continuing.';
+        if (!pageAnswered(quizIndex)) {
+          errEl.textContent = pageNotAnsweredMessage(quizIndex);
           errEl.hidden = false;
           return;
         }
@@ -887,20 +1099,19 @@
       document.getElementById('quiz-submit').addEventListener('click', async function () {
         errEl.hidden = true;
         if (!identified || !identified.eligible || !identified.student_id) {
-          errEl.textContent = 'Confirm your LRN before submitting.';
+          errEl.textContent = signedIn ? 'Reload this page to continue.' : 'Confirm your LRN before submitting.';
           errEl.hidden = false;
           return;
         }
-        if (confirmedLrn.length !== 12) {
+        if (!signedIn && confirmedLrn.length !== 12) {
           errEl.textContent = 'Confirm your 12-digit LRN again.';
           errEl.hidden = false;
           return;
         }
         if (isSteppedQuiz()) {
           if (!quizStarted || (leaveCover && !leaveCover.hidden)) return;
-          const current = questionBlocks()[quizIndex];
-          if (!blockAnswered(current)) {
-            errEl.textContent = 'Answer this question before continuing.';
+          if (!pageAnswered(quizIndex)) {
+            errEl.textContent = pageNotAnsweredMessage(quizIndex);
             errEl.hidden = false;
             return;
           }
@@ -962,23 +1173,27 @@
 
         try {
           let res;
+          const authHeaders = signedIn ? portalAuthHeaders() : { 'Content-Type': 'application/json' };
           if (hasFile) {
             fd.append('student_id', String(identified.student_id));
-            fd.append('lrn', confirmedLrn);
+            if (!signedIn) fd.append('lrn', confirmedLrn);
             fd.append('answers', JSON.stringify(answers));
+            const fileHeaders = {};
+            if (authHeaders.Authorization) fileHeaders.Authorization = authHeaders.Authorization;
             res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
               method: 'POST',
+              headers: fileHeaders,
+              credentials: 'same-origin',
               body: fd
             });
           } else {
+            const payload = { student_id: Number(identified.student_id), answers: answers };
+            if (!signedIn) payload.lrn = confirmedLrn;
             res = await fetch('/api/quiz/' + encodeURIComponent(token) + '/submit', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                student_id: Number(identified.student_id),
-                lrn: confirmedLrn,
-                answers: answers
-              })
+              headers: authHeaders,
+              credentials: 'same-origin',
+              body: JSON.stringify(payload)
             });
           }
           const data = await res.json();

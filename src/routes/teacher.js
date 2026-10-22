@@ -2486,17 +2486,20 @@ router.get('/classwork/sets', verifyToken, async (req, res) => {
     const allowedGrades = [...new Set(assignmentRows.map((r) => Number(r.grade_level)).filter(Boolean))];
     if (!allowedGrades.length) return res.json([]);
 
+    // A matching set counts one item per pair; every other item counts once.
+    const unitCount = `IFNULL(SUM(CASE WHEN LOWER(IFNULL(qb.item_type, '')) = 'matching' AND JSON_VALID(qb.choices)
+                        THEN GREATEST(1, JSON_LENGTH(qb.choices)) ELSE 1 END), 0)`;
     let sql = `SELECT qs.*, s.NAME as subject_name,
-                (SELECT COUNT(*) FROM question_bank qb
+                (SELECT ${unitCount} FROM question_bank qb
                  WHERE qb.quiz_set_id = qs.id AND qb.status = 'active') as item_count,
                 (SELECT COUNT(*) FROM question_bank qb
                  WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
                    AND LOWER(IFNULL(qb.item_type, '')) IN ('activity', 'activity_prompt')) as activity_count,
-                (SELECT COUNT(*) FROM question_bank qb
+                (SELECT ${unitCount} FROM question_bank qb
                  WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
                    AND LOWER(IFNULL(qb.item_type, '')) NOT IN ('activity', 'activity_prompt')
                    AND LOWER(IFNULL(qb.folder, '')) = 'exam') as exam_count,
-                (SELECT COUNT(*) FROM question_bank qb
+                (SELECT ${unitCount} FROM question_bank qb
                  WHERE qb.quiz_set_id = qs.id AND qb.status = 'active'
                    AND LOWER(IFNULL(qb.item_type, '')) NOT IN ('activity', 'activity_prompt')
                    AND LOWER(IFNULL(qb.folder, '')) <> 'exam') as quiz_count
@@ -2848,7 +2851,10 @@ router.post('/classwork', verifyToken, async (req, res) => {
       if (!choiceList.length) choiceList = null;
     }
 
-    const pts = Math.max(0.5, Number(points) || 1);
+    // Matching is worth one point per pair; everything else uses the points given.
+    const pts = type === 'matching' && choiceList
+      ? Math.max(1, choiceList.filter((c) => String(c).includes('|')).length)
+      : Math.max(0.5, Number(points) || 1);
     const rubricObj = isActivityType(type) ? normalizeRubric(rubric, pts) : null;
     const folder = !isActivityType(type) && String(req.body?.folder || '').toLowerCase() === 'exam'
       ? 'exam'
@@ -2957,8 +2963,10 @@ router.put('/classwork/:id', verifyToken, async (req, res) => {
           ? String(answer).trim().slice(0, 500)
           : null
         : row.answer;
-    const nextPoints =
-      points != null ? Math.max(0.5, Number(points) || 1) : Number(row.points) || 1;
+    // Matching is worth one point per pair; everything else keeps the points given.
+    const nextPoints = type === 'matching' && choiceList
+      ? Math.max(1, choiceList.filter((c) => String(c).includes('|')).length)
+      : points != null ? Math.max(0.5, Number(points) || 1) : Number(row.points) || 1;
     const nextGrade =
       grade_level != null ? Number(grade_level) : Number(row.grade_level);
     const assignmentRows = await getTeacherAssignmentRows(teacherId);

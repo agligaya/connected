@@ -21,7 +21,7 @@ const {
   QUARTERS
 } = require('../utils/schoolSettings');
 const { logActivity, getRecentActivity } = require('../utils/activityLog');
-const { sendAccountDetails } = require('../utils/mail');
+const { sendAccountDetails, publicLoginUrl } = require('../utils/mail');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const {
   ensureTeachingModeEnum,
@@ -466,7 +466,8 @@ exports.createAccount = async (req, res) => {
       lastName: plainText(req.body?.last_name),
       email: String(req.body?.email || '').trim(),
       role: req.body?.role,
-      password: String(req.body?.password || '')
+      password: String(req.body?.password || ''),
+      loginUrl: publicLoginUrl(req)
     });
     const message = mail.sent
       ? 'Account created successfully. Sign-in details were sent to the email address.'
@@ -558,7 +559,8 @@ exports.bulkCreateAccounts = async (req, res) => {
           lastName: plainText(row.last_name),
           email,
           role,
-          password
+          password,
+          loginUrl: publicLoginUrl(req)
         });
         if (mail.sent) emailed += 1;
       } catch (error) {
@@ -1265,7 +1267,9 @@ exports.transferAndDeactivate = async (req, res) => {
     await conn.commit();
     let hired = '';
     if (newTeacherId) {
-      const mail = hiredMail ? await sendAccountDetails(hiredMail) : { sent: false, error: 'Mail is not configured.' };
+      const mail = hiredMail
+        ? await sendAccountDetails({ ...hiredMail, loginUrl: publicLoginUrl(req) })
+        : { sent: false, error: 'Mail is not configured.' };
       hired = mail.sent
         ? ' Sign-in details were sent to the new teacher’s email. They set their own password after signing in.'
         : ` The new teacher account was created. The email was not sent: ${mail.error}`;
@@ -1308,9 +1312,11 @@ exports.resetAccountPassword = async (req, res) => {
       );
     } catch (e) { /* exists */ }
 
+    // Staff temporary passwords do not expire; this also clears any old student expiry.
+    await require('./authController').ensureAuthColumns();
     const password_hash = await bcrypt.hash(String(password).trim(), 10);
     await db.query(
-      'UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?',
+      'UPDATE users SET password_hash = ?, must_change_password = 1, temp_password_expires_at = NULL WHERE id = ?',
       [password_hash, id]
     );
 

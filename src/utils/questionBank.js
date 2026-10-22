@@ -162,10 +162,13 @@ function isAllowedItemType(type) {
   return ITEM_TYPES.includes(t) || t === 'activity_prompt';
 }
 
+// Matching sets can have up to 20 pairs, so choices are no longer cut at 8.
+const MAX_STORED_CHOICES = 20;
+
 function normalizeChoices(raw) {
   if (raw == null) return null;
   if (Array.isArray(raw)) {
-    const list = raw.map((c) => String(c ?? '').trim()).filter(Boolean).slice(0, 8);
+    const list = raw.map((c) => String(c ?? '').trim()).filter(Boolean).slice(0, MAX_STORED_CHOICES);
     return list.length ? list : null;
   }
   if (typeof raw === 'string') {
@@ -346,7 +349,7 @@ function quizItemsFromDraft(part) {
       if (!question) return null;
       const choices = normalizeChoices(it.choices);
       const answer = it.answer != null ? String(it.answer).trim().slice(0, 500) : null;
-      const points = Math.max(0.5, Number(it.points) || 1);
+      let points = Math.max(0.5, Number(it.points) || 1);
       let item_type = canonicalItemType(it.type || it.item_type || '');
       if (!ITEM_TYPES.includes(item_type) || isActivityType(item_type)) {
         item_type = choices && choices.length ? 'mcq' : 'short_answer';
@@ -360,6 +363,8 @@ function quizItemsFromDraft(part) {
         question = `${question} _____`;
       } else if (item_type === 'matching' && nextChoices && nextChoices.length) {
         nextAnswer = nextChoices.join('; ').slice(0, 500);
+        // Matching is worth one point per pair.
+        points = Math.max(1, nextChoices.filter((c) => String(c).includes('|')).length);
       } else if (item_type === 'sequencing' && nextChoices && nextChoices.length) {
         nextAnswer = nextChoices.join(' | ').slice(0, 500);
       }

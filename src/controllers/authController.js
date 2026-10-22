@@ -19,6 +19,9 @@ function ensureAuthColumns() {
       await db.query(
         'ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0'
       ).catch(ignoreDupColumn);
+      await db.query(
+        'ALTER TABLE users ADD COLUMN temp_password_expires_at DATETIME NULL'
+      ).catch(ignoreDupColumn);
     })().catch((error) => {
       authColumnsReady = null;
       throw error;
@@ -114,7 +117,9 @@ async function verifyPassword(plain, hash) {
 exports.login = async (req, res) => {
   try {
     await ensureAuthColumns();
-    const { email, password, remember } = req.body;
+    const { remember } = req.body || {};
+    const password = String(req.body?.password ?? '');
+    const email = String(req.body?.email || '').trim();
     const lockedMinutes = loginLockMinutes(email);
     if (lockedMinutes) {
       return res.status(429).json({
@@ -123,7 +128,9 @@ exports.login = async (req, res) => {
     }
 
     const [users] = await db.query(
-      'SELECT * FROM users WHERE email = ?',
+      `SELECT *,
+         (temp_password_expires_at IS NOT NULL AND temp_password_expires_at < NOW()) AS temp_expired
+       FROM users WHERE LOWER(email) = LOWER(?)`,
       [email]
     );
 
@@ -159,7 +166,13 @@ exports.login = async (req, res) => {
       }
     }
 
-    const validPassword = await verifyPassword(password, user.password_hash);
+    // Passwords pasted from an email often carry stray whitespace, so retry trimmed.
+    let usedPassword = password;
+    let validPassword = await verifyPassword(password, user.password_hash);
+    if (!validPassword && password !== password.trim()) {
+      usedPassword = password.trim();
+      validPassword = await verifyPassword(usedPassword, user.password_hash);
+    }
     if (!validPassword) {
       recordLoginFailure(email);
       const afterFail = loginLockMinutes(email);
@@ -172,8 +185,16 @@ exports.login = async (req, res) => {
     }
     clearLoginFailure(email);
 
+    // Checked only after the password is right, so it reveals nothing to someone guessing.
+    const mustChangeNow = user.must_change_password === 1 || user.must_change_password === true;
+    if (mustChangeNow && Number(user.temp_expired) === 1) {
+      return res.status(403).json({
+        error: 'Your temporary password has expired. Ask your school admin to send a new one.'
+      });
+    }
+
     if (!String(user.password_hash).startsWith('$2')) {
-      const hashed = await bcrypt.hash(password, 10);
+      const hashed = await bcrypt.hash(usedPassword, 10);
       await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, user.id]);
     }
 
@@ -233,7 +254,7 @@ exports.changePassword = async (req, res) => {
     }
 
     const [users] = await db.query(
-      'SELECT password_hash FROM users WHERE id = ?',
+      'SELECT password_hash, must_change_password FROM users WHERE id = ?',
       [userId]
     );
 
@@ -242,14 +263,22 @@ exports.changePassword = async (req, res) => {
     }
 
     const user = users[0];
-    const isMatch = await verifyPassword(current_password, user.password_hash);
-    if (!isMatch) {
-      return res.status(400).json({ error: 'Current password is incorrect' });
+    const forced = user.must_change_password === 1 || user.must_change_password === true;
+    if (forced) {
+      // The session was just opened with the temporary password, so it is not asked for again.
+      if (await verifyPassword(String(new_password), user.password_hash)) {
+        return res.status(400).json({ error: 'Choose a password different from the temporary one' });
+      }
+    } else {
+      const isMatch = await verifyPassword(String(current_password ?? ''), user.password_hash);
+      if (!isMatch) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
     }
 
     const hashed = await bcrypt.hash(new_password, 10);
     await db.query(
-      'UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?',
+      'UPDATE users SET password_hash = ?, must_change_password = 0, temp_password_expires_at = NULL WHERE id = ?',
       [hashed, userId]
     );
 

@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261013e9" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261022b" />
 
 </head>
 <body data-view="login">
@@ -61,15 +61,15 @@
                     <img class="login-card-logo" src="/assets/connectED.png" alt="ConnectED" width="64" height="64" />
                     <h1 class="login-title-usant font-heading">ConnectED</h1>
                   </div>
-                  <p class="login-subtitle-usant">Sign in with your school email, or your LRN if you are a student.</p>
+                  <p class="login-subtitle-usant">Sign in with your school email, or the username sent to your parent if you are a student.</p>
                   <div class="form-field">
-                    <label class="field-label-usant" for="login-email">Email or LRN</label>
-                    <input class="input-usant" id="login-email" type="text" autocomplete="username" placeholder="Enter your email or LRN" />
+                    <label class="field-label-usant" for="login-email">Email or username</label>
+                    <input class="input-usant" id="login-email" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Enter your email or username" />
                   </div>
                   <div class="form-field">
                     <label class="field-label-usant" for="login-password">Password</label>
                     <div class="input-usant-wrap input-usant-wrap--password">
-                      <input class="input-usant" id="login-password" type="password" placeholder="Enter your password" />
+                      <input class="input-usant" id="login-password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Enter your password" />
                       <button type="button" class="password-toggle-usant" id="toggle-password" aria-label="Show password">👁</button>
                     </div>
                     <button type="button" class="link-usant link-usant--muted login-forgot-under" id="forgot-password-btn">Forgot Password</button>
@@ -543,9 +543,7 @@
                       <div class="lp-subject-body">
                         <div id="lesson-plans-list" class="announcement-list"></div>
                         <div class="lp-drafts-heading">
-                          <h3 class="admin-section-title" id="lp-ai-drafts-heading">AI Drafts</h3>
-                          <p id="ai-mode-hint" class="page-subheading"></p>
-                        </div>
+                          <h3 class="admin-section-title" id="lp-ai-drafts-heading">AI Drafts</h3>                        </div>
                         <div id="ai-recommendations-list" class="announcement-list"></div>
                       </div>
                     </div>
@@ -716,16 +714,14 @@
               <span class="dash-sidebar-brand-subtitle">Student Portal</span>
             </div>
             <div class="parent-sidebar-child">
-              <div class="dash-sidebar-heading">My Class</div>
               <div class="parent-name parent-name--sidebar">
                 <div id="student-portal-name">Loading…</div>
                 <small id="student-portal-class"></small>
               </div>
             </div>
-            <div>
-              <nav class="sidebar-nav sidebar-nav--icons" aria-label="Student sections">
-                <button type="button" class="sidebar-item active" id="student-dashboard-tab"><span class="nav-ico">▦</span> Dashboard</button>
-              </nav>
+            <div class="student-subject-nav-wrap">
+              <div class="dash-sidebar-heading student-subject-heading">My Subjects</div>
+              <nav class="sidebar-nav sidebar-nav--icons student-subject-nav" id="student-subject-nav" aria-label="My subjects"></nav>
             </div>
             <div class="portal-sidebar-footer-links">
               <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
@@ -741,7 +737,6 @@
             <header class="dash-topbar">
               <div class="dash-topbar-left">
                 <button type="button" class="mobile-nav-toggle" data-mobile-nav="student" aria-label="Open menu" title="Menu">☰</button>
-                <button type="button" class="topbar-back-btn" id="student-back-btn" title="Go back" style="display:none;">← Back</button>
                 <span class="dash-topbar-role">Student Portal</span>
               </div>
               <div class="dash-topbar-right">
@@ -974,7 +969,7 @@
                       <div class="admin-tab-header">
                         <div>
                           <h2>Manage Students</h2>
-                          <p class="admin-subtitle">Enroll students, assign parents and class advisers.</p>
+                          <p class="admin-subtitle">Enroll students, assign parents and class advisers. Each child's login is emailed to the linked parent.</p>
                         </div>
                         <div class="admin-header-actions">
                           <button type="button" class="btn-solid" id="open-bulk-student-modal">Bulk Enroll</button>
@@ -1152,7 +1147,7 @@
 <div id="forgot-password-modal" class="modal-overlay" hidden>
   <div class="modal-card">
     <h3 class="font-heading">Forgot Password</h3>
-    <p class="page-subheading">ConnectED does not send reset emails. Ask the school administrator to open Manage Accounts, click your name, open <strong>Actions</strong>, and choose <strong>Reset Password</strong>. Sign in with that temporary password, then change it when prompted.</p>
+    <p class="page-subheading">ConnectED does not send reset emails. Ask the school administrator to open Manage Accounts, click your name, open <strong>Actions</strong>, and choose <strong>Reset Password</strong>. Sign in with that temporary password, then change it when prompted. Students: ask the school office to reset your login. The new temporary password is emailed to your parent and expires after 10 minutes.</p>
     <div class="modal-form-actions modal-form-actions--match">
       <button type="button" class="btn-solid" id="forgot-password-close">OK</button>
     </div>
@@ -1163,10 +1158,10 @@
 <div id="change-password-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:560px;">
     <h3 class="font-heading" id="change-password-title">Change Password</h3>
-    <p class="page-subheading" id="change-password-hint" hidden>Your administrator set a temporary password. Enter it below as the current password, then choose a new one to continue.</p>
+    <p class="page-subheading" id="change-password-hint" hidden>You signed in with a temporary password. Choose a new password to continue.</p>
     <p id="change-password-error" class="inline-message" style="color:#b71c1c;" hidden></p>
     <form id="change-password-form" class="admin-form admin-edit-form">
-      <div class="form-row">
+      <div class="form-row" id="cp-current-row">
         <div class="field-small span-full">
           <label for="cp-current">Current Password</label>
           <div class="password-field-wrap">
@@ -1307,10 +1302,6 @@
           <div class="ai-type-check">
             <label><input type="checkbox" name="ai-quiz-type" value="matching" /> Matching</label>
             <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="matching" min="1" max="20" placeholder="Items" hidden />
-          </div>
-          <div class="ai-type-check">
-            <label><input type="checkbox" name="ai-quiz-type" value="sequencing" /> Sequencing</label>
-            <input type="number" class="ai-type-count" name="ai-quiz-type-count" data-type="sequencing" min="1" max="20" placeholder="Items" hidden />
           </div>
           <div class="ai-type-check">
             <label><input type="checkbox" name="ai-quiz-type" value="identification" /> Identification</label>
@@ -1744,7 +1735,6 @@
               <option value="true_false">True or False</option>
               <option value="fill_blank">Fill in the blank</option>
               <option value="matching">Matching</option>
-              <option value="sequencing">Sequencing</option>
               <option value="identification">Identification</option>
               <option value="enumeration">Enumeration</option>
               <option value="short_answer">Short answer</option>
@@ -1975,7 +1965,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261019c" type="module"></script>
+  <script src="/js/app.js?v=20261022b" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -2359,7 +2349,7 @@
 <div id="add-student-modal" class="modal-overlay" hidden>
   <div class="modal-card" style="max-width:720px;max-height:90vh;overflow-y:auto;">
     <h3 class="font-heading">Enroll Student</h3>
-    <p class="page-subheading">Add a new student and assign parent and class adviser.</p>
+    <p class="page-subheading">Add a new student and assign a parent and class adviser. The username and temporary password are emailed to that parent.</p>
     <form id="admin-student-form" class="admin-form">
       <div class="form-row">
         <div class="field-small"><label for="student-lrn">LRN</label><input id="student-lrn" type="text" placeholder="12-digit LRN" maxlength="12" oninput="this.value=this.value.replace(/\D/g,'').slice(0,12)" /></div>
@@ -2451,7 +2441,7 @@
       </div>
       <div class="field-small" id="edit-student-login-block">
         <label>Student login</label>
-        <p class="page-subheading" id="edit-student-login-status" style="margin:0 0 8px;">The child signs in with the LRN.</p>
+        <p class="page-subheading" id="edit-student-login-status" style="margin:0 0 8px;">The child signs in with the username sent to the parent.</p>
         <div id="edit-student-login-create">
           <div style="display:flex;gap:8px;align-items:center;">
             <input id="edit-student-login-password" type="text" placeholder="Auto-generated" autocomplete="off" minlength="6" />
@@ -2633,18 +2623,20 @@
       <button type="button" class="legal-tab" data-legal-tab="terms">Terms</button>
       <button type="button" class="legal-tab" data-legal-tab="help">Help</button>
     </nav>
-    <p class="page-subheading legal-updated">Last updated: 2 October 2026</p>
+    <p class="page-subheading legal-updated">Last updated: 22 October 2026</p>
 
     <section class="legal-panel" id="legal-panel-privacy">
       <h3 class="font-heading legal-heading">Privacy Policy</h3>
-      <p>ConnectED is a school portal for elementary teachers, parents, and administrators. This policy describes personal data the system stores and how it is used. It is information about the product, not legal advice. A school that deploys ConnectED for live records should review this text with its Data Protection Officer under the Data Privacy Act of 2012 (Republic Act No. 10173).</p>
+      <p>ConnectED is a school portal for elementary teachers, parents, administrators, and students. This policy describes personal data the system stores and how it is used. It is information about the product, not legal advice. A school that deploys ConnectED for live records should review this text with its Data Protection Officer under the Data Privacy Act of 2012 (Republic Act No. 10173).</p>
       <h2>Who this covers</h2>
-      <p>Admin, teacher, parent, and student accounts. A learner signs in with the LRN on the student record. Parents still see progress summaries.</p>
+      <p>Admin, teacher, parent, and student accounts. Students are children, so the school creates their account and sends the sign-in details to the parent’s email. A learner signs in with that username. Parents still see progress summaries, and a parent can ask the school to review, correct, or remove their child’s data at any time.</p>
       <h2>Data we process</h2>
       <ul>
         <li><strong>Accounts:</strong> name, school email, hashed password, role, status, optional avatar, parent mobile number.</li>
         <li><strong>Students:</strong> name, LRN, grade, section, date of birth, gender, enrollment status, linked parent.</li>
         <li><strong>Learning records:</strong> attendance (including AM/PM sessions), scores and rubric category points, lesson files, classwork, quizzes, and AI drafts.</li>
+        <li><strong>Student portal activity:</strong> the classwork a student opens or submits, their answers, scores, and submission times, and the lesson materials shown to their class.</li>
+        <li><strong>Account emails:</strong> the parent’s email address is used to send a child’s username and temporary password.</li>
         <li><strong>Messages:</strong> parent–teacher concerns stay between those two accounts. Admins send school announcements, not private threads.</li>
         <li><strong>SMS queue:</strong> parent phone, message text, send status (when SMS is configured).</li>
         <li><strong>Technical:</strong> sign-in session (browser token), activity logs, uploaded files.</li>
@@ -2654,13 +2646,16 @@
       <h2>Who can see what</h2>
       <ul>
         <li><strong>Admin:</strong> school users, students, subjects, and school announcements. Parent–teacher concerns stay private.</li>
-        <li><strong>Teacher:</strong> assigned classes, records they encode, materials, and notices they send.</li>
+        <li><strong>Teacher:</strong> assigned classes, records they encode, students’ submitted answers and scores for those classes, materials, and notices they send.</li>
         <li><strong>Parent:</strong> only children linked to their account (overview, progress, attendance, inbox for the selected child).</li>
+        <li><strong>Student:</strong> only their own subjects, classwork, lesson materials, and scores. A student cannot see other students’ data, attendance records, or parent–teacher messages.</li>
       </ul>
+      <h2>Student accounts</h2>
+      <p>The school issues each student a username and a temporary password, sent to the parent’s email. The temporary password works for a short time only and must be replaced with a password the student chooses at first sign-in. Parents should help young children keep their password private. If a password is lost or expires, ask the school office to send a new one.</p>
       <h2>SMS</h2>
-      <p>If the school enables SMS, a parent’s Philippine mobile number and the alert text are sent through the configured provider (for example Semaphore). Delivery depends on that provider and a valid <code>09XXXXXXXXX</code> number.</p>
+      <p>If the school enables SMS, a parent’s Philippine mobile number and the alert text are sent through the school’s configured SMS provider. Delivery depends on that provider and a valid <code>09XXXXXXXXX</code> number.</p>
       <h2>AI drafts</h2>
-      <p>Generate AI Draft sends lesson title, objectives, and an excerpt of the lesson file to Google Gemini. Student names and LRNs are not included in that prompt. Drafts stay in the teacher account until reviewed and saved to Classwork. Teachers must check AI output before learners use it. Quiz and activity Records are created from Classwork, not from the draft itself.</p>
+      <p>Generate AI Draft sends lesson title, objectives, and an excerpt of the lesson file to the configured AI service. Student names and LRNs are not included in that prompt. Drafts stay in the teacher account until reviewed and saved to Classwork. Teachers must check AI output before learners use it. Quiz and activity Records are created from Classwork, not from the draft itself.</p>
       <h2>Shared quiz links</h2>
       <p>A classwork share link can be opened without a ConnectED login. Anyone who has the link can open that quiz. Treat the URL like a password.</p>
       <h2>Browser storage</h2>
@@ -2675,18 +2670,20 @@
       <h3 class="font-heading legal-heading">Terms of Use</h3>
       <p>By using a ConnectED account you agree to these terms. The school that operates this portal remains responsible for official grades, enrollment, and school policies.</p>
       <h2>The service</h2>
-      <p>ConnectED is an information system for teachers, parents, and admins. It is not a public social network. Progress Summary is generated from stored scores and attendance (template wording), not a counseling or psychological assessment. If a screen conflicts with official school records, the school’s official record prevails.</p>
+      <p>ConnectED is an information system for teachers, parents, students, and admins. It is not a public social network. Progress Summary is generated from stored scores and attendance (template wording), not a counseling or psychological assessment. If a screen conflicts with official school records, the school’s official record prevails.</p>
       <h2>Accounts</h2>
-      <p>Accounts are issued by an administrator. Keep your password private. Do not share a login. You may be required to change a temporary password on first sign-in. The school may disable an account if it is misused.</p>
+      <p>Accounts are issued by an administrator. Keep your password private. Do not share a login. A temporary password expires after a short time and must be changed at first sign-in; if it expires, ask the school for a new one. A student’s account is for that student only, and parents should help younger children keep it private. The school may disable an account if it is misused.</p>
       <h2>Acceptable use</h2>
       <ul>
         <li><strong>Teachers</strong> encode attendance and scores in good faith, review AI drafts before Classwork or Records, and send notices only to appropriate classes.</li>
         <li><strong>Parents</strong> use the portal only for children linked to them and must not copy or publish other pupils’ data.</li>
+        <li><strong>Students</strong> use their own account only, answer quizzes and activities honestly without copying or sharing answers, and do not pass quiz or exam links outside their class.</li>
         <li><strong>Admins</strong> manage users, enrollment, and subjects for school operations.</li>
       </ul>
       <p>Do not put extra sensitive personal data in notices or AI prompts beyond what teaching requires.</p>
       <h2>AI, SMS, and quiz links</h2>
       <p>AI output can be wrong. The teacher is responsible for what is saved and given to learners. SMS alerts are best-effort and are not a substitute for the portal. Shared quiz URLs must not be posted publicly if the assessment should stay in class.</p>
+      <p>Classwork opens for a student only when the teacher has enabled it, before its deadline, and when the student’s attendance allows it. A student who was absent may need a make-up from the teacher. Scores are the teacher’s decision, and a pending activity score is not final until the teacher records it.</p>
       <h2>Uploads and availability</h2>
       <p>Lesson files must be school-appropriate and must not infringe copyright. The portal may be unavailable during maintenance, local server issues, or a slow AI model. There is no guaranteed uptime unless the school states otherwise.</p>
       <h2>Governing note</h2>
@@ -2698,14 +2695,15 @@
       <p>Short guides for this portal. For account problems, ask your school administrator—there is no self-serve password reset by email.</p>
       <h2>All users</h2>
       <ul>
-        <li>Sign in with your school email and password. Use Change Password in the profile menu after you log in.</li>
+        <li>Staff and parents sign in with their school email and password. Students sign in with the username emailed to their parent. Use Change Password in the profile menu after you log in.</li>
         <li>After a system update, refresh the page (<kbd>Ctrl</kbd>+<kbd>F5</kbd>) if buttons look old.</li>
         <li>On a phone, use the menu button (☰) to open Dashboard, Inbox, and the rest of the sidebar.</li>
       </ul>
       <h2>Admin</h2>
       <ul>
         <li>Create teacher and parent accounts. Parents need a valid mobile number if the school sends SMS.</li>
-        <li>Enroll students (LRN, grade, section) and link them to a parent.</li>
+        <li>Enroll students (LRN, grade, section) and link them to a parent. The child's username and temporary password are emailed to that parent. The temporary password expires after 10 minutes.</li>
+        <li>To help a student who cannot sign in, open the student, choose the login reset, and a new temporary password is emailed to the parent.</li>
         <li>Manage subjects and who teaches which class. Send school announcements from Announcements.</li>
       </ul>
       <h2>Teacher</h2>
@@ -2720,6 +2718,14 @@
         <li>If you have more than one child, switch child in the sidebar first. Dashboard, Progress, Attendance, and Inbox follow the selected child.</li>
         <li>Progress Summary lists subject notes from recent scores and attendance. It is not an AI chat.</li>
         <li>SMS may repeat an important notice; the portal has the full message.</li>
+        <li>Your child’s sign-in details are emailed to you. Help them sign in within 10 minutes and choose their own password.</li>
+      </ul>
+      <h2>Student</h2>
+      <ul>
+        <li>Sign in with the username your parent received by email and the temporary password. The temporary password expires after 10 minutes. If it does, ask the school office for a new one. You will be asked to choose your own password the first time.</li>
+        <li>Pick a subject in the sidebar. <strong>Classworks</strong> lists your quizzes, activities, and exams. <strong>Materials</strong> has the lesson files your teacher shared. <strong>Records</strong> shows your scores.</li>
+        <li>Open a quiz or activity when it is available. If it is not open yet, closed, or needs a make-up, ask your teacher.</li>
+        <li>An activity score shows as pending until your teacher records it.</li>
       </ul>
       <h2>Common questions</h2>
       <ul>
@@ -2727,6 +2733,9 @@
         <li><strong>Generate showed an error but a draft appeared.</strong> Refresh Materials. Wait for one job to finish before clicking Generate again.</li>
         <li><strong>Enroll has no sections.</strong> Choose the grade first. Sections come from assigned classes and enrolled students.</li>
         <li><strong>SMS did not arrive.</strong> Check the parent number is <code>09XXXXXXXXX</code> and that the school’s SMS service is on.</li>
+        <li><strong>A student sees “Invalid email or password”.</strong> Use the username from the email (not the child’s full name), type the password exactly as shown, and ask the school for a reset if more than 10 minutes have passed.</li>
+        <li><strong>“Your temporary password has expired.”</strong> Ask the school office to reset the login. A new email is sent to the parent.</li>
+        <li><strong>A quiz or activity will not open.</strong> It may not be enabled yet, past its deadline, or the student is marked absent. Ask the teacher.</li>
       </ul>
     </section>
 

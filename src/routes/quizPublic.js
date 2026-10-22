@@ -25,6 +25,30 @@ const {
   isAtOrBeforeManila
 } = require('../utils/quizAttendance');
 const { notifyStudentScore } = require('../utils/sms');
+const { verifyToken } = require('../middleware/auth');
+const { ensureStudentRoleSchema } = require('../utils/studentAccounts');
+const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
+
+// A student who is signed in to the portal is already identified, so no LRN is needed.
+// Resolves the active student linked to the sign-in, or null when nobody valid is signed in.
+async function signedInStudent(req) {
+  const user = await new Promise((resolve) => {
+    const quiet = { status() { return this; }, json() { resolve(null); } };
+    verifyToken(req, quiet, () => resolve(req.user || null));
+  });
+  if (!user || user.role !== 'student') return null;
+  await ensureStudentRoleSchema();
+  await ensureSoftDeleteSchema();
+  const [[row]] = await db.query(
+    `SELECT s.id, s.lrn, s.first_name, s.last_name
+     FROM users u
+     JOIN students s ON s.id = u.student_id
+     WHERE u.id = ? AND u.role = 'student' AND s.deleted_at IS NULL AND s.STATUS = 'active'
+     LIMIT 1`,
+    [user.id]
+  );
+  return row || null;
+}
 
 function normalizeLrn(value) {
   const digits = String(value || '').replace(/\D/g, '');
@@ -50,6 +74,41 @@ async function findStudentByLrnInClass(assessment, lrnProvided) {
   const slot = attendanceSlotForAssessment(assessment);
   const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
   return roster.find((s) => normalizeLrn(s.lrn) === lrnProvided) || null;
+}
+
+async function identifyPayload(assessment, row) {
+  const submittedSet = await getSubmittedStudentIds(assessment.id);
+  const submitted = submittedSet.has(Number(row.id));
+  const makeupIds = parseMakeupIds(assessment.quiz_makeup_student_ids);
+  const eligible = isStudentEligibleForQuiz({
+    attendanceStatus: row.attendance_status,
+    submitted,
+    makeupStudentIds: makeupIds,
+    studentId: row.id,
+    assessment
+  });
+  const block_reason = quizBlockReason({
+    attendanceStatus: row.attendance_status,
+    eligible,
+    submitted,
+    assessment,
+    makeupStudentIds: makeupIds,
+    studentId: row.id
+  });
+
+  return {
+    student_id: row.id,
+    student_name: `${row.last_name}, ${row.first_name}`,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    attendance_status: row.attendance_status || null,
+    submitted,
+    eligible: !!eligible,
+    block_reason,
+    makeup: makeupIds.includes(Number(row.id)),
+    quiz_closes_at: assessment.quiz_closes_at || null,
+    quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null
+  };
 }
 
 router.get('/:token', async (req, res) => {
@@ -147,41 +206,40 @@ router.post('/:token/identify', async (req, res) => {
       });
     }
 
-    const submittedSet = await getSubmittedStudentIds(assessment.id);
-    const submitted = submittedSet.has(Number(row.id));
-    const makeupIds = parseMakeupIds(assessment.quiz_makeup_student_ids);
-    const eligible = isStudentEligibleForQuiz({
-      attendanceStatus: row.attendance_status,
-      submitted,
-      makeupStudentIds: makeupIds,
-      studentId: row.id,
-      assessment
-    });
-    const block_reason = quizBlockReason({
-      attendanceStatus: row.attendance_status,
-      eligible,
-      submitted,
-      assessment,
-      makeupStudentIds: makeupIds,
-      studentId: row.id
-    });
-
-    res.json({
-      student_id: row.id,
-      student_name: `${row.last_name}, ${row.first_name}`,
-      first_name: row.first_name,
-      last_name: row.last_name,
-      attendance_status: row.attendance_status || null,
-      submitted,
-      eligible: !!eligible,
-      block_reason,
-      makeup: makeupIds.includes(Number(row.id)),
-      quiz_closes_at: assessment.quiz_closes_at || null,
-      quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null
-    });
+    res.json(await identifyPayload(assessment, row));
   } catch (error) {
     console.error('Public quiz identify error:', error);
     res.status(500).json({ error: 'Server error verifying LRN', details: error.message });
+  }
+});
+
+// Same answer as /identify, but the student is the one signed in to the portal (no LRN).
+router.post('/:token/identify-me', async (req, res) => {
+  try {
+    await ensureQuizShareSchema();
+    await ensureQuizAttendanceSchema();
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
+
+    const me = await signedInStudent(req);
+    if (!me) return res.status(401).json({ error: 'Sign in to the student portal to continue.' });
+
+    const assessment = await loadAssessmentByToken(token);
+    if (!assessment || !assessment.share_enabled) {
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
+    }
+
+    const slot = attendanceSlotForAssessment(assessment);
+    const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
+    const row = roster.find((s) => Number(s.id) === Number(me.id));
+    if (!row) {
+      return res.status(403).json({ error: 'This classwork is not for your class.' });
+    }
+
+    res.json(await identifyPayload(assessment, row));
+  } catch (error) {
+    console.error('Public quiz identify-me error:', error);
+    res.status(500).json({ error: 'Server error loading your details', details: error.message });
   }
 });
 
@@ -222,8 +280,12 @@ router.post('/:token/submit', async (req, res) => {
     await ensureQuizShareSchema();
     await ensureQuizAttendanceSchema();
     const token = String(req.params.token || '').trim();
-    const { student_id, answers: answersRaw, lrn: lrnBody } = req.body || {};
+    const { answers: answersRaw, lrn: lrnBody } = req.body || {};
     const answers = mergeActivityUploads(answersRaw, req.files);
+
+    // A signed-in portal student is identified by the sign-in, never by what the page sends.
+    const me = await signedInStudent(req);
+    const student_id = me ? me.id : (req.body || {}).student_id;
 
     if (!token) return res.status(400).json({ error: 'Invalid link' });
     if (!student_id) return res.status(400).json({ error: 'Confirm your LRN before submitting.' });
@@ -242,22 +304,24 @@ router.post('/:token/submit', async (req, res) => {
       return res.status(400).json({ error: 'Student is not in this class roster.' });
     }
 
-    const lrnOnFile = normalizeLrn(student.lrn);
-    const lrnProvided = normalizeLrn(lrnBody);
-    if (!lrnOnFile) {
-      return res.status(403).json({
-        error: 'No LRN on file for this student. Ask your teacher to add your LRN before opening this link.'
-      });
-    }
-    if (!lrnProvided) {
-      return res.status(400).json({
-        error: 'Enter your 12-digit LRN to confirm your identity.'
-      });
-    }
-    if (lrnProvided !== lrnOnFile) {
-      return res.status(403).json({
-        error: 'No LRN matched to your input. Please try again.'
-      });
+    if (!me) {
+      const lrnOnFile = normalizeLrn(student.lrn);
+      const lrnProvided = normalizeLrn(lrnBody);
+      if (!lrnOnFile) {
+        return res.status(403).json({
+          error: 'No LRN on file for this student. Ask your teacher to add your LRN before opening this link.'
+        });
+      }
+      if (!lrnProvided) {
+        return res.status(400).json({
+          error: 'Enter your 12-digit LRN to confirm your identity.'
+        });
+      }
+      if (lrnProvided !== lrnOnFile) {
+        return res.status(403).json({
+          error: 'No LRN matched to your input. Please try again.'
+        });
+      }
     }
 
     const [existing] = await db.query(

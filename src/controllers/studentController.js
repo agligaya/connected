@@ -1,10 +1,14 @@
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../../db');
-const { schoolYear } = require('../config');
+const { schoolYear, tempPasswordMinutes } = require('../config');
+const { ensureAuthColumns } = require('./authController');
 const { plainText } = require('../utils/plainText');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const { ensureAssignmentSlots } = require('../utils/teachingMode');
 const { ensureStudentRoleSchema } = require('../utils/studentAccounts');
+const { studentUsernameBase } = require('../utils/studentUsername');
+const { sendAccountDetails, publicLoginUrl } = require('../utils/mail');
 
 function studentError(status, message) {
   const err = new Error(message);
@@ -65,11 +69,126 @@ async function enrollStudentRecord(body, { linkHomeroom = true } = {}) {
   return { studentId };
 }
 
+// Lowercase letters and digits only, with look-alikes (i, l, o, 0, 1) removed,
+// so students can type it without worrying about letter case.
+function generateTempPassword(length = 8) {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += alphabet[crypto.randomInt(alphabet.length)];
+  return out;
+}
+
+async function availableUsername(firstName, lastName, lrn) {
+  const base = studentUsernameBase(firstName, lastName);
+  if (base.length < 2) throw studentError(400, 'The student name cannot form a username.');
+  const suffix = String(lrn || '').replace(/\D/g, '').slice(-3);
+  const candidates = [base];
+  if (suffix) candidates.push(`${base}${suffix}`);
+  for (let n = 2; n < 100; n += 1) {
+    candidates.push(suffix ? `${base}${suffix}${n}` : `${base}${n}`);
+  }
+  const [rows] = await db.query(
+    `SELECT LOWER(email) AS email FROM users WHERE LOWER(email) IN (${candidates.map(() => '?').join(',')})`,
+    candidates
+  );
+  const taken = new Set(rows.map((row) => row.email));
+  const free = candidates.find((name) => !taken.has(name));
+  if (!free) throw studentError(409, 'Could not create a unique username for this student.');
+  return free;
+}
+
+async function parentContact(studentId) {
+  const [rows] = await db.query(
+    `SELECT u.email, u.first_name, u.last_name
+     FROM parent_student_links psl
+     JOIN users u ON u.id = psl.parent_id
+     WHERE psl.student_id = ? AND u.role = 'parent'
+     LIMIT 1`,
+    [studentId]
+  );
+  return rows[0] || null;
+}
+
+async function notifyParentOfLogin(student, username, password, loginUrl) {
+  const parent = await parentContact(student.id);
+  if (!parent?.email) {
+    return {
+      sent: false,
+      error: 'This student has no parent email, so the sign-in details were not emailed.',
+      parentEmail: ''
+    };
+  }
+  const mail = await sendAccountDetails({
+    firstName: parent.first_name,
+    lastName: parent.last_name,
+    email: parent.email,
+    role: 'student',
+    password,
+    loginUrl,
+    childName: `${student.first_name} ${student.last_name}`.trim(),
+    username,
+    expiresMinutes: tempPasswordMinutes
+  });
+  return { ...mail, parentEmail: parent.email };
+}
+
+function loginNotice(mail, username, password) {
+  const expiry = `It expires in ${tempPasswordMinutes} minutes.`;
+  if (mail.sent) {
+    return `Username ${username} and the temporary password were sent to ${mail.parentEmail}. ${expiry}`;
+  }
+  return `Username: ${username}. Temporary password: ${password}. ${expiry} ${mail.error}`;
+}
+
+async function issueStudentLogin(student, password, loginUrl) {
+  await ensureStudentRoleSchema();
+  await ensureAuthColumns();
+  const [existing] = await db.query(
+    `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+    [student.id]
+  );
+  if (existing.length) throw studentError(409, 'This student already has a login.');
+  const username = await availableUsername(student.first_name, student.last_name, student.lrn);
+  const password_hash = await bcrypt.hash(password, 10);
+  await db.query(
+    `INSERT INTO users (first_name, last_name, email, password_hash, role, STATUS, must_change_password, student_id, temp_password_expires_at)
+     VALUES (?, ?, ?, ?, 'student', 'active', 1, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+    [student.first_name, student.last_name, username, password_hash, student.id, tempPasswordMinutes]
+  );
+  const mail = await notifyParentOfLogin(student, username, password, loginUrl);
+  return { username, mail };
+}
+
+async function removeEnrolledStudent(studentId) {
+  await db.query('DELETE FROM users WHERE student_id = ? AND role = ?', [studentId, 'student']);
+  await db.query('DELETE FROM parent_student_links WHERE student_id = ?', [studentId]);
+  await db.query('DELETE FROM students WHERE id = ?', [studentId]);
+}
+
+async function enrollWithLogin(body, loginUrl, options) {
+  const { studentId } = await enrollStudentRecord(body, options);
+  try {
+    const student = await studentForLogin(studentId);
+    if (!student) throw studentError(500, 'The enrolled student could not be loaded.');
+    const password = generateTempPassword();
+    const issued = await issueStudentLogin(student, password, loginUrl);
+    return { studentId, password, ...issued };
+  } catch (error) {
+    await removeEnrolledStudent(studentId);
+    throw error;
+  }
+}
+
 // POST /api/admin/students
 exports.createStudent = async (req, res) => {
   try {
-    const { studentId } = await enrollStudentRecord(req.body);
-    res.status(201).json({ message: 'Student enrolled successfully', studentId });
+    const enrolled = await enrollWithLogin(req.body, publicLoginUrl(req));
+    res.status(201).json({
+      message: `Student enrolled. ${loginNotice(enrolled.mail, enrolled.username, enrolled.password)}`,
+      studentId: enrolled.studentId,
+      username: enrolled.username,
+      emailSent: enrolled.mail.sent
+    });
   } catch (error) {
     const status = error.status || 500;
     if (status >= 500) console.error('Create student error:', error);
@@ -85,6 +204,8 @@ exports.bulkEnrollStudents = async (req, res) => {
 
     const failed = [];
     let created = 0;
+    let emailed = 0;
+    const loginUrl = publicLoginUrl(req);
     for (const row of rows) {
       const name = [row.first_name, row.last_name].filter(Boolean).join(' ');
       try {
@@ -98,7 +219,7 @@ exports.bulkEnrollStudents = async (req, res) => {
           if (!parents.length) throw studentError(400, `No parent account for ${parentEmail}`);
           parentId = parents[0].id;
         }
-        await enrollStudentRecord({
+        const enrolled = await enrollWithLogin({
           lrn: row.lrn,
           first_name: row.first_name,
           middle_name: row.middle_name,
@@ -108,8 +229,9 @@ exports.bulkEnrollStudents = async (req, res) => {
           dob: row.dob,
           gender: row.gender,
           parent_id: parentId
-        }, { linkHomeroom: false });
+        }, loginUrl, { linkHomeroom: false });
         created += 1;
+        if (enrolled.mail.sent) emailed += 1;
       } catch (error) {
         failed.push({
           row: row.__row,
@@ -118,7 +240,7 @@ exports.bulkEnrollStudents = async (req, res) => {
         });
       }
     }
-    res.json({ created, failed });
+    res.json({ created, failed, emailed });
   } catch (error) {
     console.error('Bulk enroll students error:', error);
     res.status(error.status || 500).json({ error: error.message || 'Server error importing students' });
@@ -154,6 +276,7 @@ exports.getStudents = async (req, res) => {
         MAX(p.first_name) as parent_first, MAX(p.last_name) as parent_last,
         MAX(t.first_name) as teacher_first, MAX(t.last_name) as teacher_last,
         MAX(su.id) as login_user_id,
+        MAX(su.email) as login_username,
         MAX(su.STATUS) as login_status
        FROM students s
        LEFT JOIN parent_student_links psl ON s.id = psl.student_id
@@ -274,7 +397,7 @@ exports.updateStudent = async (req, res) => {
       }
     }
 
-    await syncStudentLogin(id, lrn || null, firstName, lastName);
+    await syncStudentLogin(id, firstName, lastName);
 
     res.json({ message: isReenroll ? 'Student re-enrolled successfully' : 'Student updated successfully' });
   } catch (error) {
@@ -298,23 +421,16 @@ async function setParentLink(studentId, parentId) {
   );
 }
 
-async function syncStudentLogin(studentId, lrn, firstName, lastName) {
+async function syncStudentLogin(studentId, firstName, lastName) {
   await ensureStudentRoleSchema();
   const [logins] = await db.query(
-    `SELECT id, email FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+    `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
     [studentId]
   );
   if (!logins.length) return;
-  if (!lrn || !/^\d{12}$/.test(String(lrn))) {
-    throw studentError(400, 'This student has a login. Keep the 12-digit LRN.');
-  }
-  if (logins[0].email !== lrn) {
-    const [taken] = await db.query('SELECT id FROM users WHERE email = ? AND id != ?', [lrn, logins[0].id]);
-    if (taken.length) throw studentError(409, 'That LRN is already used as a login.');
-  }
   await db.query(
-    'UPDATE users SET email = ?, first_name = ?, last_name = ? WHERE id = ?',
-    [lrn, firstName, lastName, logins[0].id]
+    'UPDATE users SET first_name = ?, last_name = ? WHERE id = ?',
+    [firstName, lastName, logins[0].id]
   );
 }
 
@@ -333,28 +449,16 @@ exports.createStudentLogin = async (req, res) => {
   try {
     const student = await studentForLogin(req.params.id);
     if (!student) return res.status(404).json({ error: 'Student not found' });
-    const lrn = String(student.lrn || '');
-    if (!/^\d{12}$/.test(lrn)) {
-      return res.status(400).json({ error: 'Add a 12-digit LRN and save it before creating a login.' });
-    }
     const password = String(req.body?.password || '');
     if (password.length < 6) {
       return res.status(400).json({ error: 'Temporary password must be at least 6 characters.' });
     }
-    const [existing] = await db.query(
-      `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
-      [student.id]
-    );
-    if (existing.length) return res.status(409).json({ error: 'This student already has a login.' });
-    const [emailTaken] = await db.query('SELECT id FROM users WHERE email = ?', [lrn]);
-    if (emailTaken.length) return res.status(409).json({ error: 'That LRN is already used as a login.' });
-    const password_hash = await bcrypt.hash(password, 10);
-    await db.query(
-      `INSERT INTO users (first_name, last_name, email, password_hash, role, STATUS, must_change_password, student_id)
-       VALUES (?, ?, ?, ?, 'student', 'active', 1, ?)`,
-      [student.first_name, student.last_name, lrn, password_hash, student.id]
-    );
-    res.status(201).json({ message: 'Student login created. The child signs in with the LRN.' });
+    const issued = await issueStudentLogin(student, password, publicLoginUrl(req));
+    res.status(201).json({
+      message: `Login created. ${loginNotice(issued.mail, issued.username, password)}`,
+      username: issued.username,
+      emailSent: issued.mail.sent
+    });
   } catch (error) {
     console.error('Create student login error:', error);
     res.status(error.status || 500).json({ error: error.status ? error.message : 'Server error creating login' });
@@ -370,16 +474,23 @@ exports.resetStudentLogin = async (req, res) => {
       return res.status(400).json({ error: 'Temporary password must be at least 6 characters.' });
     }
     const [logins] = await db.query(
-      `SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
+      `SELECT id, email FROM users WHERE student_id = ? AND role = 'student' LIMIT 1`,
       [student.id]
     );
     if (!logins.length) return res.status(404).json({ error: 'This student has no login yet.' });
     const password_hash = await bcrypt.hash(password, 10);
+    await ensureAuthColumns();
     await db.query(
-      'UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?',
-      [password_hash, logins[0].id]
+      `UPDATE users SET password_hash = ?, must_change_password = 1,
+         temp_password_expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE)
+       WHERE id = ?`,
+      [password_hash, tempPasswordMinutes, logins[0].id]
     );
-    res.json({ message: 'Temporary password saved. The child must set a new one at sign-in.' });
+    const mail = await notifyParentOfLogin(student, logins[0].email, password, publicLoginUrl(req));
+    res.json({
+      message: `Temporary password saved. ${loginNotice(mail, logins[0].email, password)}`,
+      emailSent: mail.sent
+    });
   } catch (error) {
     console.error('Reset student login error:', error);
     res.status(500).json({ error: 'Server error resetting login' });

@@ -147,7 +147,7 @@ async function partsByLesson(db, studentId) {
       if (!scored || scored.correct == null) continue;
       const pts = Number(q.points) || 1;
       const kind = String(sub.type || '').trim().toLowerCase() === 'exam' ? 'exam' : 'quiz';
-      add(lesson, kind, bankItemTypeLabel(q.item_type), scored.correct ? pts : 0, pts);
+      add(lesson, kind, bankItemTypeLabel(q.item_type), scored.earned != null ? scored.earned : (scored.correct ? pts : 0), pts);
     }
   }
 

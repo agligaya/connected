@@ -220,6 +220,8 @@ function enterPortal(user) {
   else if (user.role === 'parent') switchView('parent');
   else if (user.role === 'student') {
     switchView('student');
+    studentSubjectId = null;
+    studentSection = 'classworks';
     loadStudentPortal();
   }
   maybeForcePasswordChange(user);
@@ -227,6 +229,9 @@ function enterPortal(user) {
 
 let studentSubjects = [];
 let studentSubjectId = null;
+let studentSection = 'classworks';
+let studentWorkFilter = 'all';
+let studentDetail = null;
 
 function studentWorkTypeLabel(type) {
   const kind = String(type || '').toLowerCase();
@@ -238,95 +243,153 @@ function studentWorkTypeLabel(type) {
 function studentWorkStateLabel(item) {
   if (item.state === 'open') return 'Open';
   if (item.state === 'closed') return 'Closed';
+  if (item.state === 'submitted') return 'Submitted';
+  if (item.state === 'waiting') return 'Waiting for attendance';
+  if (item.state === 'no_access') return 'No access';
   return 'Not open';
 }
 
-function renderStudentWorkCard(item, submitted) {
+function studentDateLabel(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function renderStudentWorkCard(item) {
   const type = studentWorkTypeLabel(item.type);
-  let detail = '';
-  let action = '';
-  if (submitted) {
-    detail = item.score_pending
-      ? 'Submitted. Score is not in yet.'
-      : `Score ${item.score} / ${item.max_score}`;
-  } else {
-    detail = studentWorkStateLabel(item);
-    if (item.state === 'open' && item.path) {
-      action = `<a class="btn-orange-solid" style="display:inline-block;text-decoration:none;" href="${escapeHtml(item.path)}">Open</a>`;
-    }
+  let detail = studentWorkStateLabel(item);
+  if (item.state === 'submitted' && item.submitted_at) {
+    detail = `Submitted ${studentDateLabel(item.submitted_at)}`.trim();
   }
-  return `<div class="chart-card" style="margin-bottom:12px;">
+  const action = item.state === 'open' && item.path
+    ? `<a class="chip-ghost" href="${escapeHtml(item.path)}">Open →</a>`
+    : '';
+  return `<div class="chart-card student-work-card">
     <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(type)}</p>
     <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 6px;">${escapeHtml(item.title || 'Classwork')}</h3>
-    <p class="page-subheading" style="margin:0 0 10px;">${escapeHtml(detail)}</p>
-    ${action}
+    <div class="student-work-foot">
+      ${action || `<p class="page-subheading" style="margin:0;">${escapeHtml(detail)}</p>`}
+    </div>
   </div>`;
 }
 
-function setStudentBackVisible(visible) {
-  const back = document.getElementById('student-back-btn');
-  if (back) back.style.display = visible ? 'inline-flex' : 'none';
+function renderStudentMaterialCard(item) {
+  return `<div class="chart-card">
+    <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(item.file_type || 'File')}</p>
+    <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">${escapeHtml(item.title || 'Lesson file')}</h3>
+    <a class="chip-ghost" href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">Open →</a>
+  </div>`;
 }
 
-function renderStudentDashboard() {
-  const content = document.getElementById('student-content');
-  if (!content) return;
-  setStudentBackVisible(false);
-  studentSubjectId = null;
-  if (!studentSubjects.length) {
-    content.innerHTML = '<p class="page-subheading">No subjects for your class yet.</p>';
-    return;
+function renderStudentRecordsTable(records) {
+  const rows = records.map((row) => {
+    const hasScore = !row.score_pending && row.score != null && row.max_score;
+    const scoreText = hasScore ? `${row.score} / ${row.max_score}` : 'Score is not in yet.';
+    const percent = hasScore ? `${Math.round((row.score / row.max_score) * 100)}%` : '—';
+    return `<tr>
+      <td>${escapeHtml(row.title || 'Classwork')}</td>
+      <td><span class="badge type-${escapeHtml(String(row.type || 'quiz').toLowerCase())}">${escapeHtml(studentWorkTypeLabel(row.type))}</span></td>
+      <td>${escapeHtml(row.quarter || '—')}</td>
+      <td>${escapeHtml(scoreText)}</td>
+      <td>${escapeHtml(percent)}</td>
+      <td>${escapeHtml(studentDateLabel(row.taken_at) || '—')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="chart-card student-records-card">
+    <table class="parent-mini-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Quarter</th><th>Score</th><th>%</th><th>Date</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderStudentSection() {
+  const body = document.getElementById('student-section-body');
+  if (!body || !studentDetail) return;
+  if (studentSection === 'materials') {
+    const items = studentDetail.materials || [];
+    body.innerHTML = items.length
+      ? `<div class="student-card-grid">${items.map(renderStudentMaterialCard).join('')}</div>`
+      : '<p class="page-subheading">No materials yet.</p>';
+  } else if (studentSection === 'records') {
+    const items = studentDetail.records || [];
+    body.innerHTML = items.length
+      ? renderStudentRecordsTable(items)
+      : '<p class="page-subheading">Nothing taken yet.</p>';
+  } else {
+    const all = studentDetail.classworks || [];
+    if (!all.length) {
+      body.innerHTML = '<p class="page-subheading">No classwork shared yet.</p>';
+    } else {
+      const kindOf = (item) => String(item.type || 'quiz').toLowerCase();
+      const filters = [
+        { key: 'all', label: 'All' },
+        { key: 'quiz', label: 'Quizzes' },
+        { key: 'activity', label: 'Activities' },
+        { key: 'exam', label: 'Exams' }
+      ];
+      const count = (key) => (key === 'all' ? all.length : all.filter((item) => kindOf(item) === key).length);
+      const chips = filters.map((f) => `<button type="button" class="chip-ghost${studentWorkFilter === f.key ? ' is-pressed' : ''}" data-student-filter="${f.key}" aria-pressed="${studentWorkFilter === f.key}">${f.label} (${count(f.key)})</button>`).join('');
+      const items = studentWorkFilter === 'all' ? all : all.filter((item) => kindOf(item) === studentWorkFilter);
+      const emptyLabel = { quiz: 'quizzes', activity: 'activities', exam: 'exams' }[studentWorkFilter] || 'classwork';
+      body.innerHTML = `<div class="student-section-switch student-work-filter" role="group" aria-label="Filter classworks by type">${chips}</div>
+        ${items.length
+    ? `<div class="student-card-grid">${items.map(renderStudentWorkCard).join('')}</div>`
+    : `<p class="page-subheading">No ${emptyLabel} yet.</p>`}`;
+    }
   }
-  content.innerHTML = `
-    <h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 14px;">Dashboard</h2>
-    <div class="student-subject-grid">
-      ${studentSubjects.map((subject) => {
-        const due = Number(subject.due_count) || 0;
-        const dueLabel = due === 1 ? '1 due' : `${due} due`;
-        const teacher = subject.teacher_name || 'No teacher assigned';
-        return `<button type="button" class="chart-card student-subject-card" data-student-subject="${subject.id}">
-          <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(subject.code || '')}</p>
-          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 6px;">${escapeHtml(subject.name || 'Subject')}</h3>
-          <p class="page-subheading" style="margin:0;">${escapeHtml(teacher)}</p>
-          ${due > 0 ? `<span class="student-due-flag">${escapeHtml(dueLabel)}</span>` : ''}
-        </button>`;
-      }).join('')}
-    </div>`;
+  document.querySelectorAll('#student-content [data-student-section]').forEach((btn) => {
+    const active = btn.getAttribute('data-student-section') === studentSection;
+    btn.classList.toggle('is-pressed', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
 }
 
-async function loadStudentClasswork(subjectId) {
+function renderStudentNav() {
+  const nav = document.getElementById('student-subject-nav');
+  if (!nav) return;
+  nav.innerHTML = studentSubjects.map((subject) => {
+    const due = Number(subject.due_count) || 0;
+    const active = Number(subject.id) === Number(studentSubjectId);
+    const dueLabel = due === 1 ? '1 due' : `${due} due`;
+    return `<button type="button" class="sidebar-item student-subject-tab${active ? ' active' : ''}" data-student-subject="${subject.id}" title="${escapeHtml(subject.name || 'Subject')}"${active ? ' aria-current="page"' : ''}>
+      <span class="student-subject-tab-name">${escapeHtml(subject.name || 'Subject')}</span>
+      ${due > 0 ? `<span class="student-nav-due">${escapeHtml(dueLabel)}</span>` : ''}
+    </button>`;
+  }).join('');
+}
+
+async function loadStudentSubject(subjectId) {
   const content = document.getElementById('student-content');
   const subject = studentSubjects.find((row) => Number(row.id) === Number(subjectId));
   if (!content) return;
-  setStudentBackVisible(true);
-  content.innerHTML = `<h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 12px;">${escapeHtml(subject?.name || 'Subject')}</h2><p class="page-subheading">Loading classwork…</p>`;
+  studentSubjectId = subject ? Number(subject.id) : null;
+  studentDetail = null;
+  studentWorkFilter = 'all';
+  renderStudentNav();
+  const roleLabel = { subject_teacher: 'Subject Teacher', class_adviser: 'Class Adviser' }[subject?.teacher_role] || '';
+  const heading = `<h2 style="font-size:20px;color:var(--maroon-deep);margin:0 0 4px;">${escapeHtml(subject?.name || 'Subject')}</h2>
+    <div class="student-teacher-block" style="margin:0 0 14px;">
+      <p class="page-subheading" style="font-size:16px;line-height:1.3;margin:0;">${escapeHtml(subject?.teacher_name || 'No teacher assigned')}</p>
+      ${roleLabel ? `<p class="page-subheading student-teacher-role" style="margin:0;">${escapeHtml(roleLabel)}</p>` : ''}
+    </div>`;
+  content.innerHTML = `${heading}<p class="page-subheading">Loading…</p>`;
   try {
-    const res = await fetch(`${API_URL}/student/subjects/${subjectId}/classwork`, { headers: getAuthHeaders() });
+    const res = await fetch(`${API_URL}/student/subjects/${subjectId}`, { headers: getAuthHeaders() });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not load classwork');
-    const open = Array.isArray(data.to_submit) ? data.to_submit : [];
-    const done = Array.isArray(data.submitted) ? data.submitted : [];
-    const openHtml = open.length
-      ? open.map((item) => renderStudentWorkCard(item, false)).join('')
-      : '<p class="page-subheading">Nothing to submit in this subject.</p>';
-    const doneHtml = done.length
-      ? done.map((item) => renderStudentWorkCard(item, true)).join('')
-      : '<p class="page-subheading">No submitted classwork yet.</p>';
-    content.innerHTML = `
-      <h2 style="font-size:1.15rem;color:var(--maroon-deep);margin:0 0 4px;">${escapeHtml(subject?.name || 'Subject')}</h2>
-      <p class="page-subheading" style="margin:0 0 14px;">${escapeHtml(subject?.teacher_name || '')}</p>
-      <div class="parent-analytics-row">
-        <div>
-          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">To submit</h3>
-          ${openHtml}
-        </div>
-        <div>
-          <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">Submitted</h3>
-          ${doneHtml}
-        </div>
-      </div>`;
+    if (!res.ok) throw new Error(data.error || 'Could not load this subject');
+    if (Number(studentSubjectId) !== Number(subjectId)) return;
+    studentDetail = data;
+    const tab = (key, label) => `<button type="button" class="chip-ghost" role="tab" data-student-section="${key}">${label}</button>`;
+    content.innerHTML = `${heading}
+      <div class="student-section-switch" role="tablist" aria-label="Subject sections">
+        ${tab('classworks', 'Classworks')}${tab('materials', 'Materials')}${tab('records', 'Records')}
+      </div>
+      <div id="student-section-body"></div>`;
+    renderStudentSection();
   } catch (err) {
-    content.innerHTML = `<p class="page-subheading">${escapeHtml(err.message)}</p>`;
+    content.innerHTML = `${heading}<p class="page-subheading">${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -343,28 +406,41 @@ async function loadStudentPortal() {
     if (nameEl) nameEl.textContent = `${student.last_name || ''}, ${student.first_name || ''}`.replace(/^, |, $/g, '').trim() || 'Student';
     if (classEl) classEl.textContent = `Grade ${student.grade_level || '—'} · ${student.section || '—'}`;
     studentSubjects = Array.isArray(data.subjects) ? data.subjects : [];
-    renderStudentDashboard();
+    if (!studentSubjects.some((row) => Number(row.id) === Number(studentSubjectId))) {
+      studentSubjectId = null;
+    }
+    if (!studentSubjects.length) {
+      renderStudentNav();
+      if (content) content.innerHTML = '<p class="page-subheading">No subjects for your class yet.</p>';
+      return;
+    }
+    await loadStudentSubject(studentSubjectId ?? studentSubjects[0].id);
   } catch (err) {
-    setStudentBackVisible(false);
+    const nav = document.getElementById('student-subject-nav');
+    if (nav) nav.innerHTML = '';
     if (content) content.innerHTML = `<p class="page-subheading">${escapeHtml(err.message)}</p>`;
   }
 }
 
-document.getElementById('student-content')?.addEventListener('click', (e) => {
-  const card = e.target.closest('[data-student-subject]');
-  if (!card) return;
-  studentSubjectId = Number(card.getAttribute('data-student-subject'));
-  loadStudentClasswork(studentSubjectId);
-});
-
-document.getElementById('student-back-btn')?.addEventListener('click', () => {
-  loadStudentPortal();
-});
-
-document.getElementById('student-dashboard-tab')?.addEventListener('click', () => {
-  loadStudentPortal();
+document.getElementById('student-subject-nav')?.addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-student-subject]');
+  if (!tab) return;
+  loadStudentSubject(Number(tab.getAttribute('data-student-subject')));
   const frame = document.querySelector('.dash-frame[data-portal="student"]');
   if (frame && window.innerWidth <= 900) closeMobileNav(frame);
+});
+
+document.getElementById('student-content')?.addEventListener('click', (e) => {
+  const filterBtn = e.target.closest('[data-student-filter]');
+  if (filterBtn) {
+    studentWorkFilter = filterBtn.getAttribute('data-student-filter') || 'all';
+    renderStudentSection();
+    return;
+  }
+  const btn = e.target.closest('[data-student-section]');
+  if (!btn) return;
+  studentSection = btn.getAttribute('data-student-section') || 'classworks';
+  renderStudentSection();
 });
 
 // ========== VIEW ROUTER ==========
@@ -438,7 +514,7 @@ document.getElementById('login-signin-btn')?.addEventListener('click', async () 
   if (openSharedAccount()) return;
 
   if (!email || !password) {
-    msgEl.textContent = 'Please enter your email or LRN and password';
+    msgEl.textContent = 'Please enter your email or username and password';
     return;
   }
 
@@ -1443,7 +1519,7 @@ document.getElementById('admin-student-form')?.addEventListener('submit', async 
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to enroll student');
 
-    alert('Student enrolled successfully');
+    alert(data.message || 'Student enrolled successfully');
     e.target.reset();
     document.getElementById('student-section').innerHTML = '<option value="">-- Select Grade First --</option>';
     document.getElementById('student-section').disabled = true;
@@ -2073,8 +2149,8 @@ document.getElementById('edit-teacher-form')?.addEventListener('submit', async (
   }
 });
 
-function generateTempPassword(length = 10) {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+function generateTempPassword(length = 8) {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
   const bytes = new Uint8Array(length);
   (window.crypto || window.msCrypto).getRandomValues(bytes);
   let out = '';
@@ -3235,9 +3311,10 @@ function paintStudentLoginControls(student) {
   if (!hasLogin) fillTempPasswordInput('edit-student-login-password');
   else fillTempPasswordInput('edit-student-login-reset');
   if (status) {
+    const username = student.login_username ? ` The child signs in as ${student.login_username}.` : '';
     status.textContent = hasLogin
-      ? (enabled ? 'Login is on. The child signs in with the LRN.' : 'Login is off. The LRN cannot sign in until you enable it.')
-      : 'No login yet. Save a 12-digit LRN, then create one. The child signs in with that LRN.';
+      ? (enabled ? `Login is on.${username}` : 'Login is off. This username cannot sign in until you enable it.')
+      : 'No login yet. Create one to email the username and a temporary password to the linked parent.';
   }
   if (toggleBtn) toggleBtn.textContent = enabled ? 'Disable login' : 'Enable login';
 }
@@ -3378,8 +3455,14 @@ document.getElementById('edit-student-login-create-btn')?.addEventListener('clic
   const student = lastStudentsData.find((row) => Number(row.id) === id);
   const typed = document.getElementById('edit-student-lrn')?.value.trim() || '';
   const errEl = document.getElementById('edit-student-error');
-  if (String(student?.lrn || '') !== typed) {
-    if (errEl) { errEl.hidden = false; errEl.textContent = 'Save the LRN first, then create the login.'; }
+  const typedFirst = document.getElementById('edit-student-first')?.value.trim() || '';
+  const typedLast = document.getElementById('edit-student-last')?.value.trim() || '';
+  if (
+    String(student?.lrn || '') !== typed
+    || String(student?.first_name || '') !== typedFirst
+    || String(student?.last_name || '') !== typedLast
+  ) {
+    if (errEl) { errEl.hidden = false; errEl.textContent = 'Save the student first, then create the login.'; }
     return;
   }
   const password = document.getElementById('edit-student-login-password')?.value || '';
@@ -4014,21 +4097,13 @@ async function loadActivityLog() {
     tbody.innerHTML = recent.map(log => {
       const roleLabel = formatActivityRole(log.user_role);
       const roleHtml = roleLabel ? `<span class="log-role">${roleLabel}</span>` : '';
-      const concernLog = log.target_type === 'concern'
-        || /concern/i.test(String(log.action || ''));
-      const detail = !concernLog && log.details
-        ? ` <span style="color:var(--text-muted);font-size:0.78rem;">· ${escapeHtml(log.details)}</span>`
-        : '';
-      const target = !concernLog && log.target_name
-        ? ` — <em>${escapeHtml(log.target_name)}</em>`
-        : '';
       return `
       <tr>
         <td>
           <span class="log-user">${escapeHtml(log.user_name || 'System')}</span>
           ${roleHtml}
         </td>
-        <td><span class="log-action">${escapeHtml(log.action || '')}</span>${target}${detail}</td>
+        <td><span class="log-action">${escapeHtml(log.action || '')}</span></td>
         <td class="log-time">${new Date(log.created_at).toLocaleString()}</td>
       </tr>
     `;
@@ -5790,6 +5865,14 @@ function finishBulkImport(modalId, data, noun) {
   }
   if (!clean) return;
   closeAdminModal(modalId);
+  if (modalId === 'bulk-student-modal') {
+    const emailed = Number(data.emailed) || 0;
+    const mailNote = emailed
+      ? ` Sign-in details emailed to ${emailed} parent${emailed === 1 ? '' : 's'}.`
+      : ' Sign-in details were not emailed.';
+    showToast(`${created} ${noun}.${mailNote}`);
+    return;
+  }
   showToast(`${created} ${noun}.`);
 }
 
@@ -6720,6 +6803,19 @@ function rubricCategoriesOf(rubric) {
   return [];
 }
 
+/** Item count where a matching set counts one item per pair (one point each). */
+function bankItemUnits(list) {
+  return (list || []).reduce((sum, it) => {
+    if (String(it?.item_type || '').toLowerCase() !== 'matching') return sum + 1;
+    let choices = it.choices;
+    if (typeof choices === 'string') {
+      try { choices = JSON.parse(choices); } catch { choices = []; }
+    }
+    const pairs = Array.isArray(choices) ? choices.filter((c) => String(c).includes('|')).length : 0;
+    return sum + Math.max(1, pairs);
+  }, 0);
+}
+
 function groupBankItemsByType(items) {
   const map = new Map();
   for (const item of items || []) {
@@ -6771,7 +6867,7 @@ function renderScoreSections(wrapId, items, { syncMaxInputId = null, resetValues
     const val = prev[g.item_type] != null ? prev[g.item_type] : Math.round(defaultPts * 100) / 100;
     return `
       <div class="qb-score-section-row">
-        <span>${escapeHtml(g.label)} · ${g.items.length} item(s)</span>
+        <span>${escapeHtml(g.label)} · ${bankItemUnits(g.items)} item(s)</span>
         <label>
           <span>Part total</span>
           <input type="number" min="0" max="9999" step="0.5" data-section-type="${escapeHtml(g.item_type)}" value="${val}" />
@@ -8662,7 +8758,7 @@ function renderProgressQuestionSections(questions, assessmentId) {
       <div class="progress-q-section-head">
         <span class="progress-q-drag" aria-hidden="true">⋮⋮</span>
         <strong>${escapeHtml(group.label)}</strong>
-        <span class="page-subheading">${group.items.length} item${group.items.length === 1 ? '' : 's'}</span>
+        <span class="page-subheading">${bankItemUnits(group.items)} item${bankItemUnits(group.items) === 1 ? '' : 's'}</span>
       </div>
       <ol class="progress-questions-list">${items}</ol>
     </li>`;
@@ -9238,11 +9334,14 @@ function identificationBankFromTaken(items) {
   };
   ids.forEach((item) => add(item.expected, answers));
   if (!answers.length) return [];
-  const words = answers.slice();
+  // One word per identification item, plus at most two extra words for the whole box.
+  const extraWords = [];
   ids.forEach((item) => {
-    (Array.isArray(item.choices) ? item.choices : []).forEach((word) => add(word, words));
+    (Array.isArray(item.choices) ? item.choices : []).forEach((word) => {
+      if (extraWords.length < 2) add(word, extraWords);
+    });
   });
-  return words;
+  return answers.concat(extraWords);
 }
 
 function identificationAnswerBoxHtml(words) {
@@ -9254,9 +9353,122 @@ function identificationAnswerBoxHtml(words) {
   </div>`;
 }
 
-function quizTakenHtmlWithAnswerBox(items, boxHtml, renderItem) {
+const TAKEN_DEFAULT_LABELS = { given: 'Student answer', expected: 'Answer key' };
+
+function takenItemType(item) {
+  return String(item?.item_type || '').toLowerCase();
+}
+
+function takenMarkText(item) {
+  return item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
+}
+
+/** "left | right; left | right" -> [{ left, right }] */
+function parseTakenMatchPairs(raw) {
+  const out = [];
+  String(raw || '').split(/\s*;\s*/).forEach((part) => {
+    const bits = part.split('|').map((p) => p.trim());
+    if (bits[0]) out.push({ left: bits[0], right: bits.slice(1).join('|').trim() });
+  });
+  return out;
+}
+
+function takenCellHtml(text, ok) {
+  const value = String(text || '').trim();
+  if (!value) return '<td>—</td>';
+  const cls = ok === true ? ' class="taken-ok"' : ok === false ? ' class="taken-bad"' : '';
+  return `<td${cls}>${escapeHtml(value)}</td>`;
+}
+
+function renderTakenMatchingItem(item, labels) {
+  const key = parseTakenMatchPairs(item.expected);
+  const given = parseTakenMatchPairs(item.given);
+  const givenByLeft = new Map(given.map((p) => [p.left.toLowerCase(), p.right]));
+  const pairs = key.length ? key : given;
+  const rows = pairs.map((pair) => {
+    const answer = givenByLeft.get(pair.left.toLowerCase()) || '';
+    const ok = answer && pair.right ? answer.toLowerCase() === pair.right.toLowerCase() : null;
+    return `<tr><td>${escapeHtml(pair.left)}</td>${takenCellHtml(answer, answer ? ok : null)}<td>${escapeHtml(pair.right || '—')}</td></tr>`;
+  }).join('');
+  return `<div class="taken-group-item">
+    <p class="page-subheading" style="margin:0 0 6px;"><strong>${Number(item.n) || 1}.</strong> ${escapeHtml(item.question || '')} <span class="taken-mark">${escapeHtml(takenMarkText(item))}</span></p>
+    <table class="parent-mini-table taken-group-table">
+      <thead><tr><th>Item</th><th>${escapeHtml(labels.given)}</th><th>${escapeHtml(labels.expected)}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderTakenSequencingItem(item, labels) {
+  const split = (raw) => String(raw || '').split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean);
+  const given = split(item.given);
+  const key = split(item.expected);
+  const count = Math.max(given.length, key.length);
+  let rows = '';
+  for (let i = 0; i < count; i += 1) {
+    const ok = given[i] && key[i] ? given[i].toLowerCase() === key[i].toLowerCase() : null;
+    rows += `<tr><td>${i + 1}</td>${takenCellHtml(given[i], given[i] ? ok : null)}<td>${escapeHtml(key[i] || '—')}</td></tr>`;
+  }
+  return `<div class="taken-group-item">
+    <p class="page-subheading" style="margin:0 0 6px;"><strong>${Number(item.n) || 1}.</strong> ${escapeHtml(item.question || '')} <span class="taken-mark">${escapeHtml(takenMarkText(item))}</span></p>
+    <table class="parent-mini-table taken-group-table">
+      <thead><tr><th>Step</th><th>${escapeHtml(labels.given)}</th><th>${escapeHtml(labels.expected)}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+/** All matching items, or all sequencing items, shown together in one card with their item numbers. */
+function renderTakenMatchingSet(items, labels) {
+  let rowNum = 0;
+  let rightRows = 0;
+  const rows = items.map((item) => {
+    const key = parseTakenMatchPairs(item.expected);
+    const given = parseTakenMatchPairs(item.given);
+    const givenByLeft = new Map(given.map((p) => [p.left.toLowerCase(), p.right]));
+    return (key.length ? key : given).map((pair) => {
+      rowNum += 1;
+      const answer = givenByLeft.get(pair.left.toLowerCase()) || '';
+      const ok = answer && pair.right ? answer.toLowerCase() === pair.right.toLowerCase() : null;
+      if (ok) rightRows += 1;
+      return `<tr><td>${rowNum}. ${escapeHtml(pair.left)}</td>${takenCellHtml(answer, answer ? ok : null)}<td>${escapeHtml(pair.right || '—')}</td></tr>`;
+    }).join('');
+  }).join('');
+  return `<div class="progress-work-item taken-group">
+    <p class="page-subheading" style="margin:0 0 10px;"><strong>Matching Type</strong> · ${rightRows} of ${rowNum} correct</p>
+    <table class="parent-mini-table taken-group-table">
+      <thead><tr><th>Column A</th><th>${escapeHtml(labels.given)}</th><th>${escapeHtml(labels.expected)}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderTakenGroup(type, items, labels) {
+  if (type === 'matching') return renderTakenMatchingSet(items, labels);
+  const nums = items.map((item) => Number(item.n) || 0);
+  const contiguous = nums.every((n, i) => n === nums[0] + i);
+  const range = nums.length === 1 ? String(nums[0]) : (contiguous ? `${nums[0]}-${nums[nums.length - 1]}` : nums.join(', '));
+  const title = type === 'matching' ? 'Matching' : 'Sequencing';
+  const body = items.map((item) => (type === 'matching'
+    ? renderTakenMatchingItem(item, labels)
+    : renderTakenSequencingItem(item, labels))).join('');
+  return `<div class="progress-work-item taken-group">
+    <p class="page-subheading" style="margin:0 0 10px;"><strong>${title} · Items ${escapeHtml(range)}</strong></p>
+    ${body}
+  </div>`;
+}
+
+function quizTakenHtmlWithAnswerBox(items, boxHtml, renderItem, labels = TAKEN_DEFAULT_LABELS) {
   let placed = false;
-  return (items || []).map((item) => {
+  const list = items || [];
+  const groupDone = { matching: false, sequencing: false };
+  return list.map((item) => {
+    const type = takenItemType(item);
+    if (type === 'matching' || type === 'sequencing') {
+      if (groupDone[type]) return '';
+      groupDone[type] = true;
+      return renderTakenGroup(type, list.filter((other) => takenItemType(other) === type), labels);
+    }
     const piece = renderItem(item);
     if (!placed && boxHtml && isIdentificationTakenItem(item)) {
       placed = true;
@@ -9487,7 +9699,7 @@ function printAssessmentItemsPaper({
     subject_name || null,
     grade_level != null && grade_level !== '' ? `Grade ${grade_level}${section ? `-${section}` : ''}` : null,
     quarter || null,
-    `${items.length} item(s)`,
+    `${bankItemUnits(items)} item(s)`,
     `Total score ${Math.round(maxScore * 100) / 100}`
   ].filter(Boolean).join(' · ');
 
@@ -10660,7 +10872,7 @@ function aiDraftCardHtml(r, expandId) {
                 <p class="ai-rec-fold-meta">${meta}</p>
               </div>
               <div class="ai-rec-fold-summary-right">
-                <span class="ai-status-badge ${statusClass}">${statusLabel} · ${escapeHtml(r.provider)}</span>
+                <span class="ai-status-badge ${statusClass}">${statusLabel}</span>
                 <div class="row-menu-wrap">
                   <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
                   <div class="row-menu" hidden>
@@ -10833,22 +11045,8 @@ function formatStudentNameStacked(s, { escape = true } = {}) {
   return `<span class="student-name-stack"><span class="student-name-last">${last}</span><span class="student-name-first">${first}</span></span>`;
 }
 
-async function loadAiStatusHint() {
-  const hint = document.getElementById('ai-mode-hint');
-  if (!hint) return;
-  try {
-    const res = await fetch(`${API_URL}/teacher/ai/status`, { headers: getAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-    if (data.mode === 'groq') {
-      hint.textContent = `AI: Groq${data.model ? ` · ${data.model}` : ''}`;
-    } else {
-      hint.textContent = 'AI: mock (set GROQ_API_KEY for live)';
-    }
-  } catch {
-    hint.textContent = '';
-  }
-}
+// The AI provider/model is no longer shown to teachers.
+async function loadAiStatusHint() {}
 
 function formatAiItemsPreview(part, type) {
   if (!part) return '<p class="empty-state">No content.</p>';
@@ -10868,6 +11066,14 @@ function formatAiItemsPreview(part, type) {
   });
   return order.filter((t) => (groups.get(t) || []).length).map((t) => {
     const list = groups.get(t);
+    if (t === 'matching') {
+      // One matching set: the count is the number of pairs (rows).
+      const pairs = list.flatMap((it) => (Array.isArray(it.choices) ? it.choices : []))
+        .map((c) => String(c).split('|').map((p) => p.trim()))
+        .filter((bits) => bits[0] && bits[1]);
+      const lis = pairs.map((bits) => `<li>${escapeHtml(bits[0])} → ${escapeHtml(bits.slice(1).join(' | '))}</li>`).join('');
+      return `<div class="ai-draft-type"><p class="ai-draft-type-title">${escapeHtml(bankItemTypeLabel(t))} <span class="page-subheading">${pairs.length}</span></p><ol class="ai-draft-items">${lis}</ol></div>`;
+    }
     const lis = list.map((it) => `<li>${escapeHtml(it.question || '')}</li>`).join('');
     return `<div class="ai-draft-type"><p class="ai-draft-type-title">${escapeHtml(bankItemTypeLabel(t))} <span class="page-subheading">${list.length}</span></p><ol class="ai-draft-items">${lis}</ol></div>`;
   }).join('');
@@ -11855,7 +12061,7 @@ function syncQuizBankChoicesVisibility() {
         : type === 'sequencing'
           ? 'One step per line, already in the correct order.'
           : type === 'identification'
-            ? 'Optional. These words join the shared answer box and are not the correct answer.'
+            ? 'Optional. Extra words for the shared answer box (only the first 2 across the quiz are used). They are not the correct answer.'
             : 'Enter adds the next letter (A, B, C…). Long text wraps in the same box.';
   }
 
@@ -12097,7 +12303,6 @@ const QB_QUIZ_TYPE_OPTIONS = [
   { value: 'true_false', label: 'True or False' },
   { value: 'fill_blank', label: 'Fill in the blank' },
   { value: 'matching', label: 'Matching' },
-  { value: 'sequencing', label: 'Sequencing' },
   { value: 'identification', label: 'Identification' },
   { value: 'enumeration', label: 'Enumeration' },
   { value: 'short_answer', label: 'Short answer' }
@@ -12117,7 +12322,11 @@ function fillQuizBankTypeOptions(preferredValue, categoryOverride = null) {
   if (!typeSel) return null;
   const cat = categoryOverride != null ? categoryOverride : questionBankCurrentCategory;
   const inActivity = cat === 'activity';
-  const options = inActivity ? QB_ACTIVITY_TYPE_OPTIONS : QB_QUIZ_TYPE_OPTIONS;
+  let options = inActivity ? QB_ACTIVITY_TYPE_OPTIONS : QB_QUIZ_TYPE_OPTIONS;
+  // Sequencing can no longer be created, but an old sequencing item must still open for editing.
+  if (!inActivity && preferredValue === 'sequencing') {
+    options = options.concat([{ value: 'sequencing', label: 'Sequencing' }]);
+  }
   typeSel.innerHTML = options
     .map((o) => `<option value="${o.value}">${o.label}</option>`)
     .join('');
@@ -12351,7 +12560,7 @@ function renderQuizBankCategoryDetail(categoryKey) {
         <details class="qb-type-section" open>
           <summary>
             <span>${escapeHtml(group.label || bankItemTypeLabel(group.item_type))}</span>
-            <span class="page-subheading">${group.items.length}</span>
+            <span class="page-subheading">${bankItemUnits(group.items)}</span>
           </summary>
           <div class="qb-type-section-body">${group.items.map((item) => renderQuizBankItemRow(item)).join('')}</div>
         </details>`;
@@ -13276,7 +13485,7 @@ function updateExamComposerPreview() {
         ? 'Selected sources have no matching items (try including Activities).'
         : 'Selected sources have no matching quiz items.';
     } else {
-      const parts = [`${items.length} item(s)`];
+      const parts = [`${bankItemUnits(items)} item(s)`];
       if (quizCount) parts.push(`${quizCount} quiz`);
       if (activityCount) parts.push(`${activityCount} activities`);
       if (maxVal) parts.push(`Total ${maxVal}`);
@@ -15987,7 +16196,7 @@ window.viewParentWork = async function (assessmentId) {
     if (!bodyEl) return;
     const parts = [];
     const box = identificationAnswerBoxHtml(data.identification_bank);
-    if (quiz.length) parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderParentQuizTakenItem));
+    if (quiz.length) parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderParentQuizTakenItem, { given: "Your child's answer", expected: 'Correct answer' }));
     if (work.length) parts.push(work.map((item, i) => renderParentActivityWorkItem(item, i)).join(''));
     bodyEl.innerHTML = parts.join('') || '<p class="page-subheading">No submitted work.</p>';
   } catch (err) {
@@ -16887,6 +17096,10 @@ function openChangePasswordModal(forced) {
   if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   changePasswordForm?.reset();
   resetChangePasswordFields();
+  const currentRow = document.getElementById('cp-current-row');
+  const currentInput = document.getElementById('cp-current');
+  if (currentRow) currentRow.hidden = forcePasswordChange;
+  if (currentInput) currentInput.required = !forcePasswordChange;
   changePasswordModal?.classList.toggle('is-forced', forcePasswordChange);
   changePasswordModal?.removeAttribute('hidden');
 }
@@ -16949,7 +17162,11 @@ if (changePasswordForm) {
       const res = await fetch(`${API_URL}/auth/change-password`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ current_password: current, new_password: newPass })
+        body: JSON.stringify(
+          forcePasswordChange
+            ? { new_password: newPass }
+            : { current_password: current, new_password: newPass }
+        )
       });
 
       const contentType = res.headers.get('content-type') || '';

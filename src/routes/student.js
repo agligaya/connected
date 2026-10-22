@@ -5,6 +5,6 @@ const studentPortal = require('../controllers/studentPortalController');
 
 router.get('/me', verifyToken, requireRole('student'), studentPortal.me);
 router.get('/subjects', verifyToken, requireRole('student'), studentPortal.subjects);
-router.get('/subjects/:subjectId/classwork', verifyToken, requireRole('student'), studentPortal.classwork);
+router.get('/subjects/:subjectId', verifyToken, requireRole('student'), studentPortal.subjectDetail);
 
 module.exports = router;

@@ -3352,33 +3352,178 @@ tbody tr:nth-child(even) {
   gap: 12px;
 }
 
-.student-subject-grid {
+.student-section-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.student-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
 }
 
-.student-subject-card {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  font-family: inherit;
-  color: inherit;
+/* Matching / sequencing answers grouped into one card (teacher and parent views) */
+.taken-group-item + .taken-group-item {
+  margin-top: 14px;
 }
 
-.student-subject-card:hover {
-  border-color: var(--maroon);
+.taken-group-table td.taken-ok {
+  color: #1b5e20;
+  font-weight: 600;
 }
 
-.student-due-flag {
+.taken-group-table td.taken-bad {
+  color: #b71c1c;
+  font-weight: 600;
+}
+
+.taken-mark {
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.student-teacher-role {
+  font-size: 12px;
+  line-height: 1.2;
+  opacity: 0.8;
+}
+
+.student-subject-heading {
+  padding: 0 4px;
+  margin: 4px 0 8px;
+}
+
+/* Link version of the white "Open →" pill used in the teacher and parent portals. */
+a.chip-ghost {
   display: inline-block;
-  margin-top: 10px;
+  text-decoration: none;
+}
+
+/* Status (Open / Not open / Closed ...) always sits at the bottom of the card. */
+.student-work-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.student-work-foot {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.student-records-card {
+  overflow-x: auto;
+}
+
+.student-records-card .parent-mini-table {
+  min-width: 520px;
+}
+
+.student-records-card .parent-mini-table td:first-child {
+  min-width: 170px;
+}
+
+.student-records-card .parent-mini-table th,
+.student-records-card .parent-mini-table td {
+  white-space: nowrap;
+}
+
+.student-records-card .parent-mini-table td:first-child {
+  white-space: normal;
+}
+
+/* Phones: keep the records table readable and let it scroll inside its card */
+html.layout-mobile .student-records-card table {
+  min-width: 520px !important;
+  width: 520px !important;
+  max-width: none !important;
+  table-layout: auto !important;
+}
+
+html.layout-mobile .student-records-card th,
+html.layout-mobile .student-records-card td {
+  white-space: nowrap !important;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+html.layout-mobile .student-records-card td:first-child {
+  white-space: normal !important;
+  min-width: 170px;
+}
+
+/* Parent portal records: keep columns readable and scroll sideways inside the card */
+#parent-progress-table-wrap {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html.layout-mobile #parent-progress-table-wrap table,
+#parent-progress-table-wrap table {
+  min-width: 620px !important;
+  max-width: none !important;
+  table-layout: auto !important;
+}
+
+html.layout-mobile #parent-progress-table-wrap th,
+html.layout-mobile #parent-progress-table-wrap td {
+  white-space: nowrap !important;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Parent portal attendance records: same sideways scroll */
+#parent-attendance-full {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+html.layout-mobile #parent-attendance-full table,
+#parent-attendance-full table {
+  min-width: 480px !important;
+  max-width: none !important;
+  table-layout: auto !important;
+}
+
+html.layout-mobile #parent-attendance-full th,
+html.layout-mobile #parent-attendance-full td {
+  white-space: nowrap !important;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Let the long title wrap instead of making the table very wide */
+html.layout-mobile #parent-progress-table-wrap td:nth-child(3),
+html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
+  white-space: normal !important;
+  min-width: 170px;
+}
+
+.student-subject-tab {
+  font-family: inherit;
+}
+
+.student-subject-tab-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.student-nav-due {
+  flex-shrink: 0;
+  margin-left: auto;
   background: var(--active-pill);
   color: var(--white);
-  font-size: 0.72rem;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  font-size: 0.68rem;
   font-weight: 600;
+  line-height: 1.2;
   border-radius: 999px;
-  padding: 3px 8px;
+  padding: 2px 7px;
 }
 
 .kpi-card {
@@ -4658,10 +4803,6 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .student-subject-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .parent-charts {
     grid-template-columns: 1fr;
   }
@@ -4932,8 +5073,7 @@ textarea {
   }
 
   .teacher-stats--branded,
-  .parent-kpis,
-  .student-subject-grid {
+  .parent-kpis {
     grid-template-columns: 1fr;
   }
 

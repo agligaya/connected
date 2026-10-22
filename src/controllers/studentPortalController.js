@@ -9,6 +9,7 @@ const {
   loadAttendanceRoster,
   isStudentEligibleForQuiz,
   getQuizAccessPhase,
+  isPastManila,
   parseMakeupIds
 } = require('../utils/quizAttendance');
 
@@ -31,16 +32,6 @@ function workPath(type, token) {
   if (kind === 'activity') return `/activity/${token}`;
   if (kind === 'exam') return `/exam/${token}`;
   return `/quiz/${token}`;
-}
-
-function scorePending(type, answers) {
-  if (String(type || '').toLowerCase() !== 'activity') return false;
-  try {
-    const parsed = typeof answers === 'string' ? JSON.parse(answers) : answers;
-    return !parsed || !parsed.scored_at;
-  } catch {
-    return true;
-  }
 }
 
 exports.me = async (req, res) => {
@@ -79,10 +70,28 @@ function classifyWork(row, student, attendance) {
     makeupStudentIds,
     studentId: student.id
   });
-  let state = 'unavailable';
-  if (submitted) state = 'submitted';
-  else if (eligible && row.share_token) state = 'open';
-  else if (phase === 'live_ended' || phase === 'makeup_ended') state = 'closed';
+  // submitted   - the student already turned it in
+  // not_open    - the teacher has not enabled the link (or turned it off)
+  // closed      - the deadline has passed (checked before attendance, so it applies to everyone)
+  // open        - enabled, in time, and attendance lets this student in
+  // no_access   - enabled and in time, but the student is Absent or Excused with no make-up allowance
+  // waiting     - enabled and in time, but attendance has not been recorded yet
+  let state = 'waiting';
+  if (submitted) {
+    state = 'submitted';
+  } else if (!Number(row.share_enabled)) {
+    state = 'not_open';
+  } else if (
+    phase === 'live_ended'
+    || phase === 'makeup_ended'
+    || (phase !== 'makeup' && row.quiz_closes_at && isPastManila(row.quiz_closes_at))
+  ) {
+    state = 'closed';
+  } else if (eligible && row.share_token) {
+    state = 'open';
+  } else if (phase === 'needs_makeup') {
+    state = 'no_access';
+  }
   return { state, submitted, makeupStudentIds };
 }
 
@@ -115,13 +124,26 @@ async function loadWorkRows(student, subjectId) {
        ON qs.assessment_id = a.id AND qs.student_id = ?
      WHERE a.grade_level = ?
        AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
-       AND a.share_enabled = 1
+       AND (a.share_enabled = 1 OR a.share_token IS NOT NULL)
        AND a.subject_id IS NOT NULL
        ${subjectSql}
      ORDER BY a.created_at DESC`,
     params
   );
   return rows;
+}
+
+function subjectCoversGrade(gradeLevel, applicableGrades) {
+  if (!applicableGrades) return false;
+  const grade = parseInt(gradeLevel, 10);
+  if (Number.isNaN(grade)) return false;
+  const text = String(applicableGrades).trim();
+  const range = text.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (range) return grade >= parseInt(range[1], 10) && grade <= parseInt(range[2], 10);
+  if (text.includes(',')) {
+    return text.split(',').map((part) => parseInt(part.trim(), 10)).includes(grade);
+  }
+  return parseInt(text, 10) === grade;
 }
 
 exports.subjects = async (req, res) => {
@@ -134,18 +156,24 @@ exports.subjects = async (req, res) => {
     }
     const grade = student.grade_level;
     const section = student.section;
+    const [gradeSubjects] = await db.query(
+      'SELECT id, applicable_grades FROM subjects WHERE deleted_at IS NULL'
+    );
+    const gradeSubjectIds = gradeSubjects
+      .filter((row) => subjectCoversGrade(grade, row.applicable_grades))
+      .map((row) => row.id)
+      .join(',');
     const [subjects] = await db.query(
       `SELECT sub.id, sub.NAME AS name, sub.CODE AS code,
-              COALESCE(
-                (SELECT CONCAT(u.first_name, ' ', u.last_name)
+              (SELECT CONCAT(u.first_name, ' ', u.last_name)
                  FROM teacher_assignments ta
                  JOIN users u ON u.id = ta.teacher_id
                  WHERE ta.subject_id = sub.id
                    AND ta.grade_level = ?
                    AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
                  ORDER BY (ta.school_year = ?) DESC, ta.id DESC
-                 LIMIT 1),
-                (SELECT CONCAT(u.first_name, ' ', u.last_name)
+                 LIMIT 1) AS subject_teacher_name,
+              (SELECT CONCAT(u.first_name, ' ', u.last_name)
                  FROM teacher_assignments ta
                  JOIN users u ON u.id = ta.teacher_id
                  WHERE ta.subject_id IS NULL
@@ -153,8 +181,7 @@ exports.subjects = async (req, res) => {
                    AND ta.grade_level = ?
                    AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
                  ORDER BY (ta.school_year = ?) DESC, ta.id DESC
-                 LIMIT 1)
-              ) AS teacher_name
+                 LIMIT 1) AS adviser_name
        FROM (
          SELECT ta.subject_id
          FROM teacher_assignments ta
@@ -166,13 +193,17 @@ exports.subjects = async (req, res) => {
          FROM assessments a
          WHERE a.grade_level = ?
            AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
-           AND a.share_enabled = 1
+           AND (a.share_enabled = 1 OR a.share_token IS NOT NULL)
            AND a.subject_id IS NOT NULL
+         UNION
+         SELECT gs.id AS subject_id
+         FROM subjects gs
+         WHERE FIND_IN_SET(gs.id, ?) > 0
        ) ids
        JOIN subjects sub ON sub.id = ids.subject_id
        WHERE sub.deleted_at IS NULL
        ORDER BY sub.NAME`,
-      [grade, section, schoolYear, grade, section, schoolYear, grade, section, grade, section]
+      [grade, section, schoolYear, grade, section, schoolYear, grade, section, grade, section, gradeSubjectIds]
     );
 
     const rows = await loadWorkRows(student);
@@ -198,7 +229,11 @@ exports.subjects = async (req, res) => {
         id: subject.id,
         code: subject.code,
         name: subject.name,
-        teacher_name: subject.teacher_name || null,
+        // A subject teacher handles this subject; otherwise the class adviser covers it.
+        teacher_name: subject.subject_teacher_name || subject.adviser_name || null,
+        teacher_role: subject.subject_teacher_name
+          ? 'subject_teacher'
+          : (subject.adviser_name ? 'class_adviser' : null),
         due_count: dueBySubject.get(Number(subject.id)) || 0
       }))
     });
@@ -208,7 +243,80 @@ exports.subjects = async (req, res) => {
   }
 };
 
-exports.classwork = async (req, res) => {
+const STATE_ORDER = { open: 0, waiting: 1, no_access: 2, not_open: 3, closed: 4, submitted: 5 };
+
+/** Lesson files the teacher attached to classwork shared with this class. */
+async function loadMaterials(student, subjectId) {
+  const [rows] = await db.query(
+    `SELECT lp.id, lp.title, lp.objectives, lp.file_path,
+            GROUP_CONCAT(DISTINCT a.title ORDER BY a.created_at SEPARATOR '||') AS used_in
+     FROM assessments a
+     JOIN lesson_plans lp ON lp.id = a.lesson_plan_id
+     WHERE a.grade_level = ?
+       AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
+       AND a.share_enabled = 1
+       AND a.subject_id = ?
+       AND lp.file_path IS NOT NULL AND lp.file_path <> ''
+     GROUP BY lp.id, lp.title, lp.objectives, lp.file_path
+     ORDER BY MAX(a.created_at) DESC`,
+    [student.grade_level, student.section, subjectId]
+  );
+  return rows.map((row) => {
+    const ext = String(row.file_path).split('.').pop().toLowerCase();
+    return {
+      id: row.id,
+      title: row.title,
+      objectives: row.objectives || null,
+      file_path: row.file_path,
+      file_type: ext === 'pdf' ? 'PDF' : (ext === 'doc' || ext === 'docx') ? 'Word' : ext.toUpperCase(),
+      used_in: row.used_in ? String(row.used_in).split('||').filter(Boolean) : []
+    };
+  });
+}
+
+/** Everything this student has taken in the subject, with the recorded score. */
+async function loadRecords(student, subjectId) {
+  const [rows] = await db.query(
+    `SELECT a.id, a.title, a.TYPE AS type, a.quarter, a.max_score,
+            asr.score AS recorded_score, asr.recorded_at,
+            qs.id AS submission_id, qs.score AS submission_score,
+            qs.max_score AS submission_max, qs.submitted_at
+     FROM assessments a
+     LEFT JOIN assessment_scores asr ON asr.assessment_id = a.id AND asr.student_id = ?
+     LEFT JOIN quiz_submissions qs ON qs.assessment_id = a.id AND qs.student_id = ?
+     WHERE a.subject_id = ?
+       AND (asr.id IS NOT NULL OR qs.id IS NOT NULL)
+     ORDER BY COALESCE(qs.submitted_at, asr.recorded_at) DESC, asr.id DESC`,
+    [student.id, student.id, subjectId]
+  );
+  const seen = new Set();
+  const records = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    const kind = String(row.type || '').toLowerCase();
+    const hasRecorded = row.recorded_score != null;
+    // An activity is scored by the teacher; until then there is no recorded score.
+    const pending = !hasRecorded && kind === 'activity';
+    let score = null;
+    if (hasRecorded) score = Number(row.recorded_score);
+    else if (!pending && row.submission_id != null) score = Number(row.submission_score);
+    records.push({
+      id: row.id,
+      title: row.title,
+      type: row.type,
+      quarter: row.quarter || null,
+      score,
+      max_score: Number(row.submission_max || row.max_score) || null,
+      taken_at: row.submitted_at || row.recorded_at || null,
+      score_pending: pending || score == null
+    });
+  }
+  return records;
+}
+
+// GET /api/student/subjects/:subjectId
+exports.subjectDetail = async (req, res) => {
   try {
     await ensureQuizAttendanceSchema();
     const student = await loadLearner(req.user.id);
@@ -221,30 +329,29 @@ exports.classwork = async (req, res) => {
     const rows = await loadWorkRows(student, subjectId);
     const rosterCache = new Map();
 
-    const items = [];
+    const classworks = [];
     for (const row of rows) {
       const attendance = row.submission_id != null ? null : await attendanceFor(student, row, rosterCache);
-      const { state, submitted } = classifyWork(row, student, attendance);
-      const pending = submitted && scorePending(row.type, row.answers);
-      items.push({
+      const { state } = classifyWork(row, student, attendance);
+      classworks.push({
         id: row.id,
         title: row.title,
         type: row.type,
         state,
         path: state === 'open' ? workPath(row.type, row.share_token) : null,
-        submitted_at: submitted ? row.submitted_at : null,
-        score: submitted && !pending ? Number(row.score) : null,
-        max_score: submitted ? Number(row.submission_max || row.max_score) : Number(row.max_score),
-        score_pending: pending
+        submitted_at: state === 'submitted' ? row.submitted_at : null
       });
     }
+    classworks.sort((a, b) => (STATE_ORDER[a.state] ?? 1) - (STATE_ORDER[b.state] ?? 1));
 
-    res.json({
-      to_submit: items.filter((item) => item.state !== 'submitted'),
-      submitted: items.filter((item) => item.state === 'submitted')
-    });
+    const [materials, records] = await Promise.all([
+      loadMaterials(student, subjectId),
+      loadRecords(student, subjectId)
+    ]);
+
+    res.json({ classworks, materials, records });
   } catch (error) {
-    console.error('Student classwork error:', error);
-    res.status(500).json({ error: 'Server error loading classwork' });
+    console.error('Student subject detail error:', error);
+    res.status(500).json({ error: 'Server error loading this subject' });
   }
 };
