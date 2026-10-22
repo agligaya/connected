@@ -810,7 +810,7 @@ async function notifyAttendance(req, res) {
       return res.status(400).json({ error: 'grade and section are required' });
     }
 
-    const allowed = ['Present', 'Late', 'Absent'];
+    const allowed = ['Present', 'Late', 'Absent', 'Excused'];
     let wanted = Array.isArray(statuses) && statuses.length
       ? statuses.filter((s) => allowed.includes(s))
       : ['Absent'];

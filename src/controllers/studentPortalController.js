@@ -12,6 +12,8 @@ const {
   isPastManila,
   parseMakeupIds
 } = require('../utils/quizAttendance');
+const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission, identificationReviewBank } = require('../utils/quizShare');
+const { ensureQuestionBankSchema, formatBankRow } = require('../utils/questionBank');
 
 async function loadLearner(userId) {
   await ensureStudentRoleSchema();
@@ -324,7 +326,8 @@ async function loadRecords(student, subjectId) {
       score,
       max_score: Number(row.submission_max || row.max_score) || null,
       taken_at: row.submitted_at || row.recorded_at || null,
-      score_pending: pending || score == null
+      score_pending: pending || score == null,
+      has_submission: row.submission_id != null
     });
   }
   return records;
@@ -370,5 +373,70 @@ exports.subjectDetail = async (req, res) => {
   } catch (error) {
     console.error('Student subject detail error:', error);
     res.status(500).json({ error: 'Server error loading this subject' });
+  }
+};
+
+// GET /api/student/records/:assessmentId/work
+exports.submission = async (req, res) => {
+  try {
+    const student = await loadLearner(req.user.id);
+    if (!student || String(student.status).toLowerCase() !== 'active') {
+      return res.status(403).json({ error: 'This student account is not active.' });
+    }
+    const assessmentId = Number(req.params.assessmentId);
+    if (!assessmentId) return res.status(400).json({ error: 'Choose a record.' });
+
+    await ensureQuizShareSchema();
+    await ensureQuestionBankSchema();
+    const [[assessment]] = await db.query(
+      `SELECT a.id, a.title, a.TYPE AS type, a.max_score
+       FROM assessments a
+       JOIN quiz_submissions qs ON qs.assessment_id = a.id AND qs.student_id = ?
+       WHERE a.id = ?
+         AND a.grade_level = ?
+         AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))`,
+      [student.id, assessmentId, student.grade_level, student.section]
+    );
+    if (!assessment) return res.status(404).json({ error: 'No submitted work for this record.' });
+
+    const [[submission]] = await db.query(
+      `SELECT answers FROM quiz_submissions WHERE assessment_id = ? AND student_id = ?`,
+      [assessmentId, student.id]
+    );
+    if (!submission) return res.status(404).json({ error: 'No submitted work for this record.' });
+    const [qrows] = await db.query(
+      `SELECT id, item_type, question, choices, answer, points, rubric
+       FROM assessment_questions
+       WHERE assessment_id = ?
+       ORDER BY sort_order ASC, id ASC`,
+      [assessmentId]
+    );
+    const questions = qrows.map((row) => formatBankRow(row));
+    res.json({
+      title: assessment.title,
+      type: assessment.type,
+      max_score: assessment.max_score,
+      quiz_taken: quizTakenFromSubmission(submission.answers, questions).map((item) => ({
+        n: item.n,
+        item_type: item.item_type,
+        question: item.question,
+        choices: item.choices,
+        given: item.given,
+        expected: item.expected,
+        correct: item.correct,
+        points: item.points
+      })),
+      activity_work: activityWorkFromSubmission(submission.answers, questions).map((item) => ({
+        question: item.question,
+        text: item.text,
+        file: item.file && String(item.file.url || '').startsWith('/uploads/')
+          ? { url: item.file.url, name: item.file.name }
+          : null
+      })),
+      identification_bank: identificationReviewBank(questions)
+    });
+  } catch (error) {
+    console.error('Student submission error:', error);
+    res.status(500).json({ error: 'Server error loading submitted work' });
   }
 };

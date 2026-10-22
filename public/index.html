@@ -1228,9 +1228,11 @@
       <div class="field-small">
         <label for="attendance-update-scope">Who to notify</label>
         <select id="attendance-update-scope">
+          <option value="present">Present only</option>
+          <option value="late">Late only</option>
           <option value="absent">Absent only</option>
-          <option value="late_absent" selected>Late and absent</option>
-          <option value="all">All statuses (Present, Late, Absent)</option>
+          <option value="excused">Excused only</option>
+          <option value="all" selected>All (Present, Late, Absent, Excused)</option>
         </select>
       </div>
       <p id="attendance-update-preview" class="page-subheading"></p>
@@ -1965,7 +1967,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261022c" type="module"></script>
+  <script src="/js/app.js?v=20261022e" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
@@ -2723,7 +2725,7 @@
       <h2>Student</h2>
       <ul>
         <li>Sign in with the username your parent received by email and the temporary password. The temporary password expires after 10 minutes. If it does, ask the school office for a new one. You will be asked to choose your own password the first time.</li>
-        <li>Pick a subject in the sidebar. <strong>Classworks</strong> is split into <strong>Pending</strong> (still to do), <strong>Done</strong> (turned in or scored by your teacher), and <strong>Missing</strong> (closed without a submission). Under each, your quizzes, activities, and exams are listed. <strong>Materials</strong> has the lesson files your teacher shared. <strong>Records</strong> shows your scores.</li>
+        <li>Pick a subject in the sidebar. <strong>Classworks</strong> is split into <strong>Pending</strong> (still to do), <strong>Done</strong> (turned in or scored by your teacher), and <strong>Missing</strong> (closed without a submission). Under each, your quizzes, activities, and exams are listed. <strong>Materials</strong> has the lesson files your teacher shared. <strong>Records</strong> shows your scores. <strong>View Work</strong> opens what you submitted.</li>
         <li>Open a quiz or activity when it is available. If it is not open yet, closed, or needs a make-up, ask your teacher.</li>
         <li>An activity score shows as pending until your teacher records it.</li>
       </ul>

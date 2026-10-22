@@ -335,15 +335,59 @@ function renderStudentRecordsTable(records) {
       <td>${escapeHtml(scoreText)}</td>
       <td>${escapeHtml(percent)}</td>
       <td>${escapeHtml(studentDateLabel(row.taken_at) || '—')}</td>
+      <td>${row.has_submission
+        ? `<button type="button" class="chip-ghost" onclick="viewStudentWork(${Number(row.id)})">View Work</button>`
+        : '—'}</td>
     </tr>`;
   }).join('');
   return `<div class="chart-card student-records-card">
     <table class="parent-mini-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Quarter</th><th>Score</th><th>%</th><th>Date</th></tr></thead>
+      <thead><tr><th>Name</th><th>Type</th><th>Quarter</th><th>Score</th><th>%</th><th>Date</th><th>Work</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;
 }
+
+window.viewStudentWork = async function (assessmentId) {
+  const titleEl = document.getElementById('progress-activity-work-title');
+  const subEl = document.getElementById('progress-activity-work-sub');
+  const bodyEl = document.getElementById('progress-activity-work-body');
+  if (titleEl) titleEl.textContent = 'Submitted work';
+  if (subEl) subEl.textContent = 'Loading…';
+  if (bodyEl) bodyEl.innerHTML = '';
+  openAdminModal('progress-activity-work-modal');
+  try {
+    const res = await fetch(`${API_URL}/student/records/${assessmentId}/work`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load submitted work');
+    const kind = String(data.type || '').toLowerCase();
+    const quiz = Array.isArray(data.quiz_taken) ? data.quiz_taken : [];
+    const work = Array.isArray(data.activity_work) ? data.activity_work : [];
+    if (titleEl) titleEl.textContent = data.title || 'Submitted work';
+    if (subEl) {
+      const submitted = kind === 'activity'
+        ? 'What you submitted.'
+        : kind === 'exam'
+          ? 'What you submitted on this exam.'
+          : 'What you submitted on this quiz.';
+      subEl.textContent = submitted;
+    }
+    if (!bodyEl) return;
+    const parts = [];
+    const box = identificationAnswerBoxHtml(data.identification_bank);
+    if (quiz.length) {
+      parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderParentQuizTakenItem, {
+        given: 'Your answer',
+        expected: 'Correct answer'
+      }));
+    }
+    if (work.length) parts.push(work.map((item, i) => renderParentActivityWorkItem(item, i)).join(''));
+    bodyEl.innerHTML = parts.join('') || '<p class="page-subheading">No submitted work.</p>';
+  } catch (err) {
+    if (subEl) subEl.textContent = '';
+    if (bodyEl) bodyEl.innerHTML = `<p class="page-subheading">${escapeHtml(err.message || 'Could not load submitted work')}</p>`;
+  }
+};
 
 function renderStudentSection() {
   const body = document.getElementById('student-section-body');
@@ -7806,15 +7850,17 @@ if (notifyBtn) {
 }
 
 function attendanceStatusesForScope(scope) {
+  if (scope === 'present') return ['Present'];
+  if (scope === 'late') return ['Late'];
   if (scope === 'absent') return ['Absent'];
-  if (scope === 'all') return ['Present', 'Late', 'Absent'];
-  return ['Late', 'Absent'];
+  if (scope === 'excused') return ['Excused'];
+  return ['Present', 'Late', 'Absent', 'Excused'];
 }
 
 function updateAttendancePreview() {
   const preview = document.getElementById('attendance-update-preview');
   if (!preview) return;
-  const scope = document.getElementById('attendance-update-scope')?.value || 'late_absent';
+  const scope = document.getElementById('attendance-update-scope')?.value || 'all';
   const statuses = attendanceStatusesForScope(scope);
   const matches = rosterData.filter(s => statuses.includes(s.attendance_status));
   preview.textContent = matches.length
@@ -7832,7 +7878,7 @@ document.getElementById('attendance-update-modal')?.addEventListener('click', (e
 document.getElementById('attendance-update-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!teacherCurrentClass) return;
-  const scope = document.getElementById('attendance-update-scope')?.value || 'late_absent';
+  const scope = document.getElementById('attendance-update-scope')?.value || 'all';
   const statuses = attendanceStatusesForScope(scope);
   const matches = rosterData.filter(s => statuses.includes(s.attendance_status));
   if (!matches.length) {
