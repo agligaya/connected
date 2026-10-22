@@ -1,11 +1,39 @@
-const nodemailer = require('nodemailer');
+const REQUEST_TIMEOUT_MS = 15000;
 
+function env(name) {
+  return String(process.env[name] || '').trim();
+}
+
+/** MAIL_FROM, tolerating quote marks that some hosting dashboards keep literally. */
 function mailFrom() {
-  return String(process.env.MAIL_FROM || '').trim();
+  return env('MAIL_FROM').replace(/^["']+|["']+$/g, '').trim();
+}
+
+/** "ConnectED <no-reply@school.com>" -> { name, email } */
+function parseFrom(from) {
+  const match = String(from || '').match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  if (match) return { name: match[1].replace(/^["']+|["']+$/g, '').trim(), email: match[2].trim() };
+  return { name: '', email: String(from || '').trim() };
+}
+
+/**
+ * How mail is sent. Free Render services block SMTP, so an HTTPS provider is preferred there.
+ * MAIL_PROVIDER = resend | brevo | smtp; if unset, the first provider with credentials is used.
+ */
+function mailProvider() {
+  const explicit = env('MAIL_PROVIDER').toLowerCase();
+  if (explicit === 'resend' || explicit === 'brevo' || explicit === 'smtp') return explicit;
+  if (env('RESEND_API_KEY')) return 'resend';
+  if (env('BREVO_API_KEY')) return 'brevo';
+  return 'smtp';
 }
 
 function isMailConfigured() {
-  return Boolean(String(process.env.SMTP_HOST || '').trim() && mailFrom());
+  const provider = mailProvider();
+  if (!mailFrom()) return false;
+  if (provider === 'resend') return Boolean(env('RESEND_API_KEY'));
+  if (provider === 'brevo') return Boolean(env('BREVO_API_KEY'));
+  return Boolean(env('SMTP_HOST'));
 }
 
 function roleLabel(role) {
@@ -74,43 +102,133 @@ function accountEmailBody({ firstName, lastName, email, role, password, loginUrl
   return lines.join('\n');
 }
 
+async function postJson(url, headers, body) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
+    const err = new Error(timedOut ? 'Request timed out' : error.message);
+    err.code = timedOut ? 'ETIMEDOUT' : (error.cause?.code || error.code || 'ENETWORK');
+    throw err;
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err = new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+    err.status = res.status;
+    err.detail = text;
+    throw err;
+  }
+  return res.json().catch(() => ({}));
+}
+
+async function sendViaResend({ from, to, subject, text }) {
+  await postJson(
+    'https://api.resend.com/emails',
+    { Authorization: `Bearer ${env('RESEND_API_KEY')}` },
+    { from, to: [to], subject, text }
+  );
+}
+
+async function sendViaBrevo({ from, to, subject, text }) {
+  const sender = parseFrom(from);
+  await postJson(
+    'https://api.brevo.com/v3/smtp/email',
+    { 'api-key': env('BREVO_API_KEY') },
+    {
+      sender: sender.name ? { name: sender.name, email: sender.email } : { email: sender.email },
+      to: [{ email: to }],
+      subject,
+      textContent: text
+    }
+  );
+}
+
+async function sendViaSmtp({ from, to, subject, text }) {
+  const nodemailer = require('nodemailer');
+  const port = Number(process.env.SMTP_PORT) || 587;
+  const user = env('SMTP_USER');
+  const pass = String(process.env.SMTP_PASS || '');
+  const transporter = nodemailer.createTransport({
+    host: env('SMTP_HOST'),
+    port,
+    secure: port === 465,
+    auth: user ? { user, pass } : undefined,
+    connectionTimeout: REQUEST_TIMEOUT_MS,
+    greetingTimeout: REQUEST_TIMEOUT_MS,
+    socketTimeout: REQUEST_TIMEOUT_MS
+  });
+  await transporter.sendMail({ from, to, subject, text });
+}
+
+/** A short, safe explanation for the admin; the full detail goes to the server log only. */
+function friendlyReason(error) {
+  const code = String(error.code || '').toUpperCase();
+  const status = Number(error.status || error.responseCode || 0);
+  const text = String(error.detail || error.message || '').toLowerCase();
+  const unreachable = ['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ESOCKET', 'ECONNECTION', 'ENETWORK'];
+
+  if (unreachable.includes(code)) {
+    return 'The mail server could not be reached. The host may be blocking outbound email.';
+  }
+  const senderProblem = /domain|sender|from|verif|testing emails/.test(text);
+  if ([400, 403, 422].includes(status) && senderProblem) {
+    return 'The sender address was not accepted. Check MAIL_FROM and that its domain is verified with the mail provider.';
+  }
+  if (code === 'EAUTH' || status === 401 || status === 403) {
+    return 'The mail service rejected the login or API key.';
+  }
+  if (status === 429) return 'The mail service limit was reached. Try again later.';
+  if (status >= 500) return 'The mail service is having problems. Try again later.';
+  return 'The mail provider did not accept the message.';
+}
+
+/** Sends one plain-text email. Never throws; returns { sent } or { sent: false, error }. */
+async function sendMail({ to, subject, text }) {
+  const recipient = String(to || '').trim();
+  if (!recipient) return { sent: false, error: 'There is no email address to send to.' };
+  if (!isMailConfigured()) return { sent: false, error: 'Mail is not configured.' };
+
+  const provider = mailProvider();
+  const message = { from: mailFrom(), to: recipient, subject, text };
+  try {
+    if (provider === 'resend') await sendViaResend(message);
+    else if (provider === 'brevo') await sendViaBrevo(message);
+    else await sendViaSmtp(message);
+    return { sent: true, provider };
+  } catch (error) {
+    const detail = [error.code, error.status || error.responseCode, error.message].filter(Boolean).join(' | ');
+    console.error(`[mail] provider=${provider} to=${recipient} failed: ${detail}`);
+    return { sent: false, provider, error: friendlyReason(error) };
+  }
+}
+
 async function sendAccountDetails({ firstName, lastName, email, role, password, loginUrl, childName, username, expiresMinutes }) {
   const to = String(email || '').trim();
   if (!to || !password) {
     return { sent: false, error: 'The account has no email or temporary password to send.' };
   }
-  if (!isMailConfigured()) {
-    return { sent: false, error: 'Mail is not configured.' };
-  }
-
-  const port = Number(process.env.SMTP_PORT) || 587;
-  const user = String(process.env.SMTP_USER || '').trim();
-  const pass = String(process.env.SMTP_PASS || '');
-  const transporter = nodemailer.createTransport({
-    host: String(process.env.SMTP_HOST).trim(),
-    port,
-    secure: port === 465,
-    auth: user ? { user, pass } : undefined
+  return sendMail({
+    to,
+    subject: String(role || '').toLowerCase() === 'student'
+      ? "Your child's ConnectED account"
+      : 'Your ConnectED account',
+    text: accountEmailBody({ firstName, lastName, email: to, role, password, loginUrl, childName, username, expiresMinutes })
   });
-
-  try {
-    await transporter.sendMail({
-      from: mailFrom(),
-      to,
-      subject: String(role || '').toLowerCase() === 'student'
-        ? "Your child's ConnectED account"
-        : 'Your ConnectED account',
-      text: accountEmailBody({ firstName, lastName, email: to, role, password, loginUrl, childName, username, expiresMinutes })
-    });
-    return { sent: true };
-  } catch (error) {
-    console.error('[mail] account details:', error.message);
-    return { sent: false, error: 'The mail provider did not accept the message.' };
-  }
 }
 
 module.exports = {
   isMailConfigured,
+  mailProvider,
+  mailFrom,
+  parseFrom,
+  friendlyReason,
   publicLoginUrl,
+  sendMail,
   sendAccountDetails
 };
