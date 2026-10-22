@@ -21,7 +21,7 @@ const {
   QUARTERS
 } = require('../utils/schoolSettings');
 const { logActivity, getRecentActivity } = require('../utils/activityLog');
-const { sendAccountDetails, publicLoginUrl } = require('../utils/mail');
+const { sendAccountDetails, sendAccountEmailLater, publicLoginUrl } = require('../utils/mail');
 const { ensureSoftDeleteSchema } = require('../utils/softDeleteSchema');
 const {
   ensureTeachingModeEnum,
@@ -461,7 +461,11 @@ async function createAccountRecord(body, actorId) {
 exports.createAccount = async (req, res) => {
   try {
     const { userId } = await createAccountRecord(req.body, req.user?.id || req.user?.userId);
-    const mail = await sendAccountDetails({
+    res.status(201).json({
+      message: 'Account created successfully. Sign-in details are being sent to the email address.',
+      userId
+    });
+    sendAccountEmailLater({
       firstName: plainText(req.body?.first_name),
       lastName: plainText(req.body?.last_name),
       email: String(req.body?.email || '').trim(),
@@ -469,10 +473,6 @@ exports.createAccount = async (req, res) => {
       password: String(req.body?.password || ''),
       loginUrl: publicLoginUrl(req)
     });
-    const message = mail.sent
-      ? 'Account created successfully. Sign-in details were sent to the email address.'
-      : `Account created successfully. The email was not sent: ${mail.error}`;
-    res.status(201).json({ message, userId, emailSent: mail.sent });
   } catch (error) {
     const status = error.status || 500;
     if (status >= 500) console.error('Create account error:', error);

@@ -222,6 +222,16 @@ async function sendAccountDetails({ firstName, lastName, email, role, password, 
   });
 }
 
+/** Sends after the HTTP response, so creating an account does not wait on the mail provider. */
+function sendAccountEmailLater(details) {
+  const to = String(details?.email || '').trim();
+  sendAccountDetails(details).then((mail) => {
+    if (!mail.sent) console.error(`[mail] not sent to ${to || '(no address)'}: ${mail.error}`);
+  }).catch((error) => {
+    console.error('[mail] account email:', error.message);
+  });
+}
+
 module.exports = {
   isMailConfigured,
   mailProvider,
@@ -230,5 +240,6 @@ module.exports = {
   friendlyReason,
   publicLoginUrl,
   sendMail,
-  sendAccountDetails
+  sendAccountDetails,
+  sendAccountEmailLater
 };

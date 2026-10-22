@@ -140,7 +140,15 @@ function loginNotice(mail, username, password) {
   return `Username: ${username}. Temporary password: ${password}. ${expiry} ${mail.error}`;
 }
 
-async function issueStudentLogin(student, password, loginUrl) {
+function emailParentLater(student, username, password, loginUrl) {
+  notifyParentOfLogin(student, username, password, loginUrl).then((mail) => {
+    if (!mail.sent) console.error(`[mail] student ${username} not emailed: ${mail.error}`);
+  }).catch((error) => {
+    console.error('[mail] student login:', error.message);
+  });
+}
+
+async function issueStudentLogin(student, password, loginUrl, { emailNow = true } = {}) {
   await ensureStudentRoleSchema();
   await ensureAuthColumns();
   const [existing] = await db.query(
@@ -155,8 +163,9 @@ async function issueStudentLogin(student, password, loginUrl) {
      VALUES (?, ?, ?, ?, 'student', 'active', 1, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
     [student.first_name, student.last_name, username, password_hash, student.id, tempPasswordMinutes]
   );
+  if (!emailNow) return { username, student };
   const mail = await notifyParentOfLogin(student, username, password, loginUrl);
-  return { username, mail };
+  return { username, student, mail };
 }
 
 async function removeEnrolledStudent(studentId) {
@@ -171,7 +180,9 @@ async function enrollWithLogin(body, loginUrl, options) {
     const student = await studentForLogin(studentId);
     if (!student) throw studentError(500, 'The enrolled student could not be loaded.');
     const password = generateTempPassword();
-    const issued = await issueStudentLogin(student, password, loginUrl);
+    const issued = await issueStudentLogin(student, password, loginUrl, {
+      emailNow: options.emailNow !== false
+    });
     return { studentId, password, ...issued };
   } catch (error) {
     await removeEnrolledStudent(studentId);
@@ -182,13 +193,14 @@ async function enrollWithLogin(body, loginUrl, options) {
 // POST /api/admin/students
 exports.createStudent = async (req, res) => {
   try {
-    const enrolled = await enrollWithLogin(req.body, publicLoginUrl(req));
+    const loginUrl = publicLoginUrl(req);
+    const enrolled = await enrollWithLogin(req.body, loginUrl, { emailNow: false });
     res.status(201).json({
-      message: `Student enrolled. ${loginNotice(enrolled.mail, enrolled.username, enrolled.password)}`,
+      message: `Student enrolled. Username: ${enrolled.username}. Temporary password: ${enrolled.password}. It expires in ${tempPasswordMinutes} minutes. The sign-in email is being sent to the parent.`,
       studentId: enrolled.studentId,
-      username: enrolled.username,
-      emailSent: enrolled.mail.sent
+      username: enrolled.username
     });
+    emailParentLater(enrolled.student, enrolled.username, enrolled.password, loginUrl);
   } catch (error) {
     const status = error.status || 500;
     if (status >= 500) console.error('Create student error:', error);
@@ -453,12 +465,13 @@ exports.createStudentLogin = async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({ error: 'Temporary password must be at least 6 characters.' });
     }
-    const issued = await issueStudentLogin(student, password, publicLoginUrl(req));
+    const loginUrl = publicLoginUrl(req);
+    const issued = await issueStudentLogin(student, password, loginUrl, { emailNow: false });
     res.status(201).json({
-      message: `Login created. ${loginNotice(issued.mail, issued.username, password)}`,
-      username: issued.username,
-      emailSent: issued.mail.sent
+      message: `Login created. Username: ${issued.username}. Temporary password: ${password}. It expires in ${tempPasswordMinutes} minutes. The sign-in email is being sent to the parent.`,
+      username: issued.username
     });
+    emailParentLater(student, issued.username, password, loginUrl);
   } catch (error) {
     console.error('Create student login error:', error);
     res.status(error.status || 500).json({ error: error.status ? error.message : 'Server error creating login' });
@@ -486,11 +499,11 @@ exports.resetStudentLogin = async (req, res) => {
        WHERE id = ?`,
       [password_hash, tempPasswordMinutes, logins[0].id]
     );
-    const mail = await notifyParentOfLogin(student, logins[0].email, password, publicLoginUrl(req));
+    const loginUrl = publicLoginUrl(req);
     res.json({
-      message: `Temporary password saved. ${loginNotice(mail, logins[0].email, password)}`,
-      emailSent: mail.sent
+      message: `Temporary password saved. Username: ${logins[0].email}. Temporary password: ${password}. It expires in ${tempPasswordMinutes} minutes. The sign-in email is being sent to the parent.`
     });
+    emailParentLater(student, logins[0].email, password, loginUrl);
   } catch (error) {
     console.error('Reset student login error:', error);
     res.status(500).json({ error: 'Server error resetting login' });
