@@ -3413,6 +3413,67 @@ a.chip-ghost {
   padding-top: 8px;
 }
 
+/* Classworks: three rows (Pending, Done, Missing), each with Quizzes / Activities / Exams */
+.student-work-group {
+  margin: 0 0 26px;
+}
+
+.student-work-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #eadfdf;
+  font-size: 1.1rem;
+  color: var(--maroon-deep);
+}
+
+.student-work-group-count {
+  min-width: 24px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f4ecec;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.student-work-group--missing .student-work-group-title {
+  color: #b71c1c;
+  border-bottom-color: #f1c4c4;
+}
+
+.student-work-group--missing .student-work-group-count {
+  background: #fdeaea;
+  color: #b71c1c;
+}
+
+.student-work-kind + .student-work-kind {
+  margin-top: 16px;
+}
+
+.student-work-kind-title {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #6b5a5a;
+}
+
+.student-work-kind-title span {
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.student-work-group-empty {
+  margin: 0;
+}
+
+.student-work-card--missing .student-work-foot .page-subheading {
+  color: #b71c1c;
+  font-weight: 600;
+}
+
 .student-records-card {
   overflow-x: auto;
 }

@@ -230,7 +230,6 @@ function enterPortal(user) {
 let studentSubjects = [];
 let studentSubjectId = null;
 let studentSection = 'classworks';
-let studentWorkFilter = 'all';
 let studentDetail = null;
 
 function studentWorkTypeLabel(type) {
@@ -242,8 +241,8 @@ function studentWorkTypeLabel(type) {
 
 function studentWorkStateLabel(item) {
   if (item.state === 'open') return 'Open';
-  if (item.state === 'closed') return 'Closed';
-  if (item.state === 'submitted') return 'Submitted';
+  if (item.state === 'closed') return 'Missing – closed without a submission';
+  if (item.state === 'submitted') return item.scored_by_teacher ? 'Scored by your teacher' : 'Submitted';
   if (item.state === 'waiting') return 'Waiting for attendance';
   if (item.state === 'no_access') return 'No access';
   return 'Not open';
@@ -265,13 +264,55 @@ function renderStudentWorkCard(item) {
   const action = item.state === 'open' && item.path
     ? `<a class="chip-ghost" href="${escapeHtml(item.path)}">Open →</a>`
     : '';
-  return `<div class="chart-card student-work-card">
+  return `<div class="chart-card student-work-card student-work-card--${escapeHtml(studentWorkGroupOf(item))}">
     <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(type)}</p>
     <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 6px;">${escapeHtml(item.title || 'Classwork')}</h3>
     <div class="student-work-foot">
       ${action || `<p class="page-subheading" style="margin:0;">${escapeHtml(detail)}</p>`}
     </div>
   </div>`;
+}
+
+const STUDENT_WORK_GROUPS = [
+  { key: 'pending', label: 'Pending', empty: 'Nothing pending. You are all caught up.' },
+  { key: 'done', label: 'Done', empty: 'Nothing done yet.' },
+  { key: 'missing', label: 'Missing', empty: 'Nothing missing.' }
+];
+
+const STUDENT_WORK_KINDS = [
+  { key: 'quiz', label: 'Quizzes' },
+  { key: 'activity', label: 'Activities' },
+  { key: 'exam', label: 'Exams' }
+];
+
+function studentWorkGroupOf(item) {
+  if (item.group) return item.group;
+  if (item.state === 'submitted') return 'done';
+  if (item.state === 'closed') return 'missing';
+  return 'pending';
+}
+
+/** Three rows (Pending, Done, Missing); inside each, Quizzes, Activities and Exams. */
+function renderStudentWorkGroups(all) {
+  const kindOf = (item) => {
+    const kind = String(item.type || 'quiz').toLowerCase();
+    return STUDENT_WORK_KINDS.some((k) => k.key === kind) ? kind : 'quiz';
+  };
+  return STUDENT_WORK_GROUPS.map((group) => {
+    const inGroup = all.filter((item) => studentWorkGroupOf(item) === group.key);
+    const kinds = STUDENT_WORK_KINDS.map((kind) => {
+      const items = inGroup.filter((item) => kindOf(item) === kind.key);
+      if (!items.length) return '';
+      return `<div class="student-work-kind">
+        <h4 class="student-work-kind-title">${kind.label} <span>(${items.length})</span></h4>
+        <div class="student-card-grid">${items.map(renderStudentWorkCard).join('')}</div>
+      </div>`;
+    }).join('');
+    return `<section class="student-work-group student-work-group--${group.key}" aria-label="${group.label}">
+      <h3 class="student-work-group-title">${group.label} <span class="student-work-group-count">${inGroup.length}</span></h3>
+      ${kinds || `<p class="page-subheading student-work-group-empty">${group.empty}</p>`}
+    </section>`;
+  }).join('');
 }
 
 function renderStudentMaterialCard(item) {
@@ -319,25 +360,9 @@ function renderStudentSection() {
       : '<p class="page-subheading">Nothing taken yet.</p>';
   } else {
     const all = studentDetail.classworks || [];
-    if (!all.length) {
-      body.innerHTML = '<p class="page-subheading">No classwork shared yet.</p>';
-    } else {
-      const kindOf = (item) => String(item.type || 'quiz').toLowerCase();
-      const filters = [
-        { key: 'all', label: 'All' },
-        { key: 'quiz', label: 'Quizzes' },
-        { key: 'activity', label: 'Activities' },
-        { key: 'exam', label: 'Exams' }
-      ];
-      const count = (key) => (key === 'all' ? all.length : all.filter((item) => kindOf(item) === key).length);
-      const chips = filters.map((f) => `<button type="button" class="chip-ghost${studentWorkFilter === f.key ? ' is-pressed' : ''}" data-student-filter="${f.key}" aria-pressed="${studentWorkFilter === f.key}">${f.label} (${count(f.key)})</button>`).join('');
-      const items = studentWorkFilter === 'all' ? all : all.filter((item) => kindOf(item) === studentWorkFilter);
-      const emptyLabel = { quiz: 'quizzes', activity: 'activities', exam: 'exams' }[studentWorkFilter] || 'classwork';
-      body.innerHTML = `<div class="student-section-switch student-work-filter" role="group" aria-label="Filter classworks by type">${chips}</div>
-        ${items.length
-    ? `<div class="student-card-grid">${items.map(renderStudentWorkCard).join('')}</div>`
-    : `<p class="page-subheading">No ${emptyLabel} yet.</p>`}`;
-    }
+    body.innerHTML = all.length
+      ? renderStudentWorkGroups(all)
+      : '<p class="page-subheading">No classwork shared yet.</p>';
   }
   document.querySelectorAll('#student-content [data-student-section]').forEach((btn) => {
     const active = btn.getAttribute('data-student-section') === studentSection;
@@ -366,7 +391,6 @@ async function loadStudentSubject(subjectId) {
   if (!content) return;
   studentSubjectId = subject ? Number(subject.id) : null;
   studentDetail = null;
-  studentWorkFilter = 'all';
   renderStudentNav();
   const roleLabel = { subject_teacher: 'Subject Teacher', class_adviser: 'Class Adviser' }[subject?.teacher_role] || '';
   const heading = `<h2 style="font-size:20px;color:var(--maroon-deep);margin:0 0 4px;">${escapeHtml(subject?.name || 'Subject')}</h2>
@@ -431,12 +455,6 @@ document.getElementById('student-subject-nav')?.addEventListener('click', (e) =>
 });
 
 document.getElementById('student-content')?.addEventListener('click', (e) => {
-  const filterBtn = e.target.closest('[data-student-filter]');
-  if (filterBtn) {
-    studentWorkFilter = filterBtn.getAttribute('data-student-filter') || 'all';
-    renderStudentSection();
-    return;
-  }
   const btn = e.target.closest('[data-student-section]');
   if (!btn) return;
   studentSection = btn.getAttribute('data-student-section') || 'classworks';

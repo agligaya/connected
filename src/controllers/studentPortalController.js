@@ -55,8 +55,20 @@ exports.me = async (req, res) => {
   }
 };
 
+/** Turned in online, or already scored by the teacher (e.g. an activity done in class). */
+function isWorkDone(row) {
+  return row.submission_id != null || Number(row.recorded_count) > 0;
+}
+
+/** The three groups the student portal shows: pending, done, missing. */
+function workGroup(state) {
+  if (state === 'submitted') return 'done';
+  if (state === 'closed') return 'missing';
+  return 'pending';
+}
+
 function classifyWork(row, student, attendance) {
-  const submitted = row.submission_id != null;
+  const submitted = isWorkDone(row);
   const makeupStudentIds = parseMakeupIds(row.quiz_makeup_student_ids);
   const eligible = !submitted && isStudentEligibleForQuiz({
     attendanceStatus: attendance,
@@ -113,8 +125,11 @@ async function loadWorkRows(student, subjectId) {
     subjectSql = ' AND a.subject_id = ?';
     params.push(subjectId);
   }
+  params.unshift(student.id); // for the recorded_count subquery, which comes first in the SQL
   const [rows] = await db.query(
     `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.share_token, a.share_enabled,
+            (SELECT COUNT(*) FROM assessment_scores asr
+              WHERE asr.assessment_id = a.id AND asr.student_id = ? AND asr.score IS NOT NULL) AS recorded_count,
             a.grade_level, a.section, a.subject_id, a.quiz_subject_id,
             a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_makeup_student_ids,
             a.quiz_closes_at, a.quiz_makeup_closes_at,
@@ -210,7 +225,7 @@ exports.subjects = async (req, res) => {
     const rosterCache = new Map();
     const dueBySubject = new Map();
     for (const row of rows) {
-      const attendance = row.submission_id != null ? null : await attendanceFor(student, row, rosterCache);
+      const attendance = isWorkDone(row) ? null : await attendanceFor(student, row, rosterCache);
       const { state } = classifyWork(row, student, attendance);
       if (state !== 'open') continue;
       const key = Number(row.subject_id);
@@ -331,15 +346,17 @@ exports.subjectDetail = async (req, res) => {
 
     const classworks = [];
     for (const row of rows) {
-      const attendance = row.submission_id != null ? null : await attendanceFor(student, row, rosterCache);
+      const attendance = isWorkDone(row) ? null : await attendanceFor(student, row, rosterCache);
       const { state } = classifyWork(row, student, attendance);
       classworks.push({
         id: row.id,
         title: row.title,
         type: row.type,
         state,
+        group: workGroup(state),
         path: state === 'open' ? workPath(row.type, row.share_token) : null,
-        submitted_at: state === 'submitted' ? row.submitted_at : null
+        submitted_at: state === 'submitted' ? row.submitted_at : null,
+        scored_by_teacher: state === 'submitted' && row.submission_id == null
       });
     }
     classworks.sort((a, b) => (STATE_ORDER[a.state] ?? 1) - (STATE_ORDER[b.state] ?? 1));
