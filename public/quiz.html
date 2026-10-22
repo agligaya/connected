@@ -25,6 +25,11 @@
     .quiz-card { background: #fff; border-radius: 16px; padding: 16px; box-shadow: 0 8px 24px rgba(0,0,0,.08); margin-bottom: 14px; }
     .quiz-q { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid #eee; }
     .quiz-q:last-child { border-bottom: none; }
+    .quiz-act-head { margin: 0 0 8px; }
+    .quiz-act-prompt, .quiz-act-intro { margin: 0 0 10px; white-space: pre-line; line-height: 1.55; }
+    .quiz-act-steps { margin: 0 0 14px; padding-left: 24px; }
+    .quiz-act-steps li { margin: 0 0 8px; padding-left: 4px; line-height: 1.55; }
+    .quiz-act-steps li::marker { font-weight: 700; color: #5f0d0a; }
     .quiz-choices label {
       display: block;
       margin: 8px 0;
@@ -173,7 +178,7 @@
 
       <div id="quiz-questions-wrap" hidden>
         <div id="quiz-start-step" hidden>
-          <p class="quiz-meta" style="margin-top:0;">
+          <p class="quiz-meta" style="margin-top:0;" id="quiz-start-note">
             Questions appear one at a time. Answer each one before you continue. The quiz stays in full screen.
           </p>
           <button type="button" class="btn-solid" id="quiz-start">Start quiz</button>
@@ -200,7 +205,7 @@
 
   <div id="quiz-leave-cover" hidden>
     <div class="quiz-card">
-      <h2 class="font-heading" style="margin-top:0;">Return to the quiz</h2>
+      <h2 class="font-heading" style="margin-top:0;" id="quiz-return-title">Return to the quiz</h2>
       <p id="quiz-leave-msg" class="quiz-meta">The question stays hidden until you are back in full screen.</p>
       <button type="button" class="btn-solid" id="quiz-return">Return to the quiz</button>
     </div>
@@ -236,6 +241,25 @@
       let quizIndex = 0; // index of the current page (a page holds one item, or all matching / all sequencing items)
       let quizPages = [];
       let quizStarted = false;
+
+      function workNoun() {
+        var kind = String((quizData && quizData.type) || '').toLowerCase();
+        return kind === 'exam' ? 'exam' : (kind === 'activity' ? 'activity' : 'quiz');
+      }
+
+      function applyWorkWording() {
+        var noun = workNoun();
+        var cap = noun.charAt(0).toUpperCase() + noun.slice(1);
+        var note = document.getElementById('quiz-start-note');
+        if (note) note.textContent = 'Questions appear one at a time. Answer each one before you continue. The ' + noun + ' stays in full screen.';
+        var startBtn = document.getElementById('quiz-start');
+        if (startBtn) startBtn.textContent = 'Start ' + noun;
+        var retTitle = document.getElementById('quiz-return-title');
+        if (retTitle) retTitle.textContent = 'Return to the ' + noun;
+        var retBtn = document.getElementById('quiz-return');
+        if (retBtn) retBtn.textContent = 'Return to the ' + noun;
+        document.title = cap + ' – ConnectED';
+      }
 
       function isSteppedQuiz() {
         const kind = String((quizData && quizData.type) || '').toLowerCase();
@@ -702,6 +726,37 @@
         }).join('') + '</ol>';
       }
 
+      // Activity prompts are often one long run of "1. … 2. … 3. …". Show them as a tidy list.
+      function activityPromptHtml(raw) {
+        var text = String(raw || '').replace(/\r\n?/g, '\n').trim();
+        if (!text) return '';
+        var re = /(?:^|\s)(\d{1,2})[.)]\s+(?=\S)/g;
+        var marks = [];
+        var m;
+        while ((m = re.exec(text)) !== null) {
+          marks.push({ num: Number(m[1]), start: m.index, end: re.lastIndex });
+        }
+        // Keep only a clean 1, 2, 3 … sequence so numbers inside sentences are left alone.
+        var seq = [];
+        for (var k = 0; k < marks.length; k++) {
+          if (marks[k].num === seq.length + 1) seq.push(marks[k]);
+        }
+        if (seq.length < 2 || seq[0].num !== 1) {
+          return '<div class="quiz-act-prompt">' + esc(text) + '</div>';
+        }
+        var html = '';
+        var intro = text.slice(0, seq[0].start).trim();
+        if (intro) html += '<p class="quiz-act-intro">' + esc(intro) + '</p>';
+        html += '<ol class="quiz-act-steps">';
+        for (var s = 0; s < seq.length; s++) {
+          var stop = s + 1 < seq.length ? seq[s + 1].start : text.length;
+          var step = text.slice(seq[s].end, stop).trim();
+          if (step) html += '<li>' + esc(step) + '</li>';
+        }
+        html += '</ol>';
+        return html;
+      }
+
       function renderQuestions() {
         const matchRights = matchingPool();
         let matchRowNum = 1;
@@ -739,6 +794,9 @@
           }
           const head = type === 'matching'
             ? ''
+            : kind === 'activity'
+            ? '<p class="quiz-act-head"><strong>' + (i + 1) + '.</strong> <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>' +
+              activityPromptHtml(q.question)
             : type === 'fill_blank'
             ? '<p><strong>' + (i + 1) + '.</strong> <span class="page-subheading">(' + (q.points || 1) + ' pts)</span></p>'
             : '<p><strong>' + (i + 1) + '.</strong> ' + esc(q.question) +
@@ -863,7 +921,9 @@
           quizData = data;
           statusEl.hidden = true;
           formWrap.hidden = false;
-          document.getElementById('quiz-title').textContent = data.title || 'Classwork';
+          document.getElementById('quiz-title').textContent =
+            (data.title || 'Classwork').replace(/^((?:exam|quiz|activity)\s*[—–-]\s*)(?:(?:exam|quiz|activity)\s*[—–-]\s*)+/i, '$1');
+          applyWorkWording();
           var metaBits = 'Grade ' + data.grade_level + '-' + data.section +
             (data.subject_name ? ' · ' + data.subject_name : '') +
             ' · Total Score: ' + data.max_score;
@@ -1051,7 +1111,7 @@
             await enterFullscreen();
           } catch (_) { /* denied or unavailable */ }
           if (!isFullscreenNow()) {
-            errEl.textContent = 'Allow full screen to start the quiz.';
+            errEl.textContent = 'Allow full screen to start the ' + workNoun() + '.';
             errEl.hidden = false;
             return;
           }
@@ -1093,7 +1153,7 @@
           showQuestion(quizIndex);
           return;
         }
-        if (leaveMsg) leaveMsg.textContent = 'Allow full screen to continue the quiz.';
+        if (leaveMsg) leaveMsg.textContent = 'Allow full screen to continue the ' + workNoun() + '.';
       });
 
       document.getElementById('quiz-submit').addEventListener('click', async function () {

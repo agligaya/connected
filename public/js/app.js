@@ -8803,7 +8803,7 @@ function progressQuestionItemHtml(q, idx) {
         <span class="progress-q-type">${escapeHtml(bankItemTypeLabel(type))}</span>
         <span class="progress-q-pts">${pts} pt${pts === 1 ? '' : 's'}</span>
       </div>
-      <div class="progress-q-text">${escapeHtml(q.question || '')}</div>
+      <div class="progress-q-text">${isActivityItemType(type) ? activityPromptHtml(q.question || '') : escapeHtml(q.question || '')}</div>
       ${choices}
       ${answer}
       ${rubric}
@@ -9576,7 +9576,7 @@ function openProgressTakenModal(studentId, kind) {
         const text = String(item.text || '').trim();
         return `<div class="progress-work-item">
           <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${i + 1}</strong></p>
-          ${item.question ? `<p style="margin:0 0 8px;font-size:0.86rem;">${escapeHtml(item.question)}</p>` : ''}
+          ${item.question ? activityPromptHtml(item.question) : ''}
           ${text ? `<p class="progress-activity-work">${escapeHtml(text)}</p>` : '<p class="page-subheading">No written answer.</p>'}
           ${fileHtml}
         </div>`;
@@ -9682,7 +9682,7 @@ function renderProgressRubricGuide(questions, assessment) {
   body.innerHTML = activities.map((q, i) => `
     <div style="margin-bottom:12px;">
       <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${i + 1}</strong> · ${Number(q.points) || 0} pts</p>
-      <p style="margin:0 0 6px;font-size:0.86rem;">${escapeHtml(q.question || '')}</p>
+      ${activityPromptHtml(q.question || '')}
       ${rubricPreviewHtml(q.rubric)}
     </div>
   `).join('');
@@ -9695,7 +9695,9 @@ function assessmentPaperItemHtml(q, index, { includeAnswers = false } = {}) {
   const type = canonicalBankItemType(q.item_type || 'mcq');
   const pts = Number(q.points) || 1;
   const typeLabelText = bankItemTypeLabel(type);
-  let body = `<div class="q-text">${escapeHtml(q.question || '')}</div>`;
+  let body = isActivityItemType(type)
+    ? `<div class="q-text">${activityPromptHtml(q.question || '')}</div>`
+    : `<div class="q-text">${escapeHtml(q.question || '')}</div>`;
 
   if (type === 'mcq' && Array.isArray(q.choices) && q.choices.length) {
     body += `<ol class="choices" type="A">${q.choices.map((c) => {
@@ -9816,6 +9818,9 @@ function printAssessmentItemsPaper({
       .answer-key { margin-top: 6px; padding: 6px 8px; background: #fff6e8; border-left: 3px solid #c47a12; }
       .rubric-block { margin-top: 8px; padding: 8px; border: 1px solid #e0c8b0; border-radius: 6px; background: #fffaf4; }
       .rubric-crit { font-size: 12px; margin: 10px 0 4px; color: #3d0a0a; }
+      .activity-prompt-text, .activity-prompt-intro { margin: 0 0 6px; white-space: pre-line; }
+      .activity-prompt-steps { margin: 0 0 8px; padding-left: 20px; }
+      .activity-prompt-steps li { margin: 0 0 3px; }
       .rubric-table { width: 100%; border-collapse: collapse; font-size: 11px; }
       .rubric-table th, .rubric-table td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; vertical-align: top; }
       .rubric-table th { background: #f5ebe0; }
@@ -9884,7 +9889,7 @@ function exportRubricScoreSheet() {
         <table class="rubric-table"><thead><tr><th>Level</th><th>Pts</th><th>Description</th></tr></thead><tbody>${levels}</tbody></table>`;
     }).join('');
     return `<section class="act"><h2>Activity ${i + 1}${activities.length === 1 ? '' : ''}</h2>
-      <p class="prompt">${escapeHtml(q.question || '')}</p>${rows}</section>`;
+      <div class="prompt">${activityPromptHtml(q.question || '', { cls: 'activity-prompt' })}</div>${rows}</section>`;
   }).join('');
 
   const headCats = cols.map((c) =>
@@ -9924,6 +9929,9 @@ function exportRubricScoreSheet() {
   .act { margin-top: 18px; page-break-inside: avoid; }
   .act h2 { font-size: 14px; margin: 0 0 4px; color: #5c1010; }
   .prompt { margin: 0 0 8px; }
+  .activity-prompt-text, .activity-prompt-intro { margin: 0 0 6px; white-space: pre-line; }
+  .activity-prompt-steps { margin: 0 0 8px; padding-left: 20px; }
+  .activity-prompt-steps li { margin: 0 0 3px; }
   .rubric-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 8px; }
   .rubric-table th, .rubric-table td { border: 1px solid #ddd; padding: 3px 5px; text-align: left; }
   .rubric-table th { background: #f5ebe0; }
@@ -11116,7 +11124,7 @@ function formatAiItemsPreview(part, type) {
   if (!part) return '<p class="empty-state">No content.</p>';
   if (type === 'activity') {
     const rubricHtml = rubricPreviewHtml(part.rubric);
-    return `<p>${escapeHtml(part.description || '')}</p>${rubricHtml}`;
+    return `${activityPromptHtml(part.description || '')}${rubricHtml}`;
   }
   const items = Array.isArray(part.items) ? part.items : [];
   if (!items.length) return `<p>${escapeHtml(part.notes || '')}</p>`;
@@ -12572,7 +12580,9 @@ function renderQuizBankItemRow(item) {
     <div class="qb-set-item" data-qb-id="${item.id}">
       <input type="checkbox" class="qb-select" data-id="${item.id}" ${checked} />
       <div style="flex:1;">
-        <p style="margin:0;color:var(--text-dark);">${escapeHtml(item.question)}</p>
+        ${isActivityItemType(item.item_type)
+          ? activityPromptHtml(item.question, { style: 'color:var(--text-dark);' })
+          : `<p style="margin:0;color:var(--text-dark);">${escapeHtml(item.question)}</p>`}
         ${choices}${ans}${rubricNote}
         <p class="page-subheading" style="margin:4px 0 0;">${Number(item.points) || 1} pts</p>
         <div class="lesson-plan-card-actions">
@@ -13168,9 +13178,11 @@ async function openCreateProgressFromBank() {
     const set = questionBankCurrentSet || questionBankSets.find((s) => s.id === questionBankCurrentSetId);
     const lesson = selectedItems.find((i) => i.lesson_title)?.lesson_title;
     if (questionBankCurrentCategory === 'activity') {
-      titleEl.value = lesson ? `Activity — ${lesson}` : (set?.title ? `Activity — ${set.title}` : 'Activity from Classwork');
+      const setTitle = stripTitlePrefix(set?.title);
+      titleEl.value = lesson ? `Activity — ${stripTitlePrefix(lesson)}` : (setTitle ? `Activity — ${setTitle}` : 'Activity from Classwork');
     } else if (questionBankCurrentCategory === 'exam') {
-      titleEl.value = set?.title ? `Exam — ${set.title}` : (lesson ? `Exam — ${lesson}` : 'Exam from Classwork');
+      const setTitle = stripTitlePrefix(set?.title);
+      titleEl.value = setTitle ? `Exam — ${setTitle}` : (lesson ? `Exam — ${stripTitlePrefix(lesson)}` : 'Exam from Classwork');
     } else {
       titleEl.value = (set && set.title) || (lesson ? `Quiz — ${lesson}` : 'Quiz from Classwork');
     }
@@ -13189,6 +13201,7 @@ async function openCreateProgressFromBank() {
   });
   const targetInput = document.getElementById('qb-create-target');
   if (targetInput) targetInput.value = '';
+  syncCreateActivityTargetVisibility();
   syncClassworkCreateModalLabels();
   const rubricCap = rubricCapFromBankItems(selectedItems);
   if ((typeSel?.value === 'activity' || questionBankCurrentCategory === 'activity') && rubricCap > 0) {
@@ -14010,10 +14023,44 @@ async function continueExamAiGenerate() {
   }, plans.map((plan) => plan.id));
 }
 
+// Activity prompts are often one long run of "1. … 2. … 3. …". Returns a tidy HTML list.
+// `cls` is applied to the wrapper (a <div> for plain text, <ol> for steps) so each screen can style it.
+function activityPromptHtml(raw, { cls = 'activity-prompt', style = '' } = {}) {
+  const text = String(raw || '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return '';
+  const styleAttr = style ? ` style="${style}"` : '';
+  const re = /(?:^|\s)(\d{1,2})[.)]\s+(?=\S)/g;
+  const seq = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    // Keep only a clean 1, 2, 3 … sequence so numbers inside sentences are left alone.
+    if (Number(m[1]) === seq.length + 1) seq.push({ start: m.index, end: re.lastIndex });
+  }
+  if (seq.length < 2) {
+    return `<div class="${cls} activity-prompt-text"${styleAttr}>${escapeHtml(text)}</div>`;
+  }
+  let html = '';
+  const intro = text.slice(0, seq[0].start).trim();
+  if (intro) html += `<p class="${cls} activity-prompt-intro"${styleAttr}>${escapeHtml(intro)}</p>`;
+  html += `<ol class="${cls} activity-prompt-steps"${styleAttr}>`;
+  seq.forEach((mark, i) => {
+    const stop = i + 1 < seq.length ? seq[i + 1].start : text.length;
+    const step = text.slice(mark.end, stop).trim();
+    if (step) html += `<li>${escapeHtml(step)}</li>`;
+  });
+  html += '</ol>';
+  return html;
+}
+
+// Removes leading "Exam — " / "Quiz — " / "Activity — " labels so titles are not prefixed twice.
+function stripTitlePrefix(title) {
+  return String(title || '').trim().replace(/^((exam|quiz|activity)\s*[—–-]\s*)+/i, '').trim();
+}
+
 function openExamAiSaveModal() {
   const plan = examAiPlan || {};
   const titleEl = document.getElementById('qb-exam-ai-save-title');
-  if (titleEl) titleEl.value = plan.title ? `Exam — ${plan.title}` : 'Exam';
+  if (titleEl) titleEl.value = stripTitlePrefix(plan.title) ? `Exam — ${stripTitlePrefix(plan.title)}` : 'Exam';
   const note = document.getElementById('qb-exam-ai-save-note');
   if (note) {
     const subjectBit = plan.subject_name ? ` Subject: ${plan.subject_name}.` : '';
@@ -14331,6 +14378,17 @@ document.getElementById('qb-create-print')?.addEventListener('click', () => {
   });
 });
 
+// The target date is only for take-home activities; hide it for classroom activities.
+function syncCreateActivityTargetVisibility() {
+  const mode = document.querySelector('input[name="qb-create-activity-mode"]:checked')?.value || '';
+  const row = document.getElementById('qb-create-target-field');
+  if (row) row.hidden = mode !== 'take_home';
+}
+
+document.querySelectorAll('input[name="qb-create-activity-mode"]').forEach((input) => {
+  input.addEventListener('change', syncCreateActivityTargetVisibility);
+});
+
 document.getElementById('qb-create-type')?.addEventListener('change', () => {
   syncClassworkCreateModalLabels();
   const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
@@ -14378,14 +14436,17 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
   let activity_target_at = null;
   if (type === 'activity') {
     activity_mode = document.querySelector('input[name="qb-create-activity-mode"]:checked')?.value || '';
-    activity_target_at = document.getElementById('qb-create-target')?.value || '';
     if (activity_mode !== 'classroom' && activity_mode !== 'take_home') {
       showToast('Choose Classroom activity or Take home.', 'error');
       return;
     }
-    if (!activity_target_at) {
-      showToast('Set a target date.', 'error');
-      return;
+    // Target date applies to take-home activities only.
+    if (activity_mode === 'take_home') {
+      activity_target_at = document.getElementById('qb-create-target')?.value || '';
+      if (!activity_target_at) {
+        showToast('Set a target date for the take-home activity.', 'error');
+        return;
+      }
     }
   }
 
@@ -16215,7 +16276,7 @@ function renderParentActivityWorkItem(item, index) {
   const text = String(item.text || '').trim();
   return `<div class="progress-work-item">
     <p class="page-subheading" style="margin:0 0 6px;"><strong>Activity ${index + 1}</strong></p>
-    ${item.question ? `<p style="margin:0 0 8px;font-size:0.86rem;">${escapeHtml(item.question)}</p>` : ''}
+    ${item.question ? activityPromptHtml(item.question) : ''}
     ${text ? `<p class="progress-activity-work">${escapeHtml(text)}</p>` : '<p class="page-subheading">No written answer.</p>'}
     ${fileHtml}
   </div>`;

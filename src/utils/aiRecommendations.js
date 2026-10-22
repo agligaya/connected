@@ -1018,7 +1018,9 @@ async function generateRecommendationsForLessons({
       status: 400
     });
   }
-  const titles = prepared.map((lesson) => String(lesson.title || '').trim()).filter(Boolean);
+  const titles = prepared
+    .map((lesson) => String(lesson.title || '').trim().replace(/^((exam|quiz|activity)\s*[—–-]\s*)+/i, '').trim())
+    .filter(Boolean);
   const title = titles.length > 1
     ? `Exam — ${titles.join(', ')}`.slice(0, 240)
     : (titles[0] || 'Exam');

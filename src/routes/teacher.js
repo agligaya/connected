@@ -3090,9 +3090,13 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       if (activityMode !== 'classroom' && activityMode !== 'take_home') {
         return res.status(400).json({ error: 'Choose Classroom activity or Take home' });
       }
-      activityTargetAt = normalizeSqlDatetime(activityTargetBody);
-      if (!activityTargetAt) {
-        return res.status(400).json({ error: 'Set a target date' });
+      // Only take-home activities have a target date (deadline). Classroom activities
+      // are timed by the "minutes open" window when the link is enabled.
+      if (activityMode === 'take_home') {
+        activityTargetAt = normalizeSqlDatetime(activityTargetBody);
+        if (!activityTargetAt) {
+          return res.status(400).json({ error: 'Set a target date for the take-home activity' });
+        }
       }
     }
     if (!grade_level || !section) {
@@ -3236,7 +3240,7 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       assessmentId = result.insertId;
     }
 
-    if (activityMode && activityTargetAt) {
+    if (activityMode) {
       await db.query(
         `UPDATE assessments SET activity_mode = ?, activity_target_at = ? WHERE id = ?`,
         [activityMode, activityTargetAt, assessmentId]

@@ -2364,6 +2364,29 @@ html.layout-mobile .admin-student-filter-select {
   border-bottom: none;
 }
 
+/* Activity prompt shown as a list of steps (teacher records, rubric guide, parent/student work views) */
+.activity-prompt-text,
+.activity-prompt-intro {
+  margin: 0 0 8px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.activity-prompt-steps {
+  margin: 0 0 10px;
+  padding-left: 22px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.activity-prompt-steps li {
+  margin: 0 0 5px;
+  padding-left: 2px;
+}
+.activity-prompt-steps li::marker {
+  font-weight: 700;
+  color: var(--maroon, #5f0d0a);
+}
+
 .progress-activity-work {
   white-space: pre-wrap;
   font-size: 0.9rem;
