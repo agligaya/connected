@@ -16,7 +16,7 @@ const {
   addDaysISO,
   sqlDateToISO
 } = require('../utils/attendanceSchema');
-const { buildParentInsight, topicInsightForStudent, lessonTopicLookup, PASSING, STRONG } = require('../utils/parentInsights');
+const { buildParentInsight, topicInsightForStudent, writeSkillInsightWithAi, lessonTopicLookup, PASSING, STRONG } = require('../utils/parentInsights');
 const { lessonName, lessonLookupKey, partsByLesson, attachPartsToLessons } = require('../utils/lessonParts');
 const { ensureAssignmentSlots } = require('../utils/teachingMode');
 const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission, identificationReviewBank } = require('../utils/quizShare');
@@ -27,6 +27,20 @@ function cappedPercent(score, maxScore) {
   const n = Number(score);
   if (!Number.isFinite(n) || max <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((n / max) * 100)));
+}
+
+function subjectsFromRecords(records) {
+  const map = new Map();
+  for (const r of records || []) {
+    const name = String(r.subject_name || '').trim() || 'Classwork';
+    if (!map.has(name)) map.set(name, []);
+    map.get(name).push(Number(r.percent) || 0);
+  }
+  return [...map.entries()].map(([name, percents]) => ({
+    name,
+    count: percents.length,
+    avg: Math.round(percents.reduce((a, b) => a + b, 0) / percents.length)
+  }));
 }
 
 async function loadChildAttendanceWindow(studentId, monthAgo) {
@@ -314,7 +328,7 @@ exports.getChildInsights = async (req, res) => {
     }
 
     const [[child]] = await db.query(
-      'SELECT first_name FROM students WHERE id = ? AND STATUS = \'active\'',
+      'SELECT first_name, grade_level FROM students WHERE id = ? AND STATUS = \'active\'',
       [studentId]
     );
 
@@ -374,7 +388,7 @@ exports.getChildInsights = async (req, res) => {
       console.warn('[insights] topics:', topicErr.message);
     }
 
-    const insight = buildParentInsight({
+    const fallback = buildParentInsight({
       firstName: child?.first_name,
       stats,
       records: withPct,
@@ -382,6 +396,30 @@ exports.getChildInsights = async (req, res) => {
       lessons,
       topics
     });
+
+    let insight = fallback;
+    try {
+      const written = await writeSkillInsightWithAi({
+        audience: 'parent',
+        firstName: child?.first_name,
+        grade: child?.grade_level,
+        stats,
+        average,
+        subjects: subjectsFromRecords(withPct),
+        evidence: topics?.evidence,
+        activities: topics?.activities
+      });
+      if (written?.bullets?.length) {
+        insight = {
+          ready: true,
+          source: 'ai',
+          text: written.bullets.join(' '),
+          bullets: written.bullets
+        };
+      }
+    } catch (writeErr) {
+      console.warn('[insights] skill write:', writeErr.message);
+    }
 
     res.json(insight);
   } catch (error) {
@@ -510,6 +548,45 @@ function lastDayOfMonth(ym) {
   return d.toISOString().slice(0, 10);
 }
 
+function topicInfoForLesson(topicMap, subjectName, lesson) {
+  const sub = String(subjectName || '').trim().toLowerCase();
+  const les = String(lesson || '').trim().toLowerCase();
+  if (!topicMap || !topicMap.size) return null;
+  const direct = topicMap.get(`${sub}|${les}`);
+  if (direct) return direct;
+  for (const [key, info] of topicMap) {
+    const split = String(key).split('|');
+    if (split[0] !== sub) continue;
+    const raw = String(split.slice(1).join('|') || '');
+    if (raw === les || displayLessonTitle(raw).toLowerCase() === les) return info;
+  }
+  return null;
+}
+
+function displayLessonTitle(title) {
+  const cleaned = String(title || '').trim().replace(/^((exam|quiz|activity)\s*[—–-]\s*)+/i, '').trim();
+  return cleaned || String(title || '').trim() || 'Lesson';
+}
+
+function lessonTrend(scores) {
+  const sorted = [...(scores || [])].sort((a, b) => {
+    const ta = new Date(a.at || 0).getTime();
+    const tb = new Date(b.at || 0).getTime();
+    return ta - tb;
+  });
+  const latest = sorted.length ? sorted[sorted.length - 1].percent : null;
+  if (sorted.length < 2) {
+    return { trend: 'first', latest, previous: null };
+  }
+  const previous = sorted[sorted.length - 2].percent;
+  let trend = 'same';
+  if (latest >= previous + 5) trend = 'up';
+  else if (latest <= previous - 5) trend = 'down';
+  return { trend, latest, previous };
+}
+
+const LESSON_CHART_CAP = 12;
+
 // GET /api/parent/child/:id/analytics/lessons
 exports.getChildLessonAnalytics = async (req, res) => {
   try {
@@ -523,7 +600,7 @@ exports.getChildLessonAnalytics = async (req, res) => {
     try {
       [rows] = await db.query(
         `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.subject_id, a.lesson_title,
-                s.NAME as subject_name, sc.score
+                a.created_at, s.NAME as subject_name, sc.score, sc.recorded_at
          FROM assessment_scores sc
          JOIN assessments a ON sc.assessment_id = a.id
          LEFT JOIN subjects s ON a.subject_id = s.id
@@ -531,10 +608,10 @@ exports.getChildLessonAnalytics = async (req, res) => {
         [studentId]
       );
     } catch (e) {
-      // lesson_title column not migrated yet: fall back to titles only
+      // lesson_title / recorded_at may be missing on older schemas
       [rows] = await db.query(
         `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.subject_id, NULL as lesson_title,
-                s.NAME as subject_name, sc.score
+                a.created_at, s.NAME as subject_name, sc.score, sc.recorded_at
          FROM assessment_scores sc
          JOIN assessments a ON sc.assessment_id = a.id
          LEFT JOIN subjects s ON a.subject_id = s.id
@@ -549,69 +626,61 @@ exports.getChildLessonAnalytics = async (req, res) => {
       const subjectId = r.subject_id != null ? Number(r.subject_id) : 0;
       const subjectName = String(r.subject_name || '').trim() || 'General';
       if (!subjectsMap.has(subjectId)) subjectsMap.set(subjectId, { id: subjectId, name: subjectName });
-      const lesson = lessonName(r.lesson_title, r.title);
-      if (!groups.has(subjectId)) {
-        groups.set(subjectId, {
+      const lesson = displayLessonTitle(lessonName(r.lesson_title, r.title));
+      const key = `${subjectId}|${lessonLookupKey(lesson)}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
           subject_id: subjectId,
           subject_name: subjectName,
-          lessons: [],
-          percents: [],
-          kinds: { quiz: [], activity: [], exam: [] }
+          lesson,
+          scores: []
         });
       }
-      const group = groups.get(subjectId);
-      const percent = cappedPercent(r.score, r.max_score);
-      group.percents.push(percent);
-      const kind = String(r.type || '').trim().toLowerCase();
-      if (group.kinds[kind]) group.kinds[kind].push(percent);
-      if (!group.lessons.some((name) => name.toLowerCase() === lesson.toLowerCase())) {
-        group.lessons.push(lesson);
-      }
+      groups.get(key).scores.push({
+        percent: cappedPercent(r.score, r.max_score),
+        at: r.recorded_at || r.created_at || null
+      });
     }
 
     let topicMap = new Map();
-    let partMap = new Map();
     try {
       topicMap = await lessonTopicLookup(db, studentId);
     } catch (topicErr) {
       console.warn('[lessons] topics:', topicErr.message);
     }
-    try {
-      partMap = await partsByLesson(db, studentId);
-    } catch (partErr) {
-      console.warn('[lessons] parts:', partErr.message);
-    }
 
-    const lessons = [...groups.values()].map((g) => {
-      const avg = Math.round(g.percents.reduce((a, b) => a + b, 0) / g.percents.length);
+    let lessons = [...groups.values()].map((g) => {
+      const percents = g.scores.map((s) => s.percent);
+      const avg = Math.round(percents.reduce((a, b) => a + b, 0) / percents.length);
       const status = lessonStatus(avg);
-      const infos = g.lessons
-        .map((lesson) => topicMap.get(`${g.subject_name.trim().toLowerCase()}|${lesson.trim().toLowerCase()}`))
-        .filter(Boolean);
-      const quizParts = [];
-      const activityParts = [];
-      const examParts = [];
-      for (const lesson of g.lessons) {
-        const parts = partMap.get(lessonLookupKey(lesson)) || { quiz: [], activity: [], exam: [] };
-        quizParts.push(...(parts.quiz || []));
-        activityParts.push(...(parts.activity || []));
-        examParts.push(...(parts.exam || []));
-      }
+      const lastAt = g.scores.reduce((max, s) => {
+        const t = new Date(s.at || 0).getTime();
+        return t > max ? t : max;
+      }, 0);
+      const info = topicInfoForLesson(topicMap, g.subject_name, g.lesson);
+      const weakSkills = uniqueTopicNames(info?.weakTopics).slice(0, 2);
+      const strongSkills = uniqueTopicNames(info?.strongTopics).slice(0, 2);
+      if (!weakSkills.length && info?.activityWeak) weakSkills.push(info.activityWeak);
+      if (!strongSkills.length && info?.activityStrong) strongSkills.push(info.activityStrong);
       return {
         subject_id: g.subject_id,
         subject_name: g.subject_name,
-        lesson: g.subject_name,
-        topic_label: subjectTopicLabel(infos, status),
-        topics: subjectTopicStats(infos),
-        kinds: subjectKindStats(g.kinds),
-        items: g.percents.length,
+        lesson: g.lesson,
+        topic_label: subjectTopicLabel(info ? [info] : [], status),
+        weak_skills: weakSkills,
+        strong_skills: strongSkills,
+        items: percents.length,
         avg_percent: avg,
         status,
-        quiz_parts: rankedParts(mergePartLists(quizParts)),
-        activity_parts: rankedParts(mergePartLists(activityParts)),
-        exam_parts: rankedParts(mergePartLists(examParts))
+        last_scored_at: lastAt || null,
+        ...lessonTrend(g.scores)
       };
-    }).sort((a, b) => b.avg_percent - a.avg_percent || a.subject_name.localeCompare(b.subject_name));
+    });
+
+    lessons.sort((a, b) => (b.last_scored_at || 0) - (a.last_scored_at || 0)
+      || a.avg_percent - b.avg_percent
+      || a.lesson.localeCompare(b.lesson));
+    if (lessons.length > LESSON_CHART_CAP) lessons = lessons.slice(0, LESSON_CHART_CAP);
 
     const subjects = [...subjectsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
     res.json({ subjects, lessons, thresholds: { passing: PASSING, strong: STRONG } });

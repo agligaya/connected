@@ -7570,7 +7570,14 @@ async function loadTeacherClassProgress(grade, section) {
     if (!res.ok) throw new Error(data.error || 'Could not load class progress');
     if (summaryEl) summaryEl.textContent = data.summary || 'No scores yet.';
     const lessonEl = document.getElementById('teacher-lesson-line');
-    if (lessonEl) lessonEl.textContent = data.lesson_line || '';
+    if (lessonEl) {
+      const insightBits = Array.isArray(data.insight_bullets) ? data.insight_bullets.filter(Boolean) : [];
+      if (insightBits.length) {
+        lessonEl.innerHTML = `<ul class="parent-insight-list teacher-insight-list">${insightBits.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`;
+      } else {
+        lessonEl.textContent = data.lesson_line || '';
+      }
+    }
     if (hintEl) {
       const scope = teacherCurrentClass?.subjectName
         ? teacherCurrentClass.subjectName
@@ -14905,13 +14912,15 @@ async function buildParentAnalyticsReportHtml(student) {
     <p>${escapeHtml(subjName ? `Subject: ${subjName}` : 'All subjects')} · ${filteredLessons.length} lesson(s)</p>
     ${parentChartImageHtml('lessons', 'Lesson performance chart')}
     ${filteredLessons.length ? `<table>
-      <thead><tr><th>Subject</th><th>Lesson</th><th>Items</th><th>Average</th><th>Status</th></tr></thead>
+      <thead><tr><th>Subject</th><th>Lesson</th><th>Records</th><th>Average</th><th>Trend</th><th>Needs practice</th><th>Going well</th></tr></thead>
       <tbody>${filteredLessons.map((l) => `<tr>
         <td>${escapeHtml(l.subject_name)}</td>
         <td>${escapeHtml(l.lesson)}</td>
         <td>${l.items}</td>
         <td>${l.avg_percent}%</td>
-        <td>${statusLabel(l.status)}</td>
+        <td>${l.trend === 'up' ? 'Improving' : l.trend === 'down' ? 'Lower than last time' : l.trend === 'same' ? 'About the same' : 'First result'}</td>
+        <td>${escapeHtml((l.weak_skills || []).join(', '))}</td>
+        <td>${escapeHtml((l.strong_skills || []).join(', '))}</td>
       </tr>`).join('')}</tbody>
     </table>` : '<p>No quiz, activity, or exam scores recorded yet.</p>'}`);
 
@@ -15074,7 +15083,7 @@ async function renderParentOverview(student) {
         <div class="teacher-header-row" style="align-items:center;">
           <div>
             <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Lesson Performance</h3>
-            <p class="page-subheading" style="margin:2px 0 0;">Where ${escapeHtml(student.first_name || 'your child')} excels or needs improvement, per lesson.</p>
+            <p class="page-subheading" style="margin:2px 0 0;">Average score on each lesson. Filter by subject. Up to 12 most recent lessons.</p>
           </div>
         </div>
         <div class="parent-chart-filters" id="parent-lesson-filters" role="group" aria-label="Filter by subject"></div>
@@ -15277,6 +15286,39 @@ function parentFilteredLessons() {
   return lessons.filter((l) => String(l.subject_id) === String(parentLessonSubject));
 }
 
+function parentLessonChartLabel(lesson, showSubject) {
+  const name = String(lesson.lesson || lesson.subject_name || 'Lesson').trim();
+  if (!showSubject) return name;
+  const subject = String(lesson.subject_name || '').trim();
+  if (!subject || subject.toLowerCase() === name.toLowerCase()) return name;
+  return `${subject} · ${name}`;
+}
+
+function parentJoinSkills(list) {
+  const arr = (list || []).map((s) => String(s || '').trim()).filter(Boolean);
+  if (arr.length <= 1) return arr[0] || '';
+  if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+  return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
+}
+
+function parentLessonSkillLine(row) {
+  const weak = parentJoinSkills(row.weak_skills);
+  const strong = parentJoinSkills(row.strong_skills);
+  const bits = [];
+  if (weak) bits.push(`they have difficulty with ${weak}`);
+  if (strong) bits.push(`they can already work with ${strong}`);
+  if (!bits.length) return '';
+  const who = bits[0].charAt(0).toUpperCase() + bits[0].slice(1);
+  return bits.length === 1 ? `${who}.` : `${who}. ${bits[1].charAt(0).toUpperCase() + bits[1].slice(1)}.`;
+}
+
+function parentTrendLabel(row) {
+  if (row.trend === 'up' && row.previous != null) return `Improving (${row.previous}% → ${row.latest}%)`;
+  if (row.trend === 'down' && row.previous != null) return `Lower than last time (${row.previous}% → ${row.latest}%)`;
+  if (row.trend === 'same' && row.previous != null) return `About the same as last time (${row.latest}%)`;
+  return 'First scored result';
+}
+
 function paintParentLessonChart() {
   const wrap = document.getElementById('parent-lesson-chart-wrap');
   const lists = document.getElementById('parent-lesson-lists');
@@ -15284,30 +15326,19 @@ function paintParentLessonChart() {
 
   const lessons = parentFilteredLessons();
   const showSubject = parentLessonSubject === 'all';
-  const kindSource = !showSubject && lessons.length === 1 && Array.isArray(lessons[0].kinds) && lessons[0].kinds.length
-    ? lessons[0]
-    : null;
-  const rows = kindSource
-    ? kindSource.kinds.map((kind) => ({
-      label: kind.name,
-      percent: kind.percent,
-      status: kind.status,
-      subject_name: kindSource.subject_name,
-      items: kind.items,
-      quiz_parts: kind.kind === 'quiz' ? kindSource.quiz_parts : null,
-      activity_parts: kind.kind === 'activity' ? kindSource.activity_parts : null,
-      exam_parts: kind.kind === 'exam' ? kindSource.exam_parts : null
-    }))
-    : lessons.map((lesson) => ({
-      label: lesson.subject_name,
-      percent: lesson.avg_percent,
-      status: lesson.status,
-      subject_name: lesson.subject_name,
-      items: lesson.items,
-      quiz_parts: lesson.quiz_parts,
-      activity_parts: lesson.activity_parts,
-      exam_parts: lesson.exam_parts
-    }));
+  const rows = lessons.map((lesson) => ({
+    label: parentLessonChartLabel(lesson, showSubject),
+    percent: lesson.avg_percent,
+    status: lesson.status,
+    subject_name: lesson.subject_name,
+    lesson: lesson.lesson,
+    items: lesson.items,
+    weak_skills: lesson.weak_skills || [],
+    strong_skills: lesson.strong_skills || [],
+    trend: lesson.trend,
+    latest: lesson.latest,
+    previous: lesson.previous
+  }));
 
   if (!lessons.length) {
     if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
@@ -15325,9 +15356,9 @@ function paintParentLessonChart() {
       wrap.innerHTML = '<canvas id="parent-lesson-chart" aria-label="Average score per lesson" role="img"></canvas>';
     }
     // Horizontal bars: one row per lesson, grow card height with the list
-    wrap.style.height = `${Math.max(180, Math.min(520, 44 * rows.length + 60))}px`;
+    wrap.style.height = `${Math.max(180, Math.min(560, 48 * rows.length + 64))}px`;
     const canvas = document.getElementById('parent-lesson-chart');
-    const labels = rows.map((row) => row.label);
+    const labels = rows.map((row) => (row.label.length > 42 ? `${row.label.slice(0, 40)}…` : row.label));
     const values = rows.map((row) => row.percent);
     const colors = rows.map((row) => PARENT_STATUS_COLORS[row.status] || '#8a726b');
 
@@ -15359,11 +15390,11 @@ function paintParentLessonChart() {
               title: (items) => rows[items[0].dataIndex]?.label || '',
               label: (item) => {
                 const row = rows[item.dataIndex];
-                const st = row.status === 'excels' ? 'Excels' : row.status === 'on_track' ? 'On track' : 'Needs improvement';
-                const score = row.items == null
-                  ? `${row.percent}%`
-                  : `${row.percent}% (${row.items} item${row.items === 1 ? '' : 's'})`;
-                return [`${row.subject_name}`, score, st];
+                const st = row.status === 'excels' ? 'Going well' : row.status === 'on_track' ? 'On track' : 'Needs practice';
+                const n = Number(row.items) || 0;
+                const score = n === 1 ? `${row.percent}% (1 record)` : `${row.percent}% (${n} records)`;
+                const skill = parentLessonSkillLine(row);
+                return [score, st, parentTrendLabel(row), skill].filter(Boolean);
               }
             }
           }
@@ -15373,26 +15404,24 @@ function paintParentLessonChart() {
   }
 
   if (lists) {
-    const excels = rows.filter((row) => row.status === 'excels');
-    const needs = rows.filter((row) => row.status === 'needs_improvement');
-    const partLine = (label, parts) => {
-      const list = Array.isArray(parts)
-        ? parts.filter((part) => part && part.name)
-        : [parts?.strong_part, parts?.weak_part].filter((part) => part && part.name);
-      if (!list.length) return '';
-      const text = `${label}: ${list.map((part) => `${part.name} ${part.avg_percent}%`).join(', ')}`;
-      return `<span class="page-subheading parent-lesson-parts">${escapeHtml(text)}</span>`;
+    const well = rows.filter((row) => row.status === 'excels' || (row.strong_skills && row.strong_skills.length && row.status !== 'needs_improvement'));
+    const needs = rows.filter((row) => row.status === 'needs_improvement' || (row.weak_skills && row.weak_skills.length && row.status === 'on_track'));
+    const li = (row) => {
+      const skill = parentLessonSkillLine(row);
+      const trend = row.trend === 'up' ? ' Improving.' : row.trend === 'down' ? ' Lower than last time.' : '';
+      return `<li>
+        <span class="parent-lesson-subject">${escapeHtml(row.label)}</span>
+        ${skill ? `<span class="page-subheading parent-lesson-parts">${escapeHtml(skill)}${escapeHtml(trend)}</span>` : (trend ? `<span class="page-subheading parent-lesson-parts">${escapeHtml(trend.trim())}</span>` : '')}
+      </li>`;
     };
-    const partBits = (row) => `${partLine('Quiz', row.quiz_parts)}${partLine('Activity', row.activity_parts)}${partLine('Exam', row.exam_parts)}`;
-    const li = (row) => `<li><span class="parent-lesson-subject">${escapeHtml(row.label)}</span> <strong>${row.percent}%</strong>${partBits(row)}</li>`;
     lists.innerHTML = `
       <div class="parent-lesson-list parent-lesson-list--good">
-        <h4>Excels</h4>
-        ${excels.length ? `<ul>${excels.map(li).join('')}</ul>` : '<p class="parent-chart-empty">No lessons at 85% or higher yet.</p>'}
+        <h4>Going well</h4>
+        ${well.length ? `<ul>${well.map(li).join('')}</ul>` : '<p class="parent-chart-empty">Nothing at a strong level yet. Start with the notes on the right.</p>'}
       </div>
       <div class="parent-lesson-list parent-lesson-list--bad">
-        <h4>Needs improvement</h4>
-        ${needs.length ? `<ul>${needs.map(li).join('')}</ul>` : '<p class="parent-chart-empty">No lessons below 75%. Keep it up!</p>'}
+        <h4>Needs practice</h4>
+        ${needs.length ? `<ul>${needs.map(li).join('')}</ul>` : '<p class="parent-chart-empty">Nothing below 75%. Keep the same kind of practice going.</p>'}
       </div>`;
   }
 }

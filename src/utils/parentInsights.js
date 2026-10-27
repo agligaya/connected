@@ -845,6 +845,200 @@ function attachActivities(reports, notes) {
   return next.sort((a, b) => (b.misses || 0) - (a.misses || 0) || a.subject.localeCompare(b.subject));
 }
 
+function aiAvailable() {
+  return !isAiDryRun() && isAiConfigured() && Date.now() >= aiTopicsPausedUntil;
+}
+
+function noteAiPause(err) {
+  if (/quota|rate limit|resource exhausted/i.test(String(err && err.message) || '')) {
+    aiTopicsPausedUntil = Date.now() + 60 * 60 * 1000;
+  }
+}
+
+function compactWorkItems(list, limit) {
+  return (list || []).slice(0, limit).map((item) => ({
+    subject: String(item.subject || '').trim(),
+    lesson: String(item.lesson || '').trim(),
+    kind: item.kind || 'quiz',
+    type: bankItemTypeLabel(item.item_type),
+    question: String(item.question || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+  }));
+}
+
+const BANNED_INSIGHT = /dyslexia|dyscalculia|adhd|autism|iq\b|disabled|disability|disorder|diagnos/i;
+
+function sanitizeInsightBullets(raw, { max = 8, maxLen = 280 } = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const row of Array.isArray(raw) ? raw : []) {
+    const text = String(row || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length < 12) continue;
+    if (BANNED_INSIGHT.test(text)) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text.length > maxLen ? `${text.slice(0, maxLen - 1).trim()}…` : text);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function workFingerprint(evidence, activities) {
+  const body = [
+    ...(evidence?.items || []).map((item) => `${item.question_id}:${item.correct ? 1 : 0}`),
+    ...(activities || []).map((note) => `${note.title}|${note.category}|${note.earned}|${note.max}`)
+  ].sort().join('|');
+  return crypto.createHash('sha1').update(body).digest('hex');
+}
+
+const proseCache = new Map();
+
+/**
+ * Groq writes full-sentence skill insights from the child's actual quiz/exam items.
+ * It names the skill (verbs, regrouping) and uses it in a sentence.
+ * It must not guess a medical cause. Returns null so the caller can use templates.
+ */
+async function writeSkillInsightWithAi({
+  audience = 'parent',
+  firstName,
+  grade,
+  stats,
+  average,
+  subjects,
+  evidence,
+  activities
+}) {
+  const items = evidence?.items || [];
+  const notes = activities || [];
+  if (!items.length && !notes.length) return null;
+  if (!aiAvailable()) return null;
+
+  const key = `prose:${audience}:${firstName || ''}:${grade || ''}:${workFingerprint(evidence, notes)}`;
+  if (proseCache.has(key)) return proseCache.get(key);
+
+  const forParent = audience !== 'teacher';
+  const name = String(firstName || (forParent ? 'Your child' : 'This student')).trim() || (forParent ? 'Your child' : 'This student');
+  const system = forParent
+    ? `You write a short progress note a parent can read about their elementary-school child.
+Return JSON: {"bullets":["..."]}
+Write 4 to 7 full sentences. Each bullet is one sentence.
+Name the specific skill from the questions (verbs, nouns, two-digit addition, sensors), then use it in the sentence.
+Examples:
+- "They have difficulty understanding verbs in a sentence."
+- "They can already name common nouns."
+- "They have difficulty with two-digit addition that needs regrouping."
+Rules:
+- Use only the questions, lessons, and activity notes in the JSON. Do not invent a skill that is not in them.
+- Contrast what they miss with what they get right when both exist.
+- Suggest at most two short practice ideas tied to a weak skill.
+- Attendance is a fact only. Do not guess why they were absent.
+- Do not diagnose a disability or guess a cause in the child's mind.
+- Do not mention answer keys, written answers, or percentages unless they are in the JSON.
+- If there are fewer than 4 quiz or exam items, say there is not enough work yet and keep it to 2 or 3 sentences.`
+    : `You write a short note a teacher can use about one elementary-school student.
+Return JSON: {"bullets":["..."]}
+Write 3 to 6 full sentences. Each bullet is one sentence.
+Name the specific skill from the questions and use it in the sentence (for example, "They have difficulty understanding verbs.").
+Use only the questions and notes in the JSON. Do not invent skills, scores, or causes. No disability language.`;
+
+  const user = JSON.stringify({
+    audience,
+    student: { first_name: name, grade: grade || null },
+    attendance: stats
+      ? {
+          present: Number(stats.present) || 0,
+          absent: Number(stats.absent) || 0,
+          late: Number(stats.late) || 0,
+          rate: Number(stats.attendanceRate) || 0
+        }
+      : null,
+    classwork_average: Number(average) || 0,
+    subjects: (subjects || []).slice(0, 8).map((s) => ({
+      name: s.name,
+      average: s.avg,
+      items: s.count
+    })),
+    missed: compactWorkItems(evidence?.misses, 20),
+    correct: compactWorkItems(evidence?.hits, 20),
+    activities: notes.slice(0, 8).map((note) => ({
+      subject: note.subject,
+      title: note.title,
+      category: note.category,
+      percent: note.percent
+    })),
+    lessons: (evidence?.lessons || []).slice(0, 6).map((lesson) => ({
+      lesson: lesson.lesson,
+      subject: lesson.subject,
+      material: String(lesson.excerpt || '').slice(0, 800)
+    }))
+  });
+
+  try {
+    const parsed = await callGroqChat({ system, user });
+    const bullets = sanitizeInsightBullets(parsed?.bullets);
+    if (!bullets.length) return null;
+    const result = { source: 'ai', bullets };
+    if (proseCache.size > 200) proseCache.clear();
+    proseCache.set(key, result);
+    return result;
+  } catch (err) {
+    console.warn('[insights] skill prose:', err.message);
+    noteAiPause(err);
+    return null;
+  }
+}
+
+async function writeClassSkillInsightWithAi({
+  grade,
+  section,
+  subjectName,
+  scored,
+  total,
+  counts,
+  subjectAvgs,
+  skills
+}) {
+  if (!aiAvailable()) return null;
+  if (!Array.isArray(skills) || !skills.length) return null;
+  const key = `class:${grade}|${section}|${subjectName || ''}:${scored}:${skills.map((s) => `${s.side}:${s.skill}:${s.students}`).join('|')}`;
+  if (proseCache.has(key)) return proseCache.get(key);
+
+  const system = `You write a short class-progress note for an elementary teacher.
+Return JSON: {"bullets":["..."]}
+Write 3 to 6 full sentences. Each bullet is one sentence.
+Name the common skills (verbs, regrouping, sensors) and say how many students share them.
+Example: "Eight students have difficulty understanding verbs."
+Use only the skills and counts in the JSON. Do not invent students, subjects, or causes. No disability language.`;
+  const user = JSON.stringify({
+    class: {
+      grade,
+      section,
+      subject: subjectName || 'all subjects',
+      scored_students: scored,
+      total_students: total,
+      excelling: counts?.excels || 0,
+      on_track: counts?.on_track || 0,
+      most_at_risk: counts?.behind || 0
+    },
+    subject_averages: (subjectAvgs || []).slice(0, 8),
+    skills: skills.slice(0, 12)
+  });
+
+  try {
+    const parsed = await callGroqChat({ system, user });
+    const bullets = sanitizeInsightBullets(parsed?.bullets, { max: 6 });
+    if (!bullets.length) return null;
+    const result = { source: 'ai', bullets };
+    if (proseCache.size > 200) proseCache.clear();
+    proseCache.set(key, result);
+    return result;
+  } catch (err) {
+    console.warn('[insights] class prose:', err.message);
+    noteAiPause(err);
+    return null;
+  }
+}
+
 async function topicInsightForStudent(db, studentId) {
   const evidence = await loadTopicEvidence(db, studentId);
   const activities = await loadActivityNotes(db, studentId);
@@ -854,7 +1048,7 @@ async function topicInsightForStudent(db, studentId) {
 
   let reports = evidence.items.length ? subjectReportsFromEvidence(evidence) : [];
   const needsPhrase = reports.some((report) => !report.weakTopics.length && !report.strongTopics.length);
-  if (needsPhrase && evidence.items.length && !isAiDryRun() && isAiConfigured() && Date.now() >= aiTopicsPausedUntil) {
+  if (needsPhrase && evidence.items.length && aiAvailable()) {
     const system = `You name specific topics inside elementary lesson material for a parent progress summary.
 Return JSON: {"weaknesses":[{"lesson":"","topic":""}],"strengths":[{"lesson":"","topic":""}]}
 Rules:
@@ -891,16 +1085,13 @@ Rules:
       reports = applyGeminiTopics(reports, fromAi);
     } catch (err) {
       console.warn('[insights] topic summary:', err.message);
-      if (/quota|rate limit|resource exhausted/i.test(String(err.message || ''))) {
-        aiTopicsPausedUntil = Date.now() + 60 * 60 * 1000;
-      }
+      noteAiPause(err);
     }
   }
 
   reports = attachActivities(reports, activities);
   const subjects = reports.filter(reportSpeakable);
-  if (!subjects.length) return null;
-  const topics = { subjects };
+  const topics = { subjects, evidence, activities };
   if (topicCache.size > 200) topicCache.clear();
   topicCache.set(key, topics);
   return topics;
@@ -909,6 +1100,9 @@ Rules:
 module.exports = {
   buildParentInsight,
   topicInsightForStudent,
+  writeSkillInsightWithAi,
+  writeClassSkillInsightWithAi,
+  sanitizeInsightBullets,
   lessonTopicLookup,
   chartTopicLabel,
   PASSING,

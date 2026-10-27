@@ -3920,6 +3920,12 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
   white-space: pre-line;
 }
 
+.teacher-progress-lesson .teacher-insight-list {
+  white-space: normal;
+  font-size: 0.82rem;
+  padding-left: 1.1rem;
+}
+
 .teacher-progress-all {
   margin-top: 14px;
   padding-top: 12px;

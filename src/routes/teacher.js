@@ -60,7 +60,7 @@ const {
   normalizeTrueFalseAnswer,
   ITEM_TYPES
 } = require('../utils/questionBank');
-const { topicInsightForStudent, PASSING } = require('../utils/parentInsights');
+const { topicInsightForStudent, writeClassSkillInsightWithAi, PASSING } = require('../utils/parentInsights');
 const {
   ensureQuizAttendanceSchema,
   parseMakeupIds,
@@ -1423,12 +1423,49 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
       ? { is_home_teacher: false, subject_teachers: [] }
       : await loadSubjectTeacherReports(teacherId, grade, sectionNorm);
 
+    const skillTally = new Map();
+    for (const reports of topicByStudent.values()) {
+      for (const report of reports.values()) {
+        for (const topic of report.weakTopics || []) {
+          const key = `weak:${String(topic).trim().toLowerCase()}`;
+          const row = skillTally.get(key) || { skill: String(topic).trim(), side: 'needs_work', students: 0 };
+          row.students += 1;
+          skillTally.set(key, row);
+        }
+        for (const topic of report.strongTopics || []) {
+          const key = `strong:${String(topic).trim().toLowerCase()}`;
+          const row = skillTally.get(key) || { skill: String(topic).trim(), side: 'strength', students: 0 };
+          row.students += 1;
+          skillTally.set(key, row);
+        }
+      }
+    }
+    const skills = [...skillTally.values()].sort((a, b) => b.students - a.students || a.skill.localeCompare(b.skill));
+
+    let insight_bullets = [];
+    try {
+      const written = await writeClassSkillInsightWithAi({
+        grade,
+        section: sectionNorm,
+        subjectName: subjectId ? (subjectAvgs[0]?.name || '') : '',
+        scored,
+        total: students.length,
+        counts,
+        subjectAvgs,
+        skills
+      });
+      if (written?.bullets?.length) insight_bullets = written.bullets;
+    } catch (writeErr) {
+      console.warn('[class-progress] skill write:', writeErr.message);
+    }
+
     res.json({
       total_students: students.length,
       scored_students: scored,
       counts,
       summary,
       lesson_line,
+      insight_bullets,
       excels: bands.excels,
       on_track: bands.on_track,
       behind: bands.behind,
