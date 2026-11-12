@@ -15301,15 +15301,20 @@ function parentJoinSkills(list) {
   return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
 }
 
+function parentChildFirstName() {
+  const name = String(parentCurrentChild?.first_name || '').trim();
+  return name || 'Your child';
+}
+
 function parentLessonSkillLine(row) {
+  const who = parentChildFirstName();
   const weak = parentJoinSkills(row.weak_skills);
   const strong = parentJoinSkills(row.strong_skills);
   const bits = [];
-  if (weak) bits.push(`they have difficulty with ${weak}`);
-  if (strong) bits.push(`they can already work with ${strong}`);
+  if (weak) bits.push(`${who} has difficulty with ${weak}`);
+  if (strong) bits.push(`${who} can already work with ${strong}`);
   if (!bits.length) return '';
-  const who = bits[0].charAt(0).toUpperCase() + bits[0].slice(1);
-  return bits.length === 1 ? `${who}.` : `${who}. ${bits[1].charAt(0).toUpperCase() + bits[1].slice(1)}.`;
+  return bits.length === 1 ? `${bits[0]}.` : `${bits[0]}. ${bits[1]}.`;
 }
 
 function parentTrendLabel(row) {

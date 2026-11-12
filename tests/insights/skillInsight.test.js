@@ -13,17 +13,31 @@ test('sanitizeInsightBullets keeps skill sentences and drops diagnoses', () => {
     'They have difficulty understanding verbs in a sentence.',
     12,
     null
-  ]);
+  ], { firstName: 'John' });
   assert.deepEqual(out, [
-    'They have difficulty understanding verbs in a sentence.',
-    'They can already name common nouns.'
+    'John has difficulty understanding verbs in a sentence.',
+    'John can already name common nouns.'
   ]);
 });
 
 test('sanitizeInsightBullets trims length and caps the list', () => {
   const long = `They have difficulty with ${'addition '.repeat(40)}.`;
-  const out = sanitizeInsightBullets([long, 'They are doing well with subtraction facts.'], { max: 1, maxLen: 40 });
+  const out = sanitizeInsightBullets([long, 'They are doing well with subtraction facts.'], {
+    max: 1,
+    maxLen: 40,
+    firstName: 'John'
+  });
   assert.equal(out.length, 1);
+  assert.ok(out[0].startsWith('John has difficulty'));
   assert.ok(out[0].endsWith('…'));
   assert.ok(out[0].length <= 40);
+});
+
+test('sanitizeInsightBullets leaves pronouns alone when no name is given', () => {
+  const out = sanitizeInsightBullets([
+    'They have difficulty understanding verbs in a sentence.'
+  ]);
+  assert.deepEqual(out, [
+    'They have difficulty understanding verbs in a sentence.'
+  ]);
 });

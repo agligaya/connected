@@ -867,11 +867,28 @@ function compactWorkItems(list, limit) {
 
 const BANNED_INSIGHT = /dyslexia|dyscalculia|adhd|autism|iq\b|disabled|disability|disorder|diagnos/i;
 
-function sanitizeInsightBullets(raw, { max = 8, maxLen = 280 } = {}) {
+function personalizeInsightText(text, firstName) {
+  const name = String(firstName || '').trim();
+  if (!name) return text;
+  return String(text || '')
+    .replace(/\bThey have\b/g, `${name} has`)
+    .replace(/\bthey have\b/g, `${name} has`)
+    .replace(/\bThey can\b/g, `${name} can`)
+    .replace(/\bthey can\b/g, `${name} can`)
+    .replace(/\bThey are\b/g, `${name} is`)
+    .replace(/\bthey are\b/g, `${name} is`)
+    .replace(/\bThey\b/g, name)
+    .replace(/\bthey\b/g, name)
+    .replace(/\bYour child\b/gi, name)
+    .replace(/\bThis student\b/gi, name)
+    .replace(/\bthe child\b/gi, name);
+}
+
+function sanitizeInsightBullets(raw, { max = 8, maxLen = 280, firstName = '' } = {}) {
   const seen = new Set();
   const out = [];
   for (const row of Array.isArray(raw) ? raw : []) {
-    const text = String(row || '').replace(/\s+/g, ' ').trim();
+    let text = personalizeInsightText(String(row || '').replace(/\s+/g, ' ').trim(), firstName);
     if (!text || text.length < 12) continue;
     if (BANNED_INSIGHT.test(text)) continue;
     const key = text.toLowerCase();
@@ -922,23 +939,25 @@ async function writeSkillInsightWithAi({
     ? `You write a short progress note a parent can read about their elementary-school child.
 Return JSON: {"bullets":["..."]}
 Write 4 to 7 full sentences. Each bullet is one sentence.
+Always use the child's first name ("${name}") as the subject. Never use "they", "he", "she", or "the child".
 Name the specific skill from the questions (verbs, nouns, two-digit addition, sensors), then use it in the sentence.
 Examples:
-- "They have difficulty understanding verbs in a sentence."
-- "They can already name common nouns."
-- "They have difficulty with two-digit addition that needs regrouping."
+- "${name} has difficulty understanding verbs in a sentence."
+- "${name} can already name common nouns."
+- "${name} has difficulty with two-digit addition that needs regrouping."
 Rules:
 - Use only the questions, lessons, and activity notes in the JSON. Do not invent a skill that is not in them.
-- Contrast what they miss with what they get right when both exist.
+- Contrast what ${name} misses with what ${name} gets right when both exist.
 - Suggest at most two short practice ideas tied to a weak skill.
-- Attendance is a fact only. Do not guess why they were absent.
+- Attendance is a fact only. Do not guess why ${name} was absent.
 - Do not diagnose a disability or guess a cause in the child's mind.
 - Do not mention answer keys, written answers, or percentages unless they are in the JSON.
 - If there are fewer than 4 quiz or exam items, say there is not enough work yet and keep it to 2 or 3 sentences.`
     : `You write a short note a teacher can use about one elementary-school student.
 Return JSON: {"bullets":["..."]}
 Write 3 to 6 full sentences. Each bullet is one sentence.
-Name the specific skill from the questions and use it in the sentence (for example, "They have difficulty understanding verbs.").
+Always use the student's first name ("${name}") as the subject. Never use "they", "he", or "she".
+Name the specific skill from the questions and use it in the sentence (for example, "${name} has difficulty understanding verbs.").
 Use only the questions and notes in the JSON. Do not invent skills, scores, or causes. No disability language.`;
 
   const user = JSON.stringify({
@@ -975,7 +994,7 @@ Use only the questions and notes in the JSON. Do not invent skills, scores, or c
 
   try {
     const parsed = await callGroqChat({ system, user });
-    const bullets = sanitizeInsightBullets(parsed?.bullets);
+    const bullets = sanitizeInsightBullets(parsed?.bullets, { firstName: name });
     if (!bullets.length) return null;
     const result = { source: 'ai', bullets };
     if (proseCache.size > 200) proseCache.clear();
