@@ -35,8 +35,12 @@ async function ensureQuizAttendanceSchema(conn = db) {
       `ALTER TABLE assessments ADD COLUMN quiz_attendance_session VARCHAR(2) NULL DEFAULT 'AM'`,
       `ALTER TABLE assessments ADD COLUMN quiz_subject_id INT NULL`,
       `ALTER TABLE assessments ADD COLUMN quiz_makeup_student_ids JSON NULL`,
+      `ALTER TABLE assessments ADD COLUMN quiz_opens_at DATETIME NULL`,
       `ALTER TABLE assessments ADD COLUMN quiz_closes_at DATETIME NULL`,
       `ALTER TABLE assessments ADD COLUMN quiz_makeup_closes_at DATETIME NULL`,
+      `ALTER TABLE assessments ADD COLUMN quiz_live_duration_minutes INT NULL`,
+      `ALTER TABLE assessments ADD COLUMN share_awaiting_attendance TINYINT(1) NOT NULL DEFAULT 0`,
+      `ALTER TABLE assessments ADD COLUMN time_limit_minutes INT NULL`,
       `ALTER TABLE assessments ADD COLUMN activity_mode VARCHAR(20) NULL`,
       `ALTER TABLE assessments ADD COLUMN activity_target_at DATETIME NULL`
     ];
@@ -188,6 +192,29 @@ function isPastManila(deadline, now = new Date()) {
   return !isAtOrBeforeManila(deadline, now);
 }
 
+const MAX_TIME_LIMIT_MINUTES = 600;
+
+/**
+ * Per-student time limit for a quiz or exam, in minutes.
+ * Returns { provided: false } when the body does not mention it (leave the saved value alone),
+ * { provided: true, minutes: null } to clear it, or { provided: true, minutes: N }.
+ * Throws a 400 error for a value that is not a whole number of minutes in range.
+ */
+function parseTimeLimit(body = {}) {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, 'time_limit_minutes')) {
+    return { provided: false, minutes: null };
+  }
+  const raw = body.time_limit_minutes;
+  if (raw === null || raw === '' || raw === undefined) return { provided: true, minutes: null };
+  const minutes = Number(raw);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_TIME_LIMIT_MINUTES) {
+    const err = new Error(`Time limit must be a whole number of minutes from 1 to ${MAX_TIME_LIMIT_MINUTES}.`);
+    err.status = 400;
+    throw err;
+  }
+  return { provided: true, minutes };
+}
+
 /**
  * Resolve live / make-up close times from assign-link body.
  * Accepts absolute closes_at or duration_minutes from "now".
@@ -198,10 +225,32 @@ function resolveQuizWindowsFromBody(body = {}, now = new Date()) {
   let quiz_closes_at = null;
   let quiz_makeup_closes_at = null;
 
+  // Optional scheduled start. Only a time that is still in the future counts as a schedule.
+  let quiz_opens_at = null;
+  let opensMs = null;
+  if (body.live_opens_at) {
+    const opens = normalizeSqlDatetime(body.live_opens_at);
+    if (!opens) {
+      const err = new Error('The date and time to show this to students is not valid.');
+      err.status = 400;
+      throw err;
+    }
+    if (opens > formatManilaSqlDatetime(now)) {
+      quiz_opens_at = opens;
+      opensMs = new Date(`${opens.replace(' ', 'T')}+08:00`).getTime();
+    }
+  }
+  const startMs = opensMs != null && !Number.isNaN(opensMs) ? opensMs : now.getTime();
+
   if (body.live_closes_at) {
     quiz_closes_at = normalizeSqlDatetime(body.live_closes_at);
   } else if (Number.isFinite(liveDuration) && liveDuration > 0) {
-    quiz_closes_at = formatManilaSqlDatetime(new Date(now.getTime() + liveDuration * 60 * 1000));
+    quiz_closes_at = formatManilaSqlDatetime(new Date(startMs + liveDuration * 60 * 1000));
+  }
+  if (quiz_opens_at && quiz_closes_at && quiz_closes_at <= quiz_opens_at) {
+    const err = new Error('The deadline must be after the time it is shown to students.');
+    err.status = 400;
+    throw err;
   }
 
   if (body.makeup_closes_at) {
@@ -214,7 +263,27 @@ function resolveQuizWindowsFromBody(body = {}, now = new Date()) {
     quiz_makeup_closes_at = formatManilaSqlDatetime(new Date(baseMs + makeupDuration * 60 * 1000));
   }
 
-  return { quiz_closes_at, quiz_makeup_closes_at };
+  return { quiz_opens_at, quiz_closes_at, quiz_makeup_closes_at };
+}
+
+/** True while a scheduled start time is set and has not been reached yet (Manila time). */
+function isNotYetOpen(assessment, now = new Date()) {
+  const opens = normalizeSqlDatetime(assessment?.quiz_opens_at);
+  if (!opens) return false;
+  return formatManilaSqlDatetime(now) < opens;
+}
+
+/** "Mar 3, 2026, 8:00 AM" style text for a Manila datetime, for error messages. */
+function describeOpensAt(value) {
+  const opens = normalizeSqlDatetime(value);
+  if (!opens) return '';
+  const d = new Date(`${opens.replace(' ', 'T')}+08:00`);
+  if (Number.isNaN(d.getTime())) return opens;
+  return d.toLocaleString('en-US', {
+    timeZone: 'Asia/Manila',
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  });
 }
 
 function getQuizAccessPhase(assessment, { attendanceStatus, makeupStudentIds, studentId, now = new Date() } = {}) {
@@ -307,6 +376,73 @@ async function getMakeupCandidates(assessment) {
     }));
 }
 
+/**
+ * Turn on shared links that a teacher armed before attendance was finished.
+ * Minutes Open starts from this moment so the window is not already closed.
+ */
+async function autoEnableAwaitingLinks({
+  grade,
+  section,
+  date,
+  session,
+  subjectId = null,
+  now = new Date()
+} = {}) {
+  const day = coerceAttendanceDate(date);
+  const subjectMode = isSubjectGrade(grade);
+  const sess = subjectMode ? 'AM' : normalizeSession(session, { subjectMode: false });
+  const subjectKey = subjectMode && subjectId ? Number(subjectId) : null;
+
+  const params = [day, grade, String(section || '').trim()];
+  let subjectSql = '';
+  if (subjectMode) {
+    subjectSql = ' AND (a.quiz_subject_id = ? OR (a.quiz_subject_id IS NULL AND a.subject_id = ?))';
+    params.push(subjectKey, subjectKey);
+  } else {
+    subjectSql = ' AND (a.quiz_attendance_session = ? OR a.quiz_attendance_session IS NULL)';
+    params.push(sess);
+  }
+
+  const [rows] = await db.query(
+    `SELECT a.id, a.title, a.quiz_live_duration_minutes, a.activity_mode, a.activity_target_at
+     FROM assessments a
+     WHERE a.share_awaiting_attendance = 1
+       AND a.share_enabled = 0
+       AND a.share_token IS NOT NULL
+       AND a.quiz_attendance_date = ?
+       AND a.grade_level = ?
+       AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
+       ${subjectSql}`,
+    params
+  );
+  if (!rows.length) return { enabled: 0, titles: [] };
+
+  const titles = [];
+  for (const row of rows) {
+    let closesAt = null;
+    if (String(row.activity_mode || '') === 'take_home') {
+      closesAt = normalizeSqlDatetime(row.activity_target_at);
+    } else {
+      const mins = Number(row.quiz_live_duration_minutes);
+      if (Number.isFinite(mins) && mins > 0) {
+        closesAt = formatManilaSqlDatetime(new Date(now.getTime() + mins * 60 * 1000));
+      }
+    }
+    if (!closesAt) continue;
+    await db.query(
+      `UPDATE assessments
+       SET share_enabled = 1,
+           share_awaiting_attendance = 0,
+           quiz_closes_at = ?,
+           quiz_opens_at = NULL
+       WHERE id = ? AND share_awaiting_attendance = 1`,
+      [closesAt, row.id]
+    );
+    titles.push(row.title);
+  }
+  return { enabled: titles.length, titles };
+}
+
 module.exports = {
   VALID_STATUSES,
   LIVE_QUIZ_STATUSES,
@@ -325,10 +461,14 @@ module.exports = {
   normalizeSqlDatetime,
   isAtOrBeforeManila,
   isPastManila,
+  isNotYetOpen,
+  describeOpensAt,
   resolveQuizWindowsFromBody,
+  parseTimeLimit,
   getQuizAccessPhase,
   isStudentEligibleForQuiz,
   quizBlockReason,
   getSubmittedStudentIds,
-  getMakeupCandidates
+  getMakeupCandidates,
+  autoEnableAwaitingLinks
 };

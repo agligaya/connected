@@ -10,10 +10,18 @@ const {
   isStudentEligibleForQuiz,
   getQuizAccessPhase,
   isPastManila,
+  formatManilaSqlDatetime,
   parseMakeupIds
 } = require('../utils/quizAttendance');
+
+// Items a teacher scheduled for later stay hidden from students until their start time.
+const VISIBLE_NOW_SQL = '(a.quiz_opens_at IS NULL OR a.quiz_opens_at <= ?)';
+// Links armed before attendance is finished stay hidden until they auto-enable.
+const NOT_AWAITING_SQL = 'COALESCE(a.share_awaiting_attendance, 0) = 0';
 const { ensureQuizShareSchema, activityWorkFromSubmission, quizTakenFromSubmission, identificationReviewBank } = require('../utils/quizShare');
 const { ensureQuestionBankSchema, formatBankRow } = require('../utils/questionBank');
+const { ensureAnnouncementAudience, audienceSql } = require('../utils/announcements');
+const { loadSharedLessons, fileTypeLabel } = require('../utils/lessonShare');
 
 async function loadLearner(userId) {
   await ensureStudentRoleSchema();
@@ -54,6 +62,135 @@ exports.me = async (req, res) => {
   } catch (error) {
     console.error('Student me error:', error);
     res.status(500).json({ error: 'Server error loading student' });
+  }
+};
+
+/** An active student account, or null (and the response is already sent). */
+async function activeLearnerOr403(req, res) {
+  const student = await loadLearner(req.user.id);
+  if (!student || String(student.status).toLowerCase() !== 'active') {
+    res.status(403).json({ error: 'This student account is not active.' });
+    return null;
+  }
+  return student;
+}
+
+/**
+ * Two feeds for the student portal, kept apart on purpose:
+ *  - 'announcement': the same school announcements and class notices parents receive.
+ *  - 'material': automatic "New material" notices created when a teacher shares a lesson (the bell).
+ * `onlyId` narrows it to a single row; kind 'any' searches both feeds.
+ */
+async function loadVisibleAnnouncements(student, userId, onlyId = null, kind = 'announcement') {
+  if (kind === 'any') {
+    const [a, m] = await Promise.all([
+      loadVisibleAnnouncements(student, userId, onlyId, 'announcement'),
+      loadVisibleAnnouncements(student, userId, onlyId, 'material')
+    ]);
+    return [...a, ...m];
+  }
+  await ensureAnnouncementAudience();
+  const isMaterial = kind === 'material';
+  const kindSql = isMaterial ? 'a.lesson_plan_id IS NOT NULL' : 'a.lesson_plan_id IS NULL';
+  const audience = audienceSql(isMaterial ? 'student' : 'parent');
+  const params = [userId, student.grade_level, student.grade_level, student.section];
+  let idSql = '';
+  if (onlyId) {
+    idSql = ' AND a.id = ?';
+    params.push(onlyId);
+  }
+  const [rows] = await db.query(
+    `SELECT a.*, CONCAT(u.first_name, ' ', u.last_name) AS sender_name,
+            u.role AS sender_role,
+            lp.subject_id AS lesson_subject_id,
+            lsub.name AS lesson_subject_name,
+            ar.read_at IS NOT NULL AS is_read
+     FROM announcements a
+     JOIN users u ON a.sender_id = u.id
+     LEFT JOIN lesson_plans lp ON lp.id = a.lesson_plan_id
+     LEFT JOIN subjects lsub ON lsub.id = lp.subject_id
+     LEFT JOIN announcement_reads ar ON a.id = ar.announcement_id AND ar.user_id = ?
+    WHERE ${kindSql}
+       AND (a.scope = 'school_wide'
+           OR (a.scope = 'grade_wide' AND a.target_grade = ?)
+           OR (a.scope = 'class_specific' AND a.target_grade = ?
+               AND TRIM(UPPER(a.target_section)) = TRIM(UPPER(?))))
+       ${audience}${idSql}
+     ORDER BY a.created_at DESC`,
+    params
+  );
+  return rows;
+}
+
+function listHandler(kind) {
+  return async (req, res) => {
+    try {
+      const student = await activeLearnerOr403(req, res);
+      if (!student) return;
+      const rows = await loadVisibleAnnouncements(student, req.user.id, null, kind);
+      res.json({
+        announcements: rows.map((row) => ({ ...row, is_read: row.is_read ? 1 : 0 }))
+      });
+    } catch (error) {
+      console.error('Student announcements error:', error);
+      res.status(500).json({ error: 'Server error loading announcements' });
+    }
+  };
+}
+
+function markAllHandler(kind) {
+  return async (req, res) => {
+    try {
+      const student = await activeLearnerOr403(req, res);
+      if (!student) return;
+      const rows = await loadVisibleAnnouncements(student, req.user.id, null, kind);
+      const unread = rows.filter((row) => !row.is_read).map((row) => Number(row.id));
+      if (unread.length) {
+        const placeholders = unread.map(() => '(?, ?)').join(', ');
+        const values = unread.flatMap((id) => [req.user.id, id]);
+        await db.query(
+          `INSERT INTO announcement_reads (user_id, announcement_id) VALUES ${placeholders}
+           ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP`,
+          values
+        );
+      }
+      res.json({ message: 'All marked as read', count: unread.length });
+    } catch (error) {
+      console.error('Student mark all announcements read error:', error);
+      res.status(500).json({ error: 'Server error updating announcements' });
+    }
+  };
+}
+
+// GET /api/student/announcements (the same feed parents get)
+exports.announcements = listHandler('announcement');
+// GET /api/student/notifications (new-material notices for the bell)
+exports.notifications = listHandler('material');
+// POST /api/student/announcements/mark-all-read and /api/student/notifications/mark-all-read
+exports.markAllAnnouncementsRead = markAllHandler('announcement');
+exports.markAllNotificationsRead = markAllHandler('material');
+
+// POST|DELETE /api/student/announcements/:id/read (works for either feed)
+exports.setAnnouncementRead = async (req, res) => {
+  try {
+    const student = await activeLearnerOr403(req, res);
+    if (!student) return;
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Choose an announcement.' });
+    const visible = await loadVisibleAnnouncements(student, req.user.id, id, 'any');
+    if (!visible.length) return res.status(404).json({ error: 'Announcement not found.' });
+    if (req.method === 'DELETE') {
+      await db.query('DELETE FROM announcement_reads WHERE user_id = ? AND announcement_id = ?', [req.user.id, id]);
+    } else {
+      await db.query(
+        'INSERT INTO announcement_reads (user_id, announcement_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP',
+        [req.user.id, id]
+      );
+    }
+    res.json({ message: req.method === 'DELETE' ? 'Marked as unread' : 'Marked as read' });
+  } catch (error) {
+    console.error('Student announcement read error:', error);
+    res.status(500).json({ error: 'Server error updating announcement' });
   }
 };
 
@@ -121,7 +258,7 @@ async function attendanceFor(student, assessment, rosterCache) {
 }
 
 async function loadWorkRows(student, subjectId) {
-  const params = [student.id, student.grade_level, student.section];
+  const params = [student.id, student.grade_level, student.section, formatManilaSqlDatetime()];
   let subjectSql = '';
   if (subjectId) {
     subjectSql = ' AND a.subject_id = ?';
@@ -142,6 +279,8 @@ async function loadWorkRows(student, subjectId) {
      WHERE a.grade_level = ?
        AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
        AND (a.share_enabled = 1 OR a.share_token IS NOT NULL)
+       AND ${VISIBLE_NOW_SQL}
+       AND ${NOT_AWAITING_SQL}
        AND a.subject_id IS NOT NULL
        ${subjectSql}
      ORDER BY a.created_at DESC`,
@@ -211,6 +350,8 @@ exports.subjects = async (req, res) => {
          WHERE a.grade_level = ?
            AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
            AND (a.share_enabled = 1 OR a.share_token IS NOT NULL)
+           AND ${VISIBLE_NOW_SQL}
+           AND ${NOT_AWAITING_SQL}
            AND a.subject_id IS NOT NULL
          UNION
          SELECT gs.id AS subject_id
@@ -220,7 +361,10 @@ exports.subjects = async (req, res) => {
        JOIN subjects sub ON sub.id = ids.subject_id
        WHERE sub.deleted_at IS NULL
        ORDER BY sub.NAME`,
-      [grade, section, schoolYear, grade, section, schoolYear, grade, section, grade, section, gradeSubjectIds]
+      [
+        grade, section, schoolYear, grade, section, schoolYear, grade, section,
+        grade, section, formatManilaSqlDatetime(), gradeSubjectIds
+      ]
     );
 
     const rows = await loadWorkRows(student);
@@ -272,23 +416,28 @@ async function loadMaterials(student, subjectId) {
      WHERE a.grade_level = ?
        AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
        AND a.share_enabled = 1
+       AND ${VISIBLE_NOW_SQL}
        AND a.subject_id = ?
        AND lp.file_path IS NOT NULL AND lp.file_path <> ''
      GROUP BY lp.id, lp.title, lp.objectives, lp.file_path
      ORDER BY MAX(a.created_at) DESC`,
-    [student.grade_level, student.section, subjectId]
+    [student.grade_level, student.section, formatManilaSqlDatetime(), subjectId]
   );
-  return rows.map((row) => {
-    const ext = String(row.file_path).split('.').pop().toLowerCase();
-    return {
-      id: row.id,
-      title: row.title,
-      objectives: row.objectives || null,
-      file_path: row.file_path,
-      file_type: ext === 'pdf' ? 'PDF' : (ext === 'doc' || ext === 'docx') ? 'Word' : ext.toUpperCase(),
-      used_in: row.used_in ? String(row.used_in).split('||').filter(Boolean) : []
-    };
+  const attached = rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    objectives: row.objectives || null,
+    file_path: row.file_path,
+    file_type: fileTypeLabel(row.file_path),
+    used_in: row.used_in ? String(row.used_in).split('||').filter(Boolean) : []
+  }));
+  // Lessons the teacher shared directly with students also belong in the subject's Materials.
+  const shared = await loadSharedLessons(student, schoolYear, subjectId);
+  const seen = new Set(attached.map((item) => Number(item.id)));
+  shared.forEach((lesson) => {
+    if (!seen.has(Number(lesson.id))) attached.push(lesson);
   });
+  return attached;
 }
 
 /** Everything this student has taken in the subject, with the recorded score. */

@@ -12,7 +12,9 @@ const {
   scoreSubmission,
   isActivityItemType,
   activityWorkFromSubmission,
-  answersBagFromPayload
+  answersBagFromPayload,
+  recordFocusLeave,
+  startTimedAttempt
 } = require('../utils/quizShare');
 const {
   ensureQuizAttendanceSchema,
@@ -22,7 +24,9 @@ const {
   isStudentEligibleForQuiz,
   quizBlockReason,
   getSubmittedStudentIds,
-  isAtOrBeforeManila
+  isAtOrBeforeManila,
+  isNotYetOpen,
+  describeOpensAt
 } = require('../utils/quizAttendance');
 const { notifyStudentScore } = require('../utils/sms');
 const { verifyToken } = require('../middleware/auth');
@@ -50,6 +54,14 @@ async function signedInStudent(req) {
   return row || null;
 }
 
+// The per-student time limit in minutes, or null. Only quizzes and exams are timed.
+function timeLimitFor(assessment) {
+  const kind = String(assessment?.type || '').toLowerCase();
+  if (kind !== 'quiz' && kind !== 'exam') return null;
+  const minutes = Number(assessment?.time_limit_minutes);
+  return Number.isInteger(minutes) && minutes > 0 ? minutes : null;
+}
+
 function normalizeLrn(value) {
   const digits = String(value || '').replace(/\D/g, '');
   return digits.length === 12 ? digits : null;
@@ -60,7 +72,8 @@ async function loadAssessmentByToken(token) {
     `SELECT a.id, a.title, a.TYPE as type, a.grade_level, a.section, a.max_score,
             a.subject_id, a.share_token, a.share_enabled, a.created_by,
             a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
-            a.quiz_makeup_student_ids, a.quiz_closes_at, a.quiz_makeup_closes_at,
+            a.quiz_makeup_student_ids, a.quiz_opens_at, a.quiz_closes_at, a.quiz_makeup_closes_at,
+            a.time_limit_minutes,
             s.NAME as subject_name
      FROM assessments a
      LEFT JOIN subjects s ON s.id = a.subject_id
@@ -122,6 +135,12 @@ router.get('/:token', async (req, res) => {
     if (!assessment || !assessment.share_enabled) {
       return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
+    }
 
     const questions = shuffleQuestionsWithinSections(await getAssessmentQuestions(assessment.id));
     if (!questions.length) {
@@ -144,7 +163,8 @@ router.get('/:token', async (req, res) => {
       live_statuses: ['Present', 'Late'],
       quiz_closes_at: assessment.quiz_closes_at || null,
       quiz_makeup_closes_at: assessment.quiz_makeup_closes_at || null,
-      live_open: liveOpen
+      live_open: liveOpen,
+      time_limit_minutes: timeLimitFor(assessment)
     });
   } catch (error) {
     console.error('Public quiz get error:', error);
@@ -198,6 +218,12 @@ router.post('/:token/identify', async (req, res) => {
     if (!assessment || !assessment.share_enabled) {
       return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
+    }
 
     const row = await findStudentByLrnInClass(assessment, lrnProvided);
     if (!row) {
@@ -228,6 +254,12 @@ router.post('/:token/identify-me', async (req, res) => {
     if (!assessment || !assessment.share_enabled) {
       return res.status(404).json({ error: 'This link is inactive or not found.' });
     }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
+    }
 
     const slot = attendanceSlotForAssessment(assessment);
     const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
@@ -240,6 +272,101 @@ router.post('/:token/identify-me', async (req, res) => {
   } catch (error) {
     console.error('Public quiz identify-me error:', error);
     res.status(500).json({ error: 'Server error loading your details', details: error.message });
+  }
+});
+
+// The student left the quiz page (tab switch, minimize, or exit full screen). The teacher sees
+// the count next to the student in the assessment roster. Only counts while the student is
+// eligible and has not submitted, so it can't be used to change the record afterwards.
+router.post('/:token/focus-leave', async (req, res) => {
+  try {
+    await ensureQuizShareSchema();
+    await ensureQuizAttendanceSchema();
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
+
+    const assessment = await loadAssessmentByToken(token);
+    if (!assessment || !assessment.share_enabled) {
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
+    }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
+    }
+    const kind = String(assessment.type || '').toLowerCase();
+    if (kind !== 'quiz' && kind !== 'exam') return res.status(204).end();
+
+    const me = await signedInStudent(req);
+    let row = null;
+    if (me) {
+      const slot = attendanceSlotForAssessment(assessment);
+      const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
+      row = roster.find((s) => Number(s.id) === Number(me.id)) || null;
+    } else {
+      const lrn = normalizeLrn(req.body?.lrn);
+      if (!lrn) return res.status(400).json({ error: 'Invalid request.' });
+      row = await findStudentByLrnInClass(assessment, lrn);
+    }
+    if (!row) return res.status(403).json({ error: 'Not part of this class.' });
+
+    const info = await identifyPayload(assessment, row);
+    if (!info.eligible || info.submitted) return res.status(204).end();
+
+    await recordFocusLeave(assessment.id, row.id, String(req.body?.reason || ''));
+    res.status(204).end();
+  } catch (error) {
+    console.error('Public quiz focus-leave error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// The student pressed Start on a timed quiz or exam. Returns how many seconds they have left,
+// measured on the server so the clock survives a refresh and cannot be reset from the page.
+router.post('/:token/start', async (req, res) => {
+  try {
+    await ensureQuizShareSchema();
+    await ensureQuizAttendanceSchema();
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'Invalid link' });
+
+    const assessment = await loadAssessmentByToken(token);
+    if (!assessment || !assessment.share_enabled) {
+      return res.status(404).json({ error: 'This link is inactive or not found.' });
+    }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
+    }
+    const limit = timeLimitFor(assessment);
+    if (!limit) return res.json({ time_limit_minutes: null, remaining_seconds: null });
+
+    const me = await signedInStudent(req);
+    let row = null;
+    if (me) {
+      const slot = attendanceSlotForAssessment(assessment);
+      const roster = await loadAttendanceRoster(assessment.grade_level, assessment.section, slot);
+      row = roster.find((s) => Number(s.id) === Number(me.id)) || null;
+    } else {
+      const lrn = normalizeLrn(req.body?.lrn);
+      if (!lrn) return res.status(400).json({ error: 'Invalid request.' });
+      row = await findStudentByLrnInClass(assessment, lrn);
+    }
+    if (!row) return res.status(403).json({ error: 'Not part of this class.' });
+
+    const info = await identifyPayload(assessment, row);
+    if (!info.eligible || info.submitted) {
+      return res.status(403).json({ error: info.block_reason || 'You cannot start this right now.' });
+    }
+
+    const remaining = await startTimedAttempt(assessment.id, row.id, limit);
+    res.json({ time_limit_minutes: limit, remaining_seconds: remaining });
+  } catch (error) {
+    console.error('Public quiz start error:', error);
+    res.status(500).json({ error: 'Server error starting the timer' });
   }
 });
 
@@ -293,6 +420,12 @@ router.post('/:token/submit', async (req, res) => {
     const assessment = await loadAssessmentByToken(token);
     if (!assessment || !assessment.share_enabled) {
       return res.status(404).json({ error: 'This link is inactive or not found.' });
+    }
+    if (isNotYetOpen(assessment)) {
+      return res.status(403).json({
+        error: `This is not available yet. It opens on ${describeOpensAt(assessment.quiz_opens_at)}.`,
+        opens_at: assessment.quiz_opens_at
+      });
     }
 
     const [[student]] = await db.query(

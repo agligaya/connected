@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261026a" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261120d" />
 
 </head>
 <body data-view="login">
@@ -452,14 +452,24 @@
                         <h4 class="progress-detail-section-title">ConnectED Shared Link</h4>
                         <p id="progress-share-attendance-note" class="page-subheading" style="margin:0 0 10px;"></p>
                         <div class="progress-share-windows" id="progress-share-windows">
+                          <div class="field-small progress-share-field" id="progress-share-opens-field">
+                            <label for="progress-share-opens-at">Show to students on</label>
+                            <input type="datetime-local" id="progress-share-opens-at" class="progress-share-field-input" />
+                          </div>
+                          <p class="page-subheading progress-share-preview" id="progress-share-opens-hint">Leave blank to show it as soon as you enable the link. Students will not see it before this time.</p>
                           <div class="field-small progress-share-field">
                             <label for="progress-share-live-duration">Minutes Open</label>
                             <input type="number" id="progress-share-live-duration" class="progress-share-field-input" min="5" max="10080" step="5" value="60" />
                           </div>
                           <p class="page-subheading progress-share-preview" id="progress-share-live-preview"></p>
+                          <div class="field-small progress-share-field" id="progress-share-timer-field">
+                            <label for="progress-share-time-limit">Time Limit (minutes)</label>
+                            <input type="number" id="progress-share-time-limit" class="progress-share-field-input" min="1" max="600" step="1" placeholder="No time limit" />
+                          </div>
+                          <p class="page-subheading progress-share-preview" id="progress-share-timer-hint">Each student gets this long once they press Start, shown in the top-right corner. Their answers are submitted automatically when time runs out. Leave blank for no limit.</p>
 
                           <div class="progress-share-actions" id="progress-share-window-actions">
-                            <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-save-windows" hidden>Save Deadline</button>
+                            <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-share-save-windows" hidden>Save Changes</button>
                           </div>
                         </div>
                         <div class="field-small progress-share-field">
@@ -470,17 +480,6 @@
                           <button type="button" class="chip-ghost" id="progress-share-copy" hidden>Copy Link</button>
                           <button type="button" class="chip-ghost chip-danger" id="progress-share-revoke" hidden>Disable Link</button>
                           <a class="chip-ghost primary" id="progress-share-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
-                        </div>
-                      </div>
-
-                      <div class="progress-detail-section progress-link-only" hidden>
-                        <h4 class="progress-detail-section-title">Online Link <span class="page-subheading">(Google Forms, etc.)</span></h4>
-                        <div class="field-small progress-share-field">
-                          <input type="url" id="progress-editor-quiz-link" class="progress-share-url-input progress-share-field-input" placeholder="https://forms.gle/…" />
-                        </div>
-                        <div class="progress-share-actions" id="progress-quiz-link-actions">
-                          <button type="button" class="btn-toolbar btn-toolbar--solid" id="progress-quiz-link-save">Save Link</button>
-                          <a class="chip-ghost primary" id="progress-quiz-link-open" href="#" target="_blank" rel="noopener" hidden>Open Link</a>
                         </div>
                       </div>
 
@@ -723,6 +722,12 @@
               <div class="dash-sidebar-heading student-subject-heading">My Subjects</div>
               <nav class="sidebar-nav sidebar-nav--icons student-subject-nav" id="student-subject-nav" aria-label="My subjects"></nav>
             </div>
+            <nav class="sidebar-nav sidebar-nav--icons student-main-nav" aria-label="Student">
+              <button type="button" class="sidebar-item" id="student-announcements-tab">
+                <span class="nav-ico">📣</span> Announcements
+                <span id="student-announcements-badge" class="inbox-badge sidebar-inbox-badge inbox-badge--dot" hidden aria-hidden="true"></span>
+              </button>
+            </nav>
             <div class="portal-sidebar-footer-links">
               <p class="footer-brand-line">ConnectED | © 2026 ConnectED.</p>
               <div class="footer-links-row">
@@ -740,7 +745,21 @@
                 <span class="dash-topbar-role">Student Portal</span>
               </div>
               <div class="dash-topbar-right">
-                <div class="dash-topbar-profile">
+                <div class="dash-topbar-profile dash-topbar-profile--with-bell">
+                  <div class="student-bell-wrap">
+                    <button type="button" class="topbar-bell-btn" id="student-bell-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" title="Notifications">
+                      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                      <span class="topbar-bell-badge" id="student-bell-badge" hidden></span>
+                    </button>
+                    <div class="settings-dropdown student-bell-dropdown" id="student-bell-dropdown" hidden>
+                      <div class="settings-dropdown-header student-bell-head">
+                        <span class="settings-dropdown-name">Notifications</span>
+                        <button type="button" class="student-bell-markall" id="student-bell-markall" hidden>Mark all as read</button>
+                      </div>
+                      <div class="settings-dropdown-divider"></div>
+                      <ul class="student-bell-list" id="student-bell-list"></ul>
+                    </div>
+                  </div>
                   <button type="button" class="topbar-avatar-btn" id="student-avatar-btn" aria-label="Open settings">
                     <img id="student-topbar-avatar-img" data-topbar-avatar src="" alt="Student" style="display:none;" onload="this.style.display='block';this.nextElementSibling.style.display='none';" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
                     <span class="topbar-avatar-initial" data-user-initial style="display:flex;">S</span>
@@ -1335,15 +1354,17 @@
     <div class="modal-card ai-generating-card" role="status">
       <div class="ai-generating-spinner" aria-hidden="true"></div>
       <h3 class="font-heading" id="ai-generating-title">Generating AI Draft</h3>
-      <div class="ai-generating-track" aria-hidden="true">
+      <div class="ai-generating-track" id="ai-generating-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="ai-generating-fill" id="ai-generating-fill"></div>
       </div>
-      <p class="page-subheading" id="ai-generating-message">Reading the lesson</p>
+      <div class="ai-generating-status">
+        <span class="ai-generating-percent" id="ai-generating-percent">0%</span>
+      </div>
     </div>
   </div>
 
   <div id="upload-material-modal" class="modal-overlay" hidden>
-    <div class="modal-card" style="max-width:560px;">
+    <div class="modal-card modal-card--tall" style="max-width:560px;">
       <h3 class="font-heading">Upload Material</h3>
       <p class="page-subheading">Add a file or outline teachers can use to generate AI drafts.</p>
       <form id="upload-material-form" class="admin-form admin-edit-form">
@@ -1383,6 +1404,15 @@
             <label for="lp-file">File (PDF/DOC/DOCX)</label>
             <input type="file" id="lp-file" accept=".pdf,.doc,.docx" />
             <p class="page-subheading">PDF, DOC, or DOCX · Max 10 MB</p>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-small span-full">
+            <label class="lp-share-check" for="lp-share">
+              <input type="checkbox" id="lp-share" />
+              <span>Share with students</span>
+            </label>
+            <p class="page-subheading lp-share-hint">Students in your class for this grade and subject can open the file from their Announcements tab. Needs a file.</p>
           </div>
         </div>
         <p id="lp-message" class="inline-message"></p>
@@ -1551,12 +1581,17 @@
         <input type="text" id="qb-exam-write-title" placeholder="e.g., Q1 Science exam" />
       </div>
       <div class="field-small">
-        <label for="qb-exam-write-class">Class</label>
+        <label for="qb-exam-write-class">Class (sets grade &amp; subject list)</label>
         <select id="qb-exam-write-class"></select>
       </div>
       <div class="field-small">
         <label for="qb-exam-write-subject">Subject</label>
         <select id="qb-exam-write-subject"></select>
+      </div>
+      <div class="field-small" id="qb-exam-write-sections-field">
+        <span class="field-label">Also create for sections</span>
+        <div id="qb-exam-write-section-checks" class="qb-section-checks" role="group" aria-label="Sections"></div>
+        <p class="page-subheading">Same grade and subject only. Each section gets its own exam record.</p>
       </div>
       <div class="field-small">
         <label for="qb-exam-write-quarter">Grading period</label>
@@ -1582,9 +1617,11 @@
         <label for="qb-exam-title">Exam title</label>
         <input type="text" id="qb-exam-title" placeholder="e.g., Q1 Periodical Exam — Math" />
       </div>
-      <div class="field-small">
-        <label for="qb-exam-class">Class (assigned only)</label>
-        <select id="qb-exam-class">
+      <div class="field-small" id="qb-exam-class-field">
+        <span class="field-label">Sections (same grade &amp; subject)</span>
+        <div id="qb-exam-section-checks" class="qb-section-checks" role="group" aria-label="Sections"></div>
+        <p class="page-subheading">Each checked section gets its own exam record. Shared links and scores stay separate.</p>
+        <select id="qb-exam-class" hidden aria-hidden="true">
           <option value="">-- Select your class --</option>
         </select>
       </div>
@@ -1658,9 +1695,11 @@
           <input type="datetime-local" id="qb-create-target" />
         </div>
       </div>
-      <div class="field-small">
-        <label for="qb-create-class">Class (assigned only)</label>
-        <select id="qb-create-class">
+      <div class="field-small" id="qb-create-class-field">
+        <span class="field-label">Sections (same grade &amp; subject)</span>
+        <div id="qb-create-section-checks" class="qb-section-checks" role="group" aria-label="Sections"></div>
+        <p class="page-subheading" id="qb-create-section-hint">Each checked section gets its own copy in Records. Shared links and scores stay separate.</p>
+        <select id="qb-create-class" hidden aria-hidden="true">
           <option value="">-- Select your class --</option>
         </select>
       </div>
@@ -1967,7 +2006,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261026c" type="module"></script>
+  <script src="/js/app.js?v=20261120d" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>

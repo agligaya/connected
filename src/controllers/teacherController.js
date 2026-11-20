@@ -1,5 +1,6 @@
 const db = require('../../db');
 const { schoolYear } = require('../config');
+const { ensureAnnouncementAudience } = require('../utils/announcements');
 
 // Helper: try to get teacher info from either table naming convention
 async function getTeacherInfo(teacherId) {
@@ -296,7 +297,7 @@ exports.getTeacherInbox = async (req, res) => {
       SELECT a.*, CONCAT(u.first_name, ' ', u.last_name) as sender_name
       FROM announcements a
       JOIN users u ON a.sender_id = u.id
-      WHERE a.scope = 'school_wide'
+      WHERE a.lesson_plan_id IS NULL AND (a.scope = 'school_wide'
     `;
     const annParams = [];
 
@@ -314,7 +315,9 @@ exports.getTeacherInbox = async (req, res) => {
       });
     }
 
-    announcementSql += ` ORDER BY a.created_at DESC`;
+    announcementSql += `) ORDER BY a.created_at DESC`;
+    // The student "New material" notices carry lesson_plan_id; make sure that column exists first.
+    await ensureAnnouncementAudience();
     const [announcements] = await db.query(announcementSql, annParams);
 
     // --- FETCH RELEVANT CONCERNS ---

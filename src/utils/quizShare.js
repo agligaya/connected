@@ -32,6 +32,29 @@ async function ensureQuizShareSchema(conn = db) {
         KEY idx_quiz_sub_token (share_token)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+
+    // One row each time a student leaves the quiz (tab switch / minimize / exit full screen).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS quiz_focus_events (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        assessment_id INT NOT NULL,
+        student_id INT NOT NULL,
+        reason VARCHAR(20) NOT NULL DEFAULT 'hidden',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_focus_assessment_student (assessment_id, student_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    // When each student pressed Start on a timed quiz or exam. The first press wins, so
+    // refreshing the page or coming back later never gives the student a fresh clock.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS quiz_attempt_starts (
+        assessment_id INT NOT NULL,
+        student_id INT NOT NULL,
+        started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (assessment_id, student_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
   })().catch((e) => {
     schemaPromise = null;
     throw e;
@@ -448,7 +471,60 @@ function mcqAnswersMatch(given, expected, choices) {
   return a !== '' && a === b;
 }
 
+const FOCUS_REASONS = new Set(['hidden', 'fullscreen']);
+const FOCUS_MIN_GAP_SECONDS = 2; // one tab switch can fire several browser events
+const FOCUS_MAX_EVENTS = 500; // hard cap per student per assessment
+
+// Records one "student left the quiz" event. Returns { recorded, count }.
+async function recordFocusLeave(assessmentId, studentId, reason, conn = db) {
+  const why = FOCUS_REASONS.has(reason) ? reason : 'hidden';
+  const [[stats]] = await conn.query(
+    `SELECT COUNT(*) AS n,
+            COALESCE(MAX(created_at) > DATE_SUB(NOW(), INTERVAL ? SECOND), 0) AS too_soon
+     FROM quiz_focus_events WHERE assessment_id = ? AND student_id = ?`,
+    [FOCUS_MIN_GAP_SECONDS, assessmentId, studentId]
+  );
+  const count = Number(stats.n) || 0;
+  if (Number(stats.too_soon) === 1 || count >= FOCUS_MAX_EVENTS) {
+    return { recorded: false, count };
+  }
+  await conn.query(
+    `INSERT INTO quiz_focus_events (assessment_id, student_id, reason) VALUES (?, ?, ?)`,
+    [assessmentId, studentId, why]
+  );
+  return { recorded: true, count: count + 1 };
+}
+
+// Starts (or resumes) a student's clock on a timed quiz or exam and returns the seconds left.
+// The first call stores the start time; later calls only read it, so a refresh keeps the same clock.
+async function startTimedAttempt(assessmentId, studentId, limitMinutes, conn = db) {
+  await conn.query(
+    'INSERT IGNORE INTO quiz_attempt_starts (assessment_id, student_id) VALUES (?, ?)',
+    [assessmentId, studentId]
+  );
+  const [[row]] = await conn.query(
+    `SELECT TIMESTAMPDIFF(SECOND, started_at, NOW()) AS elapsed
+     FROM quiz_attempt_starts WHERE assessment_id = ? AND student_id = ?`,
+    [assessmentId, studentId]
+  );
+  const elapsed = Math.max(0, Number(row?.elapsed) || 0);
+  return Math.max(0, Math.round(Number(limitMinutes) * 60) - elapsed);
+}
+
+// Map of student_id -> { count, last_at } for the teacher's roster view.
+async function getFocusLeaveSummary(assessmentId, conn = db) {
+  const [rows] = await conn.query(
+    `SELECT student_id, COUNT(*) AS n, MAX(created_at) AS last_at
+     FROM quiz_focus_events WHERE assessment_id = ? GROUP BY student_id`,
+    [assessmentId]
+  );
+  return new Map(rows.map((r) => [Number(r.student_id), { count: Number(r.n) || 0, last_at: r.last_at }]));
+}
+
 module.exports = {
+  startTimedAttempt,
+  recordFocusLeave,
+  getFocusLeaveSummary,
   ensureQuizShareSchema,
   generateShareToken,
   publicQuestion,

@@ -231,7 +231,11 @@ let studentSubjects = [];
 let studentSubjectId = null;
 let studentSection = 'classworks';
 let studentDetail = null;
-
+let studentView = 'subject'; // 'subject' | 'announcements'
+let studentAnnFilter = 'all'; // 'all' | 'admin' | 'teacher'
+let studentAnnSearch = '';
+let studentExpandedAnnId = null;
+let studentAnnouncements = [];
 function studentWorkTypeLabel(type) {
   const kind = String(type || '').toLowerCase();
   if (kind === 'activity') return 'Activity';
@@ -416,11 +420,18 @@ function renderStudentSection() {
 }
 
 function renderStudentNav() {
+  const annTab = document.getElementById('student-announcements-tab');
+  if (annTab) {
+    const onAnnouncements = studentView === 'announcements';
+    annTab.classList.toggle('active', onAnnouncements);
+    if (onAnnouncements) annTab.setAttribute('aria-current', 'page');
+    else annTab.removeAttribute('aria-current');
+  }
   const nav = document.getElementById('student-subject-nav');
   if (!nav) return;
   nav.innerHTML = studentSubjects.map((subject) => {
     const due = Number(subject.due_count) || 0;
-    const active = Number(subject.id) === Number(studentSubjectId);
+    const active = studentView === 'subject' && Number(subject.id) === Number(studentSubjectId);
     const dueLabel = due === 1 ? '1 due' : `${due} due`;
     return `<button type="button" class="sidebar-item student-subject-tab${active ? ' active' : ''}" data-student-subject="${subject.id}" title="${escapeHtml(subject.name || 'Subject')}"${active ? ' aria-current="page"' : ''}>
       <span class="student-subject-tab-name">${escapeHtml(subject.name || 'Subject')}</span>
@@ -433,6 +444,7 @@ async function loadStudentSubject(subjectId) {
   const content = document.getElementById('student-content');
   const subject = studentSubjects.find((row) => Number(row.id) === Number(subjectId));
   if (!content) return;
+  studentView = 'subject';
   studentSubjectId = subject ? Number(subject.id) : null;
   studentDetail = null;
   renderStudentNav();
@@ -461,6 +473,287 @@ async function loadStudentSubject(subjectId) {
   }
 }
 
+// ---------- Student notification bell: "new material" from a teacher ----------
+
+let studentNotices = [];
+const STUDENT_NOTICE_POLL_MS = 60000;
+
+function renderStudentBell() {
+  const badge = document.getElementById('student-bell-badge');
+  const btn = document.getElementById('student-bell-btn');
+  const list = document.getElementById('student-bell-list');
+  const markAll = document.getElementById('student-bell-markall');
+  const unread = studentNotices.filter((n) => isUnread(n)).length;
+  if (badge) {
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.hidden = unread === 0;
+  }
+  if (btn) btn.setAttribute('aria-label', unread ? `Notifications, ${unread} unread` : 'Notifications');
+  if (markAll) markAll.hidden = unread === 0;
+  if (!list) return;
+  const items = [...studentNotices].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  list.innerHTML = items.length
+    ? items.map((n) => {
+      const sub = [n.sender_name ? `From Teacher ${n.sender_name}` : '', studentDateLabel(n.created_at)].filter(Boolean).join(' · ');
+      const subjectTag = n.lesson_subject_name ? `<span class="student-bell-subject">${escapeHtml(n.lesson_subject_name)}</span>` : '';
+      return `<li><button type="button" class="student-bell-item${isUnread(n) ? ' student-bell-item--unread' : ''}" data-notice-id="${Number(n.id)}" data-subject-id="${Number(n.lesson_subject_id) || ''}">
+        ${subjectTag}
+        <span class="student-bell-title">${escapeHtml(n.title || 'New material')}</span>
+        <span class="student-bell-sub">${escapeHtml(sub)}</span>
+      </button></li>`;
+    }).join('')
+    : '<li class="student-bell-empty">No new materials yet.</li>';
+}
+
+async function refreshStudentNotices() {
+  try {
+    const res = await fetch(`${API_URL}/student/notifications`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) return;
+    studentNotices = Array.isArray(data.announcements) ? data.announcements : [];
+    renderStudentBell();
+  } catch (_) { /* the bell is a hint; try again on the next poll */ }
+}
+
+function setStudentBellOpen(open) {
+  const dropdown = document.getElementById('student-bell-dropdown');
+  const btn = document.getElementById('student-bell-btn');
+  if (!dropdown || !btn) return;
+  if (open) dropdown.removeAttribute('hidden');
+  else dropdown.setAttribute('hidden', '');
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+document.getElementById('student-bell-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const willOpen = document.getElementById('student-bell-dropdown')?.hasAttribute('hidden');
+  setStudentBellOpen(!!willOpen);
+  if (willOpen) refreshStudentNotices();
+});
+
+document.addEventListener('click', (e) => {
+  const dropdown = document.getElementById('student-bell-dropdown');
+  if (!dropdown || dropdown.hasAttribute('hidden')) return;
+  if (!dropdown.contains(e.target)) setStudentBellOpen(false);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setStudentBellOpen(false);
+});
+
+// Opening a notice marks it read and goes to that subject's Materials tab, where the file lives.
+document.getElementById('student-bell-list')?.addEventListener('click', async (e) => {
+  const item = e.target.closest('[data-notice-id]');
+  if (!item) return;
+  const id = Number(item.getAttribute('data-notice-id'));
+  const subjectId = Number(item.getAttribute('data-subject-id'));
+  const notice = studentNotices.find((n) => Number(n.id) === id);
+  if (notice && isUnread(notice)) {
+    notice.is_read = 1;
+    renderStudentBell();
+    fetch(`${API_URL}/student/announcements/${id}/read`, { method: 'POST', headers: getAuthHeaders() })
+      .catch(() => {});
+  }
+  setStudentBellOpen(false);
+  if (subjectId) {
+    studentSection = 'materials';
+    loadStudentSubject(subjectId);
+    const frame = document.querySelector('.dash-frame[data-portal="student"]');
+    if (frame && window.innerWidth <= 900) closeMobileNav(frame);
+  }
+});
+
+document.getElementById('student-bell-markall')?.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  studentNotices.forEach((n) => { n.is_read = 1; });
+  renderStudentBell();
+  try {
+    await fetch(`${API_URL}/student/notifications/mark-all-read`, { method: 'POST', headers: getAuthHeaders() });
+  } catch (_) { /* local state already updated; the next poll reconciles */ }
+});
+
+// Pick up newly shared materials without a reload while the student portal is open.
+setInterval(() => {
+  if (document.body.getAttribute('data-view') === 'student' && document.visibilityState === 'visible') {
+    refreshStudentNotices();
+    refreshStudentAnnouncementsBadge();
+  }
+}, STUDENT_NOTICE_POLL_MS);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && document.body.getAttribute('data-view') === 'student') {
+    refreshStudentNotices();
+  }
+});
+
+// ---------- Student Announcements tab (same announcements parents receive) ----------
+
+function updateStudentAnnouncementsBadge() {
+  const unread = studentAnnouncements.filter((a) => isUnread(a)).length;
+  setInboxDotBadge(document.getElementById('student-announcements-badge'), unread, 'unread announcements');
+}
+
+async function refreshStudentAnnouncementsBadge() {
+  try {
+    const res = await fetch(`${API_URL}/student/announcements`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) return;
+    studentAnnouncements = Array.isArray(data.announcements) ? data.announcements : [];
+    updateStudentAnnouncementsBadge();
+    if (studentView === 'announcements') paintStudentAnnouncementList();
+  } catch (_) { /* the dot is a hint; ignore transient errors */ }
+}
+
+function studentAnnouncementTarget(item) {
+  if (item.scope === 'class_specific' && item.target_grade) {
+    return `Grade ${item.target_grade}${item.target_section ? `-${item.target_section}` : ''}`;
+  }
+  if (item.scope === 'grade_wide' && item.target_grade) return `Grade ${item.target_grade}`;
+  return 'School-wide';
+}
+
+function studentAnnouncementFromTeacher(item) {
+  return String(item.sender_role || 'admin') === 'teacher';
+}
+
+function paintStudentAnnouncementList() {
+  const listEl = document.getElementById('student-ann-list');
+  const markAllEl = document.getElementById('student-ann-markall');
+  if (!listEl) return;
+  const q = studentAnnSearch;
+  let items = [...studentAnnouncements];
+  if (studentAnnFilter === 'admin') items = items.filter((a) => !studentAnnouncementFromTeacher(a));
+  if (studentAnnFilter === 'teacher') items = items.filter((a) => studentAnnouncementFromTeacher(a));
+  items = items
+    .filter((a) => matchesInboxSearch(a, q))
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  listEl.innerHTML = items.length
+    ? items.map((a) => {
+      const fromTeacher = studentAnnouncementFromTeacher(a);
+      const unread = isUnread(a);
+      return renderMailAnnouncementRow(a, {
+        expanded: Number(studentExpandedAnnId) === Number(a.id),
+        onToggle: `toggleStudentAnnouncement(${a.id})`,
+        badgeLabel: fromTeacher ? 'Class notice' : '',
+        showTypeBadge: fromTeacher,
+        badgeColor: 'var(--orange)',
+        metaLine: `From: ${escapeHtml(a.sender_name || (fromTeacher ? 'Teacher' : 'Admin'))} | ${escapeHtml(studentAnnouncementTarget(a))}`,
+        actionsHtml: `<button type="button" class="chip-ghost announcement-read-btn ${unread ? 'primary' : ''}" onclick="toggleStudentAnnouncementRead(${a.id}, ${unread})">${unread ? 'Mark as Read' : 'Mark as Unread'}</button>`
+      });
+    }).join('')
+    : `<li class="empty-state"><p>${String(q || '').trim() ? 'No matches' : 'No announcements yet'}</p></li>`;
+
+  const unreadShown = items.filter((a) => isUnread(a)).length;
+  if (markAllEl) {
+    markAllEl.innerHTML = unreadShown > 0 && !String(q || '').trim()
+      ? `<div style="margin-bottom:10px;"><button type="button" class="chip-ghost primary" onclick="markAllStudentAnnouncementsRead()">Mark All as Read (${unreadShown})</button></div>`
+      : '';
+  }
+  document.querySelectorAll('#student-content [data-student-ann-filter]').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-student-ann-filter') === studentAnnFilter);
+  });
+  updateStudentAnnouncementsBadge();
+}
+
+async function loadStudentAnnouncements() {
+  const content = document.getElementById('student-content');
+  if (!content) return;
+  studentView = 'announcements';
+  renderStudentNav();
+  const heading = `<h2 style="font-size:20px;color:var(--maroon-deep);margin:0 0 4px;">Announcements</h2>
+    <p class="page-subheading" style="margin:0 0 14px;">Announcements from your school and teachers, the same ones your parents receive.</p>`;
+  content.innerHTML = `${heading}<p class="page-subheading">Loading…</p>`;
+  try {
+    const res = await fetch(`${API_URL}/student/announcements`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load announcements');
+    if (studentView !== 'announcements') return;
+    studentAnnouncements = Array.isArray(data.announcements) ? data.announcements : [];
+    content.innerHTML = `${heading}
+      <div class="chart-card">
+        <div class="inbox-filters">
+          <button type="button" data-student-ann-filter="all">All</button>
+          <button type="button" data-student-ann-filter="admin">Admin</button>
+          <button type="button" data-student-ann-filter="teacher">Teacher</button>
+        </div>
+        <div class="inbox-search-bar">
+          <input type="search" id="student-ann-search" class="inbox-search-input" placeholder="Search announcements…" autocomplete="off" />
+          <button type="button" class="inbox-search-clear" id="student-ann-search-clear" title="Clear search" hidden>×</button>
+        </div>
+        <div id="student-ann-markall"></div>
+        <ul id="student-ann-list" class="inbox-list" style="list-style:none;padding:0;margin:0;"></ul>
+      </div>`;
+    wireInboxSearch({
+      inputId: 'student-ann-search',
+      clearId: 'student-ann-search-clear',
+      getValue: () => studentAnnSearch,
+      setValue: (v) => { studentAnnSearch = v; },
+      onChange: () => paintStudentAnnouncementList()
+    });
+    paintStudentAnnouncementList();
+  } catch (err) {
+    content.innerHTML = `${heading}<p class="page-subheading">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function setStudentAnnouncementRead(id, read) {
+  const res = await fetch(`${API_URL}/student/announcements/${id}/read`, {
+    method: read ? 'POST' : 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not update this announcement');
+  }
+  const ann = studentAnnouncements.find((a) => Number(a.id) === Number(id));
+  if (ann) ann.is_read = read ? 1 : 0;
+}
+
+window.toggleStudentAnnouncement = async function (id) {
+  const opening = Number(studentExpandedAnnId) !== Number(id);
+  studentExpandedAnnId = opening ? id : null;
+  if (opening) {
+    const ann = studentAnnouncements.find((a) => Number(a.id) === Number(id));
+    if (ann && isUnread(ann)) {
+      try { await setStudentAnnouncementRead(id, true); } catch (_) { /* ignore */ }
+    }
+  }
+  paintStudentAnnouncementList();
+};
+
+window.toggleStudentAnnouncementRead = async function (id, markRead) {
+  try {
+    await setStudentAnnouncementRead(id, !!markRead);
+    paintStudentAnnouncementList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.markAllStudentAnnouncementsRead = async function () {
+  try {
+    const res = await fetch(`${API_URL}/student/announcements/mark-all-read`, {
+      method: 'POST',
+      headers: getAuthHeaders()
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not mark announcements as read');
+    }
+    studentAnnouncements.forEach((a) => { a.is_read = 1; });
+    paintStudentAnnouncementList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+document.getElementById('student-announcements-tab')?.addEventListener('click', () => {
+  studentExpandedAnnId = null;
+  loadStudentAnnouncements();
+  const frame = document.querySelector('.dash-frame[data-portal="student"]');
+  if (frame && window.innerWidth <= 900) closeMobileNav(frame);
+});
+
 async function loadStudentPortal() {
   const nameEl = document.getElementById('student-portal-name');
   const classEl = document.getElementById('student-portal-class');
@@ -476,6 +769,13 @@ async function loadStudentPortal() {
     studentSubjects = Array.isArray(data.subjects) ? data.subjects : [];
     if (!studentSubjects.some((row) => Number(row.id) === Number(studentSubjectId))) {
       studentSubjectId = null;
+    }
+    refreshStudentNotices();
+    refreshStudentAnnouncementsBadge();
+    if (studentView === 'announcements') {
+      renderStudentNav();
+      await loadStudentAnnouncements();
+      return;
     }
     if (!studentSubjects.length) {
       renderStudentNav();
@@ -499,6 +799,13 @@ document.getElementById('student-subject-nav')?.addEventListener('click', (e) =>
 });
 
 document.getElementById('student-content')?.addEventListener('click', (e) => {
+  const annFilterBtn = e.target.closest('[data-student-ann-filter]');
+  if (annFilterBtn) {
+    studentAnnFilter = annFilterBtn.getAttribute('data-student-ann-filter') || 'all';
+    studentExpandedAnnId = null;
+    paintStudentAnnouncementList();
+    return;
+  }
   const btn = e.target.closest('[data-student-section]');
   if (!btn) return;
   studentSection = btn.getAttribute('data-student-section') || 'classworks';
@@ -4350,8 +4657,8 @@ function paintAdminAttendanceChart(attendance) {
 }
 
 function dashboardAnnouncementAudience(item) {
-  const teachersOnly = String(item.audience || 'everyone') === 'teachers';
-  const who = teachersOnly ? 'Teachers' : 'Parents & teachers';
+  const audienceKey = String(item.audience || 'everyone');
+  const who = { teachers: 'Teachers', parents: 'Parents', students: 'Students' }[audienceKey] || 'Everyone';
   if (item.scope === 'grade_wide' && item.target_grade) return `Grade ${item.target_grade} · ${who}`;
   if (item.scope === 'class_specific' && item.target_grade) {
     const section = item.target_section ? `-${item.target_section}` : '';
@@ -4701,7 +5008,8 @@ function announcementAudienceLabel(item) {
   const audience = String(item.audience || 'everyone');
   if (audience === 'teachers') return 'Teachers only';
   if (audience === 'parents') return 'Parents only';
-  return 'Parents & teachers';
+  if (audience === 'students') return 'Students only';
+  return 'Everyone';
 }
 
 function inboxDeleteAction(itemType, itemId) {
@@ -5493,8 +5801,8 @@ function showToast(message, type = 'success') {
   if (!container) return;
 
   const toast = document.createElement('div');
-  const bgColor = type === 'success' ? '#1b5e20' : '#b71c1c';
-  const icon = type === 'success' ? '✓' : '✕';
+  const bgColor = type === 'success' ? '#1b5e20' : (type === 'warn' ? '#d32f2f' : '#b71c1c');
+  const icon = type === 'success' ? '✓' : (type === 'warn' ? '' : '✕');
 
   toast.style.cssText = `
     background: ${bgColor};
@@ -5514,7 +5822,8 @@ function showToast(message, type = 'success') {
     transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
   `;
 
-  toast.innerHTML = `<span style="font-size:1.1rem;line-height:1;">${icon}</span><span>${message}</span>`;
+  const iconHtml = icon ? `<span style="font-size:1.1rem;line-height:1;">${icon}</span>` : '';
+  toast.innerHTML = `${iconHtml}<span>${message}</span>`;
   container.appendChild(toast);
 
   // Slide in
@@ -5523,12 +5832,12 @@ function showToast(message, type = 'success') {
     toast.style.opacity = '1';
   });
 
-  // Auto-dismiss after 3 seconds
+  // Auto-dismiss after 3 seconds (warnings stay a little longer)
   setTimeout(() => {
     toast.style.transform = 'translateX(120%)';
     toast.style.opacity = '0';
     setTimeout(() => toast.remove(), 350);
-  }, 3000);
+  }, type === 'warn' ? 6000 : 3000);
 }
 
 function unreadAnnouncementIds(list) {
@@ -6025,6 +6334,8 @@ document.getElementById('open-upload-material-modal')?.addEventListener('click',
   if (modal) {
     modal.hidden = false;
     modal.removeAttribute('hidden');
+    const card = modal.querySelector('.modal-card');
+    if (card) card.scrollTop = 0;
   }
 });
 
@@ -7812,7 +8123,15 @@ window.markAttendance = async function(studentId, status, opts = {}) {
     const activePanel = document.querySelector('[data-teacher-panel].active')?.dataset.teacherPanel;
     if (activePanel === 'attendance-sheet') loadAttendanceSheet();
 
-    if (!silent) showToast(`Saved: ${status}${subjectMode ? '' : ` (${payload.session})`}`);
+    const opened = Array.isArray(data.links_auto_enabled) ? data.links_auto_enabled.filter(Boolean) : [];
+    if (opened.length) {
+      const label = opened.length === 1
+        ? `"${opened[0]}" is now open for students.`
+        : `${opened.length} shared links are now open for students.`;
+      showToast(label);
+    } else if (!silent) {
+      showToast(`Saved: ${status}${subjectMode ? '' : ` (${payload.session})`}`);
+    }
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -7964,7 +8283,12 @@ document.getElementById('teacher-announcement-form')?.addEventListener('submit',
     const res = await fetch(`${API_URL}/teacher/announcements`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ title, body, grade, section })
+      body: JSON.stringify({
+        title,
+        body,
+        grade,
+        section
+      })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || data.details || 'Failed to send notice');
@@ -7976,7 +8300,7 @@ document.getElementById('teacher-announcement-form')?.addEventListener('submit',
       modal.hidden = true;
       modal.setAttribute('hidden', '');
     }
-    showToast(data.message || 'Class notice sent to parents.');
+    showToast(data.message || 'Class notice sent.');
   } catch (err) {
     if (msgEl) { msgEl.textContent = err.message; msgEl.style.color = '#b71c1c'; }
     else showToast(err.message, 'error');
@@ -8964,22 +9288,6 @@ window.openProgressEditor = async function(id, mode = 'edit') {
       else printSheetBtn.setAttribute('hidden', '');
     }
 
-    const linkInput = document.getElementById('progress-editor-quiz-link');
-    const linkOpen = document.getElementById('progress-quiz-link-open');
-    if (linkInput) {
-      linkInput.value = a.quiz_link || '';
-      linkInput.readOnly = effectiveMode !== 'link';
-    }
-    if (linkOpen) {
-      if (a.quiz_link) {
-        linkOpen.href = a.quiz_link;
-        linkOpen.hidden = false;
-      } else {
-        linkOpen.removeAttribute('href');
-        linkOpen.hidden = true;
-      }
-    }
-
     const qWrap = document.getElementById('progress-attached-questions');
     const qList = document.getElementById('progress-questions-list');
     const qCount = document.getElementById('progress-questions-count');
@@ -9132,6 +9440,66 @@ function progressRubricHasOverMax(scope = document.getElementById('progress-scor
   });
 }
 
+function quizLeaveBadgeHtml(count, lastAt) {
+  const n = Number(count) || 0;
+  if (!n) return '';
+  const title = `Left the quiz page ${n} time${n === 1 ? '' : 's'}${lastAt ? ` (last: ${new Date(lastAt).toLocaleString()})` : ''}`;
+  return `<span class="quiz-leave-flag" title="${escapeHtml(title)}">Left tab ${n}&times;</span>`;
+}
+
+// ---- Live alert: while a shared quiz/exam is open in Records, poll for students leaving the page ----
+const QUIZ_LEAVE_POLL_MS = 8000;
+let quizLeavePollBusy = false;
+
+function updateQuizLeaveBadgeInTable(studentId, count, lastAt) {
+  const row = document.querySelector(`#progress-scores-table tbody tr[data-student-id="${Number(studentId)}"]`);
+  const wrap = row && row.querySelector('.student-name-with-flag');
+  if (!wrap) return;
+  const html = quizLeaveBadgeHtml(count, lastAt);
+  const existing = wrap.querySelector('.quiz-leave-flag');
+  if (existing) existing.remove();
+  if (html) wrap.insertAdjacentHTML('beforeend', html);
+}
+
+async function pollQuizLeaves() {
+  if (quizLeavePollBusy || document.visibilityState === 'hidden') return;
+  const editor = document.getElementById('progress-editor');
+  const a = window._progressEditorAssessment;
+  if (!editor || editor.hidden || !a) return;
+  if (String(editor.dataset.assessmentId) !== String(a.id)) return;
+  const kind = String(a.type || '').toLowerCase();
+  if (Number(a.share_enabled) !== 1 || (kind !== 'quiz' && kind !== 'exam')) return;
+
+  quizLeavePollBusy = true;
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${a.id}/focus-leaves`, { headers: getAuthHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    // The teacher may have switched assessments while the request was in flight.
+    if (String(window._progressEditorAssessment?.id) !== String(a.id)) return;
+    const students = window._progressEditorStudents || [];
+    const leaves = Array.isArray(data.leaves) ? data.leaves : [];
+    leaves.forEach((l) => {
+      const st = students.find((s) => Number(s.id) === Number(l.student_id));
+      if (!st) return;
+      const before = Number(st.focus_leaves) || 0;
+      const now = Number(l.count) || 0;
+      if (now <= before) return;
+      st.focus_leaves = now;
+      st.focus_last_at = l.last_at;
+      updateQuizLeaveBadgeInTable(st.id, now, l.last_at);
+      const name = `${st.first_name || ''} ${st.last_name || ''}`.trim() || 'A student';
+      showToast(`${escapeHtml(name)} left the ${kind} page (${now}×)`, 'warn');
+    });
+  } catch (_) {
+    /* transient network error: try again on the next tick */
+  } finally {
+    quizLeavePollBusy = false;
+  }
+}
+
+setInterval(pollQuizLeaves, QUIZ_LEAVE_POLL_MS);
+
 function renderProgressScoresTable(mode, assessment, students) {
   const theadRow = document.getElementById('progress-scores-thead-row');
   const tbody = document.querySelector('#progress-scores-table tbody');
@@ -9179,7 +9547,8 @@ function renderProgressScoresTable(mode, assessment, students) {
   tbody.innerHTML = sortedStudents.map((s) => {
     const score = s.score === null || s.score === undefined ? '' : s.score;
     const pct = score === '' ? '—' : scorePercentDisplay(score, progressEditorMax);
-    const nameCell = `<td class="att-name-cell"><strong>${formatStudentNameStacked(s)}</strong></td>`;
+    const leaveBadge = quizLeaveBadgeHtml(s.focus_leaves, s.focus_last_at);
+    const nameCell = `<td class="att-name-cell"><div class="student-name-with-flag"><strong>${formatStudentNameStacked(s)}</strong>${leaveBadge}</div></td>`;
     const savedRubric = parseRubricScoresClient(s.rubric_scores) || {};
     const stEarly = String(s.attendance_status || '');
     const scoreLocked = !!(shareOn && !s.submitted && (stEarly === 'Absent' || stEarly === 'Excused'));
@@ -9622,7 +9991,6 @@ function setProgressEditorMode(mode, hasQuestions = true) {
   const saveBtn = document.getElementById('progress-scores-save');
   const editBtn = document.getElementById('progress-mode-edit');
   const linkBtn = document.getElementById('progress-mode-link');
-  const linkSave = document.getElementById('progress-quiz-link-save');
   const scoresSection = document.querySelector('#progress-editor .progress-scores-only');
   const allowLink = !!hasQuestions;
 
@@ -9632,8 +10000,6 @@ function setProgressEditorMode(mode, hasQuestions = true) {
     if (showSave) saveBtn.removeAttribute('hidden');
     else saveBtn.setAttribute('hidden', '');
   }
-  if (linkSave) linkSave.hidden = normalized !== 'link';
-
   if (editBtn) {
     editBtn.hidden = true;
     editBtn.setAttribute('hidden', '');
@@ -10071,34 +10437,6 @@ document.getElementById('progress-create-save')?.addEventListener('click', async
   }
 });
 
-document.getElementById('progress-quiz-link-save')?.addEventListener('click', async () => {
-  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
-  const quizLink = document.getElementById('progress-editor-quiz-link')?.value.trim() || '';
-  if (!id) return;
-  try {
-    const res = await fetch(`${API_URL}/teacher/assessments/${id}`, {
-      method: 'PUT',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ quiz_link: quizLink || null })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-    const linkOpen = document.getElementById('progress-quiz-link-open');
-    if (linkOpen) {
-      if (data.quiz_link) {
-        linkOpen.href = data.quiz_link;
-        linkOpen.hidden = false;
-      } else {
-        linkOpen.removeAttribute('href');
-        linkOpen.hidden = true;
-      }
-    }
-    showToast(data.quiz_link ? 'Online link saved.' : 'Online link cleared.');
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-});
-
 function sharedQuizAbsoluteUrl(token, type) {
   const kind = String(type || 'quiz').toLowerCase();
   const segment = kind === 'activity' || kind === 'exam' ? kind : 'quiz';
@@ -10174,44 +10512,108 @@ function formatSharePreviewLocal(localValue) {
   });
 }
 
+function progressShareOpensLocalDraft() {
+  const raw = String(document.getElementById('progress-share-opens-at')?.value || '').trim();
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return raw;
+}
+
 function estimateLiveClosesLocal() {
   const mins = Number(document.getElementById('progress-share-live-duration')?.value);
   if (!Number.isFinite(mins) || mins < 5) return '';
-  return toDatetimeLocalValue(new Date(Date.now() + mins * 60 * 1000));
+  const opensLocal = progressShareOpensLocalDraft();
+  const base = opensLocal ? new Date(opensLocal) : new Date();
+  if (Number.isNaN(base.getTime())) return '';
+  return toDatetimeLocalValue(new Date(base.getTime() + mins * 60 * 1000));
 }
 
 function syncProgressShareWindowModeUi() {
   const livePreview = document.getElementById('progress-share-live-preview');
   if (!livePreview) return;
-  const draft = estimateLiveClosesLocal();
-  const saved = window._progressShareClosesLocal || '';
+  const draftCloses = estimateLiveClosesLocal();
+  const draftOpens = progressShareOpensLocalDraft();
+  const savedCloses = window._progressShareClosesLocal || '';
+  const savedOpens = window._progressShareOpensLocal || '';
   const active = !!window._progressShareActive;
-  const savedDate = saved ? new Date(saved) : null;
-  const savedOk = savedDate && !Number.isNaN(savedDate.getTime());
-  const draftDate = draft ? new Date(draft) : null;
-  const draftDiffers = !!(savedOk && draftDate && !Number.isNaN(draftDate.getTime())
-    && Math.abs(draftDate.getTime() - savedDate.getTime()) > 60 * 1000);
+  const savedClosesDate = savedCloses ? new Date(savedCloses) : null;
+  const savedClosesOk = savedClosesDate && !Number.isNaN(savedClosesDate.getTime());
+  const draftClosesDate = draftCloses ? new Date(draftCloses) : null;
+  const draftClosesDiffers = !!(savedClosesOk && draftClosesDate && !Number.isNaN(draftClosesDate.getTime())
+    && Math.abs(draftClosesDate.getTime() - savedClosesDate.getTime()) > 60 * 1000);
+  const savedOpensDate = savedOpens ? new Date(savedOpens) : null;
+  const savedOpensOk = savedOpensDate && !Number.isNaN(savedOpensDate.getTime());
+  const stillScheduled = !!(savedOpensOk && savedOpensDate.getTime() > Date.now());
 
-  if (active && savedOk) {
-    const pretty = formatSharePreviewLocal(saved);
-    const closed = savedDate.getTime() < Date.now();
-    const verb = closed ? 'Closed at' : 'Closes at';
-    if (draftDiffers && draft) {
-      livePreview.textContent = `${verb} ${pretty}. Save Deadline to change to ${formatSharePreviewLocal(draft)}.`;
-    } else {
-      livePreview.textContent = `${verb} ${pretty}.`;
+  if (active && savedClosesOk) {
+    const bits = [];
+    if (stillScheduled) {
+      bits.push(`Hidden until ${formatSharePreviewLocal(savedOpens)}`);
     }
+    const closed = savedClosesDate.getTime() < Date.now();
+    bits.push(`${closed ? 'Closed at' : 'Closes at'} ${formatSharePreviewLocal(savedCloses)}`);
+    if (draftClosesDiffers && draftCloses) {
+      bits.push(`Save Changes to change to ${formatSharePreviewLocal(draftCloses)}`);
+    }
+    livePreview.textContent = `${bits.join('. ')}.`;
     return;
   }
 
-  livePreview.textContent = draft
-    ? `Closes at ${formatSharePreviewLocal(draft)}.`
+  if (draftOpens && draftCloses) {
+    livePreview.textContent = `Opens ${formatSharePreviewLocal(draftOpens)}. Closes at ${formatSharePreviewLocal(draftCloses)}.`;
+    return;
+  }
+  livePreview.textContent = draftCloses
+    ? `Closes at ${formatSharePreviewLocal(draftCloses)}.`
     : 'Enter minutes open to see when the link closes.';
 }
 
-function fillProgressShareWindowDefaults(_assessment) {
+// Only quizzes and exams can be timed; activities never show the field.
+function progressShareIsTimed(assessment) {
+  const kind = String(assessment?.type || '').toLowerCase();
+  return kind === 'quiz' || kind === 'exam';
+}
+
+function fillProgressShareWindowDefaults(assessment) {
   const liveDuration = document.getElementById('progress-share-live-duration');
-  if (liveDuration && !liveDuration.value) liveDuration.value = '60';
+  if (liveDuration) {
+    const savedMins = Number(assessment?.quiz_live_duration_minutes);
+    if (Number.isFinite(savedMins) && savedMins > 0) {
+      liveDuration.value = String(savedMins);
+    } else if (!liveDuration.value) {
+      liveDuration.value = '60';
+    }
+  }
+  const opensAt = document.getElementById('progress-share-opens-at');
+  const opensLocal = assessment?.quiz_opens_at
+    ? toDatetimeLocalValue(assessment.quiz_opens_at)
+    : '';
+  window._progressShareOpensLocal = opensLocal;
+  if (opensAt) {
+    opensAt.value = opensLocal;
+    const active = Number(assessment?.share_enabled) === 1 && assessment?.share_token;
+    const opensDate = opensLocal ? new Date(opensLocal) : null;
+    const stillScheduled = !!(opensDate && !Number.isNaN(opensDate.getTime()) && opensDate.getTime() > Date.now());
+    // After students can already see it, the start time is locked so it never disappears.
+    opensAt.readOnly = !!(active && opensLocal && !stillScheduled);
+    opensAt.disabled = opensAt.readOnly;
+  }
+  const timed = progressShareIsTimed(assessment);
+  const timerField = document.getElementById('progress-share-timer-field');
+  const timerHint = document.getElementById('progress-share-timer-hint');
+  const timeLimit = document.getElementById('progress-share-time-limit');
+  [timerField, timerHint].forEach((el) => {
+    if (!el) return;
+    el.hidden = !timed;
+    if (timed) el.removeAttribute('hidden');
+    else el.setAttribute('hidden', '');
+  });
+  if (timeLimit) {
+    timeLimit.value = timed && Number(assessment?.time_limit_minutes) > 0
+      ? String(Number(assessment.time_limit_minutes))
+      : '';
+  }
   syncProgressShareWindowModeUi();
 }
 
@@ -10220,7 +10622,38 @@ function collectProgressShareWindowBody() {
   if (!Number.isFinite(mins) || mins < 5) {
     throw new Error('Link must stay open at least 5 minutes.');
   }
-  return { live_duration_minutes: mins };
+  const body = { live_duration_minutes: mins };
+  const opensAt = document.getElementById('progress-share-opens-at');
+  if (opensAt && !opensAt.disabled) {
+    const raw = String(opensAt.value || '').trim();
+    if (raw) {
+      const opensDate = new Date(raw);
+      if (Number.isNaN(opensDate.getTime())) {
+        throw new Error('The date and time to show this to students is not valid.');
+      }
+      if (opensDate.getTime() <= Date.now()) {
+        throw new Error('Choose a future date and time, or leave it blank to show it right away.');
+      }
+      body.live_opens_at = raw;
+    } else {
+      body.live_opens_at = null;
+    }
+  }
+  const timerField = document.getElementById('progress-share-timer-field');
+  const timeLimit = document.getElementById('progress-share-time-limit');
+  if (timeLimit && timerField && !timerField.hidden) {
+    const raw = String(timeLimit.value || '').trim();
+    if (!raw) {
+      body.time_limit_minutes = null;
+    } else {
+      const limit = Number(raw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 600) {
+        throw new Error('Time limit must be a whole number of minutes from 1 to 600.');
+      }
+      body.time_limit_minutes = limit;
+    }
+  }
+  return body;
 }
 
 function isMakeupDeadlineStillOpen(assessment) {
@@ -10243,11 +10676,20 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   const noteEl = document.getElementById('progress-share-attendance-note');
   const windows = document.getElementById('progress-share-windows');
   const active = assessment && Number(assessment.share_enabled) === 1 && assessment.share_token;
+  const awaiting = !!(
+    assessment
+    && assessment.share_token
+    && Number(assessment.share_enabled) !== 1
+    && Number(assessment.share_awaiting_attendance) === 1
+  );
   const hasQuestions = Number(questionCount) > 0;
   const takeHome = String(assessment?.activity_mode || '') === 'take_home';
   window._progressShareActive = !!active;
   window._progressShareClosesLocal = assessment?.quiz_closes_at
     ? toDatetimeLocalValue(assessment.quiz_closes_at)
+    : '';
+  window._progressShareOpensLocal = assessment?.quiz_opens_at
+    ? toDatetimeLocalValue(assessment.quiz_opens_at)
     : '';
   if (windows) {
     windows.hidden = takeHome;
@@ -10256,18 +10698,23 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
   }
   fillProgressShareWindowDefaults(assessment);
   if (urlInput) {
-    urlInput.value = active ? sharedQuizAbsoluteUrl(assessment.share_token, assessment.type) : '';
+    urlInput.value = (active || awaiting)
+      ? sharedQuizAbsoluteUrl(assessment.share_token, assessment.type)
+      : '';
+    if (awaiting) {
+      urlInput.placeholder = 'Link is ready and will open when attendance is complete';
+    }
   }
   if (assignBtn) {
-    assignBtn.hidden = !!active;
-    assignBtn.disabled = !active && !hasQuestions;
-    assignBtn.title = !hasQuestions && !active
+    assignBtn.hidden = !!(active || awaiting);
+    assignBtn.disabled = !active && !awaiting && !hasQuestions;
+    assignBtn.title = !hasQuestions && !active && !awaiting
       ? 'Create this record from Classwork with selected items first'
       : '';
   }
-  if (saveWindowsBtn) saveWindowsBtn.hidden = takeHome || !active;
-  if (copyBtn) copyBtn.hidden = !active;
-  if (revokeBtn) revokeBtn.hidden = !active;
+  if (saveWindowsBtn) saveWindowsBtn.hidden = takeHome || !(active || awaiting);
+  if (copyBtn) copyBtn.hidden = !(active || awaiting);
+  if (revokeBtn) revokeBtn.hidden = !(active || awaiting);
   if (openBtn) {
     if (active) {
       openBtn.href = sharedQuizAbsoluteUrl(assessment.share_token, assessment.type);
@@ -10300,8 +10747,17 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
       noteEl.setAttribute('hidden', '');
       noteEl.textContent = '';
     };
-    if (!hasQuestions && !active) {
+    if (!hasQuestions && !active && !awaiting) {
       showNote('No Classwork items attached. In Classwork, select items then Next: Create Quiz or Create Activity. Enable Link here after that. + New Record is for manual scores only.', '#b71c1c');
+    } else if (awaiting) {
+      const mins = Number(assessment?.quiz_live_duration_minutes);
+      const minsNote = Number.isFinite(mins) && mins > 0
+        ? ` It will stay open for ${mins} minutes once attendance is done.`
+        : '';
+      showNote(
+        `Armed: hidden from students until attendance for today is complete.${minsNote}`,
+        'var(--orange-dark)'
+      );
     } else if (active) {
       if (takeHome) {
         const when = assessment?.activity_target_at
@@ -10310,19 +10766,37 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
         if (when) showNote(`Deadline: ${when}.`, 'var(--orange-dark)');
         else hideNote();
       } else {
-        const attNote = formatAttendanceUsedLabel(assessment);
-        const bits = [attNote, windowNote].filter(Boolean);
-        if (bits.length) showNote(`${bits.join('. ')}.`, 'var(--text-muted)');
-        else hideNote();
+        const opensLocal = assessment?.quiz_opens_at
+          ? toDatetimeLocalValue(assessment.quiz_opens_at)
+          : '';
+        const opensDate = opensLocal ? new Date(opensLocal) : null;
+        const stillScheduled = !!(opensDate && !Number.isNaN(opensDate.getTime()) && opensDate.getTime() > Date.now());
+        if (stillScheduled) {
+          showNote(
+            `Scheduled: hidden from students until ${formatSharePreviewLocal(opensLocal)}. Attendance will be checked for that day.`,
+            'var(--orange-dark)'
+          );
+        } else {
+          const attNote = formatAttendanceUsedLabel(assessment);
+          const bits = [attNote, windowNote].filter(Boolean);
+          if (bits.length) showNote(`${bits.join('. ')}.`, 'var(--text-muted)');
+          else hideNote();
+        }
       }
     } else if (attendanceMeta) {
       const gate = gateLabel(attendanceMeta);
+      const draftOpens = progressShareOpensLocalDraft();
       if (attendanceMeta.complete && takeHome) {
         const when = assessment?.activity_target_at
           ? formatSharePreviewLocal(toDatetimeLocalValue(assessment.activity_target_at))
           : '';
         showNote(
           when ? `Deadline: ${when}.` : 'Set a target date before enabling the link.',
+          'var(--orange-dark)'
+        );
+      } else if (draftOpens) {
+        showNote(
+          `Will stay hidden until ${formatSharePreviewLocal(draftOpens)}. Attendance will be checked for that day (today's roster is not required yet).`,
           'var(--orange-dark)'
         );
       } else if (attendanceMeta.complete) {
@@ -10336,13 +10810,13 @@ function updateProgressShareUi(assessment, attendanceMeta, questionCount = 0) {
         const n = attendanceMeta.unmarked_count ?? (attendanceMeta.unmarked?.length || 0);
         showNote(
           gate
-            ? `Mark every student for ${gate} in Dashboard before enabling (${n} unmarked). Switch AM/PM to match the class session.`
-            : `Mark attendance for every student in Dashboard before enabling the link (${n} unmarked).`,
-          '#b71c1c'
+            ? `Attendance not finished for ${gate} (${n} unmarked). You can still Enable Link now — it will open automatically when everyone is marked.`
+            : `Attendance not finished (${n} unmarked). You can still Enable Link now — it will open automatically when everyone is marked.`,
+          'var(--orange-dark)'
         );
       }
     } else {
-      showNote('Mark complete attendance in Dashboard before enabling a shared link.', 'var(--text-muted)');
+      showNote('Set Minutes Open, then Enable Link. If attendance is not finished yet, the link will open automatically when it is.', 'var(--text-muted)');
     }
   }
 }
@@ -10534,7 +11008,7 @@ window.assignSharedQuizLink = async function(id) {
     const sess = data.attendance_session ? ` · ${data.attendance_session}` : '';
     const day = data.attendance_date ? ` (${data.attendance_date}${sess})` : '';
     showToast((data.message || 'Shared link ready.') + day);
-    if (data.share_token) {
+    if (data.share_token && data.share_enabled) {
       await copySharedQuizLink(data.share_token, data.type);
     }
     const editor = document.getElementById('progress-editor');
@@ -10596,10 +11070,25 @@ document.getElementById('progress-share-save-windows')?.addEventListener('click'
   if (id) saveSharedQuizWindows(id);
 });
 
-['progress-share-live-duration']
+function syncProgressShareScheduleNoteDraft() {
+  const noteEl = document.getElementById('progress-share-attendance-note');
+  if (!noteEl || window._progressShareActive) return;
+  const draftOpens = progressShareOpensLocalDraft();
+  if (!draftOpens) return;
+  noteEl.hidden = false;
+  noteEl.removeAttribute('hidden');
+  noteEl.style.color = 'var(--orange-dark)';
+  noteEl.textContent = `Will stay hidden until ${formatSharePreviewLocal(draftOpens)}. Attendance will be checked for that day (today's roster is not required yet).`;
+}
+
+['progress-share-live-duration', 'progress-share-opens-at']
   .forEach((id) => {
-    document.getElementById(id)?.addEventListener('input', syncProgressShareWindowModeUi);
-    document.getElementById(id)?.addEventListener('change', syncProgressShareWindowModeUi);
+    const bump = () => {
+      syncProgressShareWindowModeUi();
+      if (id === 'progress-share-opens-at') syncProgressShareScheduleNoteDraft();
+    };
+    document.getElementById(id)?.addEventListener('input', bump);
+    document.getElementById(id)?.addEventListener('change', bump);
   });
 
 document.getElementById('progress-makeup-hours')?.addEventListener('input', syncMakeupModalPreview);
@@ -10906,8 +11395,27 @@ function renderMaterialsSubjectCards() {
   });
 }
 
+async function setLessonShared(planId, shared) {
+  try {
+    const res = await fetch(`${API_URL}/teacher/lesson-plans/${planId}/share`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ shared: !!shared })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not update sharing');
+    const plan = (materialsPlansCache || []).find((p) => Number(p.id) === Number(planId));
+    if (plan) plan.shared_with_students = shared ? 1 : 0;
+    renderMaterialsHub();
+    showToast(data.message || (shared ? 'Shared with students' : 'No longer shared with students'));
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 function materialCardHtml(p) {
   const filePath = p.file_path ? escapeHtml(String(p.file_path)) : '';
+  const shared = Number(p.shared_with_students) === 1;
   return `
       <article class="lesson-plan-card">
         <div class="progress-card-top">
@@ -10918,6 +11426,7 @@ function materialCardHtml(p) {
             <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
             <div class="row-menu" hidden>
               ${filePath ? `<button type="button" class="row-menu-item" data-action="open-file" data-file-path="${filePath}">Open File</button>` : ''}
+              ${filePath ? `<button type="button" class="row-menu-item" data-action="toggle-share" data-plan-id="${p.id}" data-shared="${shared ? '1' : '0'}">${shared ? 'Stop sharing with students' : 'Share with students'}</button>` : ''}
               <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-material" data-plan-id="${p.id}">Delete</button>
             </div>
           </div>
@@ -11063,7 +11572,8 @@ async function loadMaterialsHub() {
     if (action === 'generate-ai' && planId) generateAiForLesson(planId);
     else if (action === 'open-file' && btn.dataset.filePath) {
       window.open(btn.dataset.filePath, '_blank', 'noopener');
-    }     else if (action === 'delete-material' && planId) deleteLessonPlan(planId);
+    } else if (action === 'toggle-share' && planId) setLessonShared(planId, btn.dataset.shared !== '1');
+    else if (action === 'delete-material' && planId) deleteLessonPlan(planId);
     else if (action === 'save-draft-classwork' && recId) saveAiDraftToBank(recId);
     else if (action === 'regenerate-draft' && recId) regenerateAiRecommendation(recId);
     else if (action === 'delete-draft' && recId) deleteAiRecommendation(recId);
@@ -11290,20 +11800,65 @@ function openAiGenerateOptionsModal({ mode = 'generate', lessonPlanId = null, re
   }
 }
 
+// The server only reports three coarse steps, and the AI step is the long one. So the bar
+// eases toward a target that creeps up inside the current step and never reaches 100%
+// until the job is actually done.
+const AI_PROGRESS_RANGES = { 1: [0, 15, 4], 2: [15, 90, 30], 3: [90, 99, 3] }; // [from, to, seconds to ~63%]
+let aiProgressState = { step: 1, stepStart: 0, shown: 0, done: false };
+let aiProgressTimer = null;
+
+function aiProgressTarget() {
+  if (aiProgressState.done) return 100;
+  const [from, to, tau] = AI_PROGRESS_RANGES[aiProgressState.step] || AI_PROGRESS_RANGES[3];
+  const elapsed = (Date.now() - aiProgressState.stepStart) / 1000;
+  return from + (to - from) * (1 - Math.exp(-elapsed / tau));
+}
+
+function renderAiGeneratingPercent() {
+  const fill = document.getElementById('ai-generating-fill');
+  const pctEl = document.getElementById('ai-generating-percent');
+  const track = document.getElementById('ai-generating-track');
+  const pct = Math.max(0, Math.min(100, Math.round(aiProgressState.shown)));
+  if (fill) fill.style.width = `${pct}%`;
+  if (pctEl) pctEl.textContent = `${pct}%`;
+  if (track) track.setAttribute('aria-valuenow', String(pct));
+}
+
+function tickAiGeneratingProgress() {
+  const target = aiProgressTarget();
+  if (target > aiProgressState.shown) {
+    aiProgressState.shown += (target - aiProgressState.shown) * (aiProgressState.done ? 0.5 : 0.12);
+    if (target - aiProgressState.shown < 0.05) aiProgressState.shown = target;
+  }
+  renderAiGeneratingPercent();
+}
+
 function paintAiGeneratingProgress(progress) {
   const msgEl = document.getElementById('ai-generating-message');
-  const fill = document.getElementById('ai-generating-fill');
-  const step = Number(progress?.step) || 1;
-  const total = Number(progress?.total) || 3;
+  const step = Math.min(3, Math.max(1, Number(progress?.step) || 1));
   const label = progress?.label || 'Reading the lesson';
   if (msgEl) msgEl.textContent = label;
-  if (fill) fill.style.width = `${Math.min(100, Math.round((step / total) * 100))}%`;
+  if (step !== aiProgressState.step) {
+    aiProgressState.step = step;
+    aiProgressState.stepStart = Date.now();
+  }
+  tickAiGeneratingProgress();
+}
+
+function finishAiGeneratingProgress() {
+  aiProgressState.done = true;
+  const msgEl = document.getElementById('ai-generating-message');
+  if (msgEl) msgEl.textContent = 'Done';
+  tickAiGeneratingProgress();
 }
 
 function showAiGeneratingModal(title = 'Generating AI Draft') {
   const modal = document.getElementById('ai-generating-modal');
   const titleEl = document.getElementById('ai-generating-title');
   if (titleEl) titleEl.textContent = title;
+  aiProgressState = { step: 1, stepStart: Date.now(), shown: 0, done: false };
+  if (aiProgressTimer) clearInterval(aiProgressTimer);
+  aiProgressTimer = setInterval(tickAiGeneratingProgress, 250);
   paintAiGeneratingProgress({ step: 1, total: 3, label: 'Reading the lesson' });
   if (modal) {
     modal.hidden = false;
@@ -11312,6 +11867,10 @@ function showAiGeneratingModal(title = 'Generating AI Draft') {
 }
 
 function hideAiGeneratingModal() {
+  if (aiProgressTimer) {
+    clearInterval(aiProgressTimer);
+    aiProgressTimer = null;
+  }
   const modal = document.getElementById('ai-generating-modal');
   if (modal) {
     modal.hidden = true;
@@ -11359,7 +11918,10 @@ async function pollAiJob(jobId) {
       throw new Error(data.error || 'Could not check generation status');
     }
     if (data.progress) paintAiGeneratingProgress(data.progress);
-    if (data.status === 'done') return data;
+    if (data.status === 'done') {
+      finishAiGeneratingProgress();
+      return data;
+    }
     if (data.status === 'error') throw new Error(data.error || 'Generation failed');
   }
   throw new Error('Generation is taking too long. Check the Gemini connection and try again.');
@@ -11670,6 +12232,82 @@ function getTeacherAssignedClassPairs() {
   return [...map.values()].sort((a, b) =>
     a.grade_level - b.grade_level || a.section.localeCompare(b.section)
   );
+}
+
+/** Sections the teacher can publish to for this grade (and subject, for Grades 4–6). */
+function getEligibleSectionsForCreate({ grade, subjectId } = {}) {
+  const g = Number(grade);
+  if (!g) return [];
+  const sid = subjectId != null && subjectId !== '' ? Number(subjectId) : null;
+  const needSubject = sid && isSubjectAttendanceGrade(g);
+  return (teacherAssignedClasses || [])
+    .filter((c) => {
+      if (Number(c.grade_level) !== g) return false;
+      if (!needSubject) return true;
+      return (c.subjects || []).some((s) => Number(s.id) === sid);
+    })
+    .map((c) => ({
+      grade_level: Number(c.grade_level),
+      section: String(c.section || '').trim()
+    }))
+    .filter((p) => p.section)
+    .sort((a, b) => a.section.localeCompare(b.section));
+}
+
+function renderSectionCheckList(containerId, { grade, subjectId, preferSection } = {}) {
+  const el = document.getElementById(containerId);
+  if (!el) return [];
+  const pairs = getEligibleSectionsForCreate({ grade, subjectId });
+  if (!pairs.length) {
+    el.innerHTML = '<p class="page-subheading" style="margin:0;">No assigned sections for this grade and subject.</p>';
+    return [];
+  }
+  const prefer = String(
+    preferSection
+      || (teacherCurrentClass && Number(teacherCurrentClass.grade) === Number(grade)
+        ? teacherCurrentClass.section
+        : '')
+      || ''
+  ).trim().toUpperCase();
+  const preferInList = prefer && pairs.some((p) => p.section.toUpperCase() === prefer);
+  el.innerHTML = pairs.map((p) => {
+    const checked = preferInList
+      ? (p.section.toUpperCase() === prefer ? ' checked' : '')
+      : (pairs.length === 1 ? ' checked' : '');
+    return `<label><input type="checkbox" value="${escapeHtml(p.section)}" data-grade="${p.grade_level}"${checked} /> Grade ${p.grade_level} – ${escapeHtml(p.section)}</label>`;
+  }).join('');
+  return pairs;
+}
+
+function collectCheckedSections(containerId) {
+  return [...document.querySelectorAll(`#${containerId} input[type="checkbox"]:checked`)]
+    .map((cb) => String(cb.value || '').trim())
+    .filter(Boolean);
+}
+
+function syncHiddenClassSelectFromSections(selectId, grade, sections) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const section = sections[0] || '';
+  if (!grade || !section) {
+    sel.innerHTML = '<option value="">-- Select your class --</option>';
+    sel.value = '';
+    return;
+  }
+  const value = `${grade}|${section}`;
+  sel.innerHTML = `<option value="${escapeHtml(value)}">Grade ${grade} – ${escapeHtml(section)}</option>`;
+  sel.value = value;
+}
+
+function preferCreatedRecordId(data) {
+  const records = Array.isArray(data?.records) ? data.records : [];
+  if (teacherCurrentClass?.section && records.length) {
+    const match = records.find((r) =>
+      String(r.section || '').toUpperCase() === String(teacherCurrentClass.section).toUpperCase()
+    );
+    if (match?.id) return match.id;
+  }
+  return data?.id || (Array.isArray(data?.ids) ? data.ids[0] : null);
 }
 
 function getTeacherAssignedGrades() {
@@ -13154,23 +13792,24 @@ async function openCreateProgressFromBank() {
   }
   const targetGrade = gradesInSelection[0];
 
-  const classSel = document.getElementById('qb-create-class');
-  const pairs = getTeacherAssignedClassPairs().filter((p) =>
-    targetGrade ? Number(p.grade_level) === Number(targetGrade) : true
+  const subjectId = selectedItems.find((i) => i.subject_id)?.subject_id || null;
+  const pairs = renderSectionCheckList('qb-create-section-checks', {
+    grade: targetGrade,
+    subjectId,
+    preferSection: teacherCurrentClass?.section
+  });
+  syncHiddenClassSelectFromSections(
+    'qb-create-class',
+    targetGrade,
+    collectCheckedSections('qb-create-section-checks')
   );
-  if (classSel) {
-    classSel.innerHTML = pairs.length
-      ? '<option value="">-- Select your class --</option>' +
-        pairs.map((p) =>
-          `<option value="${p.grade_level}|${escapeHtml(p.section)}">Grade ${p.grade_level} – ${escapeHtml(p.section)}</option>`
-        ).join('')
-      : '<option value="">No assigned class for this grade</option>';
-    if (teacherCurrentClass && pairs.some((p) =>
-      Number(p.grade_level) === Number(teacherCurrentClass.grade) &&
-      String(p.section).toUpperCase() === String(teacherCurrentClass.section).toUpperCase()
-    )) {
-      classSel.value = `${teacherCurrentClass.grade}|${teacherCurrentClass.section}`;
-    }
+  const hint = document.getElementById('qb-create-section-hint');
+  if (hint) {
+    hint.textContent = pairs.length > 1
+      ? 'Each checked section gets its own copy in Records. Shared links and scores stay separate.'
+      : (pairs.length === 1
+        ? 'This is the only assigned section for this grade and subject.'
+        : 'No assigned sections for this grade and subject.');
   }
 
   const countEl = document.getElementById('qb-create-count');
@@ -13649,6 +14288,16 @@ async function openExamWriteModal() {
   renderExamWriteList();
 }
 
+function refreshExamWriteSectionChecks() {
+  const { grade_level, section } = parseExamClassValue(document.getElementById('qb-exam-write-class')?.value);
+  const subjectId = document.getElementById('qb-exam-write-subject')?.value || null;
+  renderSectionCheckList('qb-exam-write-section-checks', {
+    grade: grade_level,
+    subjectId: subjectId ? Number(subjectId) : null,
+    preferSection: section
+  });
+}
+
 function syncExamWriteSubject() {
   const classVal = document.getElementById('qb-exam-write-class')?.value || '';
   const grade = Number(String(classVal).split('|')[0]);
@@ -13663,7 +14312,12 @@ function syncExamWriteSubject() {
     [...subjectSel.options].some((o) => o.value === String(teacherCurrentClass.subjectId))) {
     subjectSel.value = String(teacherCurrentClass.subjectId);
   }
+  refreshExamWriteSectionChecks();
 }
+
+document.getElementById('qb-exam-write-subject')?.addEventListener('change', () => {
+  refreshExamWriteSectionChecks();
+});
 
 function openExamQuestionForm() {
   const title = document.getElementById('qb-exam-write-title')?.value?.trim();
@@ -13693,13 +14347,18 @@ async function createTypedExam() {
   const classVal = document.getElementById('qb-exam-write-class')?.value || '';
   const subjectId = document.getElementById('qb-exam-write-subject')?.value;
   const quarter = document.getElementById('qb-exam-write-quarter')?.value;
-  const { grade_level, section } = parseExamClassValue(classVal);
+  const { grade_level } = parseExamClassValue(classVal);
+  let sections = collectCheckedSections('qb-exam-write-section-checks');
+  if (!sections.length) {
+    const fallback = parseExamClassValue(classVal).section;
+    if (fallback) sections = [fallback];
+  }
   if (!title) {
     showToast('Enter an exam title.', 'error');
     return;
   }
-  if (!grade_level || !section) {
-    showToast('Select a class.', 'error');
+  if (!grade_level || !sections.length) {
+    showToast('Select at least one section.', 'error');
     return;
   }
   if (!subjectId) {
@@ -13749,7 +14408,8 @@ async function createTypedExam() {
         title,
         type: 'exam',
         grade_level,
-        section,
+        section: sections[0],
+        sections,
         subject_id: Number(subjectId),
         quarter,
         question_ids: ids
@@ -13762,7 +14422,8 @@ async function createTypedExam() {
     hideOverlay('qb-exam-write-modal');
     showToast(examData.message || 'Exam created.');
     applyTeacherPanel('progress');
-    if (examData.id) setTimeout(() => openProgressEditor(examData.id, 'edit'), 200);
+    const openId = preferCreatedRecordId(examData);
+    if (openId) setTimeout(() => openProgressEditor(openId, 'edit'), 200);
   } catch (err) {
     showToast(err.message || 'Could not create the exam.', 'error');
     if (btn) btn.disabled = examWriteQuestions.length === 0;
@@ -14148,27 +14809,19 @@ async function openCreateExamModal() {
   examComposerItemsCache = [];
   setExamComposerSource('classwork');
 
-  const pairs = getTeacherAssignedClassPairs();
-  const classSel = document.getElementById('qb-exam-class');
-  if (classSel) {
-    classSel.innerHTML = pairs.length
-      ? '<option value="">-- Select your class --</option>' +
-        pairs.map((p) =>
-          `<option value="${p.grade_level}|${escapeHtml(p.section)}">Grade ${p.grade_level} – ${escapeHtml(p.section)}</option>`
-        ).join('')
-      : '<option value="">No assigned classes</option>';
-    if (teacherCurrentClass && pairs.some((p) =>
-      Number(p.grade_level) === Number(teacherCurrentClass.grade) &&
-      String(p.section).toUpperCase() === String(teacherCurrentClass.section).toUpperCase()
-    )) {
-      classSel.value = `${teacherCurrentClass.grade}|${teacherCurrentClass.section}`;
-    }
-  }
+  const defaultGrade = Number(teacherCurrentClass?.grade) || getTeacherAssignedGrades()[0] || null;
+  renderSectionCheckList('qb-exam-section-checks', {
+    grade: defaultGrade,
+    subjectId: null,
+    preferSection: teacherCurrentClass?.section
+  });
+  const checkedSections = collectCheckedSections('qb-exam-section-checks');
+  syncHiddenClassSelectFromSections('qb-exam-class', defaultGrade, checkedSections);
 
   const qtrSel = document.getElementById('qb-exam-quarter');
   const selectedQ = fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter || CURRENT_QUARTER);
 
-  const { grade_level } = parseExamClassValue(classSel?.value);
+  const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
   fillExamSubjectOptions(grade_level);
 
   const titleEl = document.getElementById('qb-exam-title');
@@ -14216,6 +14869,36 @@ document.getElementById('qb-exam-source-tabs')?.addEventListener('click', (e) =>
   setExamComposerSource(btn.dataset.examSource);
 });
 
+function refreshExamSectionChecksFromSubject() {
+  const subjectRaw = document.getElementById('qb-exam-subject')?.value;
+  const subjectId = subjectRaw ? Number(subjectRaw) : null;
+  let grade = Number(teacherCurrentClass?.grade) || getTeacherAssignedGrades()[0] || null;
+  const checked = [...document.querySelectorAll('#qb-exam-section-checks input[type="checkbox"]:checked')];
+  if (checked[0]?.dataset.grade) grade = Number(checked[0].dataset.grade);
+  else {
+    const hidden = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+    if (hidden.grade_level) grade = hidden.grade_level;
+  }
+  const prefer = checked[0]?.value || teacherCurrentClass?.section;
+  renderSectionCheckList('qb-exam-section-checks', { grade, subjectId, preferSection: prefer });
+  syncHiddenClassSelectFromSections('qb-exam-class', grade, collectCheckedSections('qb-exam-section-checks'));
+}
+
+document.getElementById('qb-exam-section-checks')?.addEventListener('change', () => {
+  const rows = [...document.querySelectorAll('#qb-exam-section-checks input[type="checkbox"]:checked')];
+  const grade = rows[0] ? Number(rows[0].dataset.grade) : (Number(teacherCurrentClass?.grade) || null);
+  const sections = rows.map((r) => r.value.trim()).filter(Boolean);
+  // Keep one grade only: uncheck sections from other grades.
+  rows.forEach((cb) => {
+    if (grade && Number(cb.dataset.grade) !== grade) cb.checked = false;
+  });
+  const cleaned = collectCheckedSections('qb-exam-section-checks');
+  syncHiddenClassSelectFromSections('qb-exam-class', grade, cleaned);
+  fillExamSubjectOptions(grade);
+  loadExamComposerSets();
+  loadExamComposerMaterials();
+});
+
 document.getElementById('qb-exam-class')?.addEventListener('change', () => {
   const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
   fillExamSubjectOptions(grade_level);
@@ -14228,6 +14911,7 @@ document.getElementById('qb-exam-class')?.addEventListener('change', () => {
 document.getElementById('qb-exam-subject')?.addEventListener('change', () => {
   examComposerSelectedSets.clear();
   examComposerSelectedMaterials.clear();
+  refreshExamSectionChecksFromSubject();
   loadExamComposerSets();
   loadExamComposerMaterials();
 });
@@ -14245,7 +14929,9 @@ document.getElementById('qb-exam-include-activity')?.addEventListener('change', 
 });
 document.getElementById('qb-exam-confirm')?.addEventListener('click', async () => {
   const title = document.getElementById('qb-exam-title')?.value?.trim();
-  const { grade_level, section } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
+  const sections = collectCheckedSections('qb-exam-section-checks');
+  const gradeInputs = [...document.querySelectorAll('#qb-exam-section-checks input[type="checkbox"]:checked')];
+  const grade_level = gradeInputs[0] ? Number(gradeInputs[0].dataset.grade) : null;
   const quarter = normalizeQuarterClient(document.getElementById('qb-exam-quarter')?.value || CURRENT_QUARTER || 'Q1');
   const subjectRaw = document.getElementById('qb-exam-subject')?.value;
   const items = getExamComposerFilteredItems();
@@ -14257,8 +14943,12 @@ document.getElementById('qb-exam-confirm')?.addEventListener('click', async () =
     return;
   }
 
-  if (!grade_level || !section) {
-    showToast('Select one of your assigned classes.', 'error');
+  if (!grade_level || !sections.length) {
+    showToast('Select at least one assigned section.', 'error');
+    return;
+  }
+  if (gradeInputs.some((cb) => Number(cb.dataset.grade) !== grade_level)) {
+    showToast('Choose sections from the same grade only.', 'error');
     return;
   }
   if (!question_ids.length) {
@@ -14283,7 +14973,8 @@ document.getElementById('qb-exam-confirm')?.addEventListener('click', async () =
       body: JSON.stringify({
         title: title || `${quarter} Periodical Exam`,
         type: 'exam',
-        section,
+        section: sections[0],
+        sections,
         grade_level,
         quarter,
         subject_id,
@@ -14297,8 +14988,9 @@ document.getElementById('qb-exam-confirm')?.addEventListener('click', async () =
     document.getElementById('qb-exam-modal').hidden = true;
     showToast(data.message || 'Exam created. Find it in Records → Exam.');
     applyTeacherPanel('progress');
-    if (data.id) {
-      setTimeout(() => openProgressEditor(data.id, 'edit'), 200);
+    const openId = preferCreatedRecordId(data);
+    if (openId) {
+      setTimeout(() => openProgressEditor(openId, 'edit'), 200);
     }
   } catch (err) {
     showToast(err.message, 'error');
@@ -14367,17 +15059,27 @@ document.getElementById('qb-create-cancel')?.addEventListener('click', () => {
   if (modal) modal.hidden = true;
 });
 
+document.getElementById('qb-create-section-checks')?.addEventListener('change', () => {
+  const items = questionBankItems.filter((i) => questionBankSelected.has(i.id));
+  const grade = Number(items[0]?.grade_level) || Number(String(document.getElementById('qb-create-class')?.value || '').split('|')[0]);
+  syncHiddenClassSelectFromSections(
+    'qb-create-class',
+    grade,
+    collectCheckedSections('qb-create-section-checks')
+  );
+});
+
 document.getElementById('qb-create-print')?.addEventListener('click', () => {
   const items = questionBankItems.filter((i) => questionBankSelected.has(i.id));
-  const classVal = document.getElementById('qb-create-class')?.value || '';
-  const [gradePart, ...sectionParts] = classVal.split('|');
+  const sections = collectCheckedSections('qb-create-section-checks');
+  const grade = Number(items[0]?.grade_level) || null;
   printAssessmentItemsPaper({
     questions: items,
     title: document.getElementById('qb-create-title')?.value?.trim() || 'Classwork',
     type: document.getElementById('qb-create-type')?.value || 'quiz',
     subject_name: items.find((i) => i.subject_name)?.subject_name || null,
-    grade_level: Number(gradePart) || null,
-    section: sectionParts.join('|').trim() || null,
+    grade_level: grade,
+    section: sections[0] || null,
     quarter: document.getElementById('qb-create-quarter')?.value,
     max_score: Number(document.getElementById('qb-create-max')?.value),
     includeAnswers: true,
@@ -14409,7 +15111,6 @@ document.getElementById('qb-create-type')?.addEventListener('change', () => {
 document.getElementById('qb-create-confirm')?.addEventListener('click', async () => {
   const title = document.getElementById('qb-create-title')?.value?.trim();
   const type = document.getElementById('qb-create-type')?.value || 'quiz';
-  const classVal = document.getElementById('qb-create-class')?.value || '';
   const quarter = normalizeQuarterClient(document.getElementById('qb-create-quarter')?.value || CURRENT_QUARTER || 'Q1');
   const question_ids = [...questionBankSelected];
 
@@ -14419,11 +15120,11 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
     return;
   }
 
-  const [gradePart, ...sectionParts] = classVal.split('|');
-  const grade_level = Number(gradePart);
-  const section = sectionParts.join('|').trim();
-  if (!grade_level || !section) {
-    showToast('Select one of your assigned classes.', 'error');
+  const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
+  const grade_level = Number(selectedItems[0]?.grade_level);
+  const sections = collectCheckedSections('qb-create-section-checks');
+  if (!grade_level || !sections.length) {
+    showToast('Select at least one assigned section.', 'error');
     return;
   }
   if (!question_ids.length) {
@@ -14431,7 +15132,6 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
     return;
   }
 
-  const selectedItems = questionBankItems.filter((i) => questionBankSelected.has(i.id));
   const subject_id = selectedItems.find((i) => i.subject_id)?.subject_id || null;
   const section_totals = collectSectionTotalsFromWrap(document.getElementById('qb-create-sections'));
   let max_score = Number(document.getElementById('qb-create-max')?.value) || sumSectionTotals(section_totals) || selectedItems.length;
@@ -14464,7 +15164,8 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
       body: JSON.stringify({
         title,
         type,
-        section,
+        section: sections[0],
+        sections,
         grade_level,
         quarter,
         subject_id,
@@ -14482,8 +15183,9 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
     updateQuizBankSelectionMeta();
     showToast(data.message || `${classworkCreateKindLabel(type)} created. Find it in Records → ${classworkCreateKindLabel(type)}.`);
     applyTeacherPanel('progress');
-    if (data.id) {
-      setTimeout(() => openProgressEditor(data.id, 'edit'), 200);
+    const openId = preferCreatedRecordId(data);
+    if (openId) {
+      setTimeout(() => openProgressEditor(openId, 'edit'), 200);
     }
   } catch (err) {
     showToast(err.message, 'error');
@@ -14527,6 +15229,9 @@ document.getElementById('upload-material-form')?.addEventListener('submit', asyn
   formData.append('grade_level', grade);
   formData.append('objectives', objectives);
   if (fileInput?.files?.[0]) formData.append('file', fileInput.files[0]);
+  if (document.getElementById('lp-share')?.checked && fileInput?.files?.[0]) {
+    formData.append('shared_with_students', '1');
+  }
 
   try {
     const token = getAuthToken();

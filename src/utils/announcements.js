@@ -7,12 +7,16 @@ async function ensureAnnouncementAudience() {
   schemaPromise = (async () => {
     try {
       await db.query(
-        "ALTER TABLE announcements ADD COLUMN audience ENUM('teachers','parents','everyone') NOT NULL DEFAULT 'everyone'"
+        "ALTER TABLE announcements ADD COLUMN audience ENUM('teachers','parents','students','everyone') NOT NULL DEFAULT 'everyone'"
       );
     } catch (e) { /* exists */ }
     try {
+      // Set on the automatic "New material" notices so they can be told apart (and cleaned up).
+      await db.query('ALTER TABLE announcements ADD COLUMN lesson_plan_id INT NULL DEFAULT NULL');
+    } catch (e) { /* exists */ }
+    try {
       await db.query(
-        "ALTER TABLE announcements MODIFY COLUMN audience ENUM('teachers','parents','everyone') NOT NULL DEFAULT 'everyone'"
+        "ALTER TABLE announcements MODIFY COLUMN audience ENUM('teachers','parents','students','everyone') NOT NULL DEFAULT 'everyone'"
       );
     } catch (e) {
       console.error('[announcements] audience enum:', e.message);
@@ -69,6 +73,10 @@ function audienceSql(role, alias = 'a') {
   if (role === 'teacher') {
     return ` AND COALESCE(${alias}.audience, 'everyone') IN ('everyone', 'teachers')`;
   }
+  if (role === 'student') {
+    // Students only receive the automatic "new material" notices.
+    return ` AND ${alias}.audience = 'students'`;
+  }
   return '';
 }
 
@@ -76,7 +84,7 @@ function audienceLabel(audience) {
   const v = normalizeAudience(audience);
   if (v === 'teachers') return 'Teachers only';
   if (v === 'parents') return 'Parents only';
-  return 'Parents & teachers';
+  return 'Everyone';
 }
 
 ensureAnnouncementAudience().catch((e) => {

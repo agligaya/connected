@@ -679,6 +679,7 @@ async function listActivitiesNearDue(now = new Date()) {
      FROM assessments
      WHERE \`TYPE\` = 'activity'
        AND share_enabled = 1
+       AND (quiz_opens_at IS NULL OR quiz_opens_at <= ?)
        AND (
          (activity_mode = 'take_home'
            AND activity_target_at IS NOT NULL
@@ -689,7 +690,7 @@ async function listActivitiesNearDue(now = new Date()) {
            AND quiz_closes_at > ?
            AND quiz_closes_at <= ?)
        )`,
-    [start, end, start, end]
+    [start, start, end, start, end]
   );
   return rows;
 }

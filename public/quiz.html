@@ -58,7 +58,7 @@
     .quiz-group-head[hidden] { display: none !important; }
     #quiz-back-portal { display: none; margin-top: 12px; }
     html.quiz-signed-in #quiz-back-portal { display: inline-block; }
-    .quiz-nav button { flex: 1; min-height: 46px; font-size: 16px; }
+    .quiz-nav button { flex: 1; min-height: 46px; margin-top: 0; font-size: 16px; border-radius: 10px; box-sizing: border-box; }
     .quiz-nav button:disabled { opacity: 0.45; cursor: default; }
     html.quiz-lock, html.quiz-lock body { height: 100%; background: #f4ebe4; }
     html.quiz-lock .quiz-page { min-height: 100dvh; }
@@ -132,6 +132,89 @@
     .quiz-seq { list-style: none; padding: 0; margin: 0; }
     .quiz-seq li { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
     .quiz-seq-moves button { margin-left: 4px; min-height: 36px; }
+    #quiz-corner {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 9600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #quiz-corner[hidden] { display: none !important; }
+    #quiz-sfx-mute {
+      width: 42px;
+      height: 42px;
+      border-radius: 999px;
+      border: 2px solid #5c1010;
+      background: #fff;
+      color: #5c1010;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+      cursor: pointer;
+      font-size: 1.05rem;
+      line-height: 1;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #quiz-sfx-mute[aria-pressed="true"] {
+      background: #f4ebe4;
+      opacity: 0.85;
+    }
+    #quiz-timer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: #fff;
+      border: 2px solid #5c1010;
+      color: #5c1010;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+      font-variant-numeric: tabular-nums;
+    }
+    #quiz-timer[hidden] { display: none !important; }
+    #quiz-timer .quiz-timer-label { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.8; }
+    #quiz-timer .quiz-timer-value { font-size: 1.05rem; font-weight: 700; }
+    #quiz-timer.is-warn { border-color: #e67e22; color: #a85b00; }
+    #quiz-timer.is-danger { border-color: #b71c1c; background: #b71c1c; color: #fff; }
+    #quiz-confirm {
+      position: fixed;
+      inset: 0;
+      z-index: 9500;
+      background: rgba(244, 235, 228, 0.94);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    #quiz-confirm[hidden] { display: none !important; }
+    #quiz-confirm .quiz-card { width: min(440px, 100%); margin: 0; }
+    .quiz-confirm-warn { margin: 0 0 8px; color: #b71c1c; font-size: 0.9rem; }
+    .quiz-confirm-warn[hidden] { display: none !important; }
+    .quiz-confirm-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .quiz-confirm-actions button { flex: 1; min-height: 46px; margin-top: 0; font-size: 16px; border-radius: 10px; box-sizing: border-box; }
+    #quiz-to-review { min-height: 46px; font-size: 16px; border-radius: 10px; width: 100%; box-sizing: border-box; margin-top: 8px; }
+    #quiz-to-review[hidden] { display: none !important; }
+    #quiz-review[hidden] { display: none !important; }
+    .quiz-review-title { margin: 0 0 4px; font-size: 1.1rem; }
+    .quiz-review-list { list-style: none; margin: 0 0 14px; padding: 0; }
+    .quiz-review-row {
+      display: flex; gap: 10px; align-items: flex-start; justify-content: space-between;
+      padding: 10px 0; border-bottom: 1px solid #eee;
+    }
+    .quiz-review-row:last-child { border-bottom: none; }
+    .quiz-review-main { flex: 1; min-width: 0; word-break: break-word; }
+    .quiz-review-q { margin: 0; font-size: 0.92rem; }
+    .quiz-review-answer { margin: 4px 0 0; font-size: 0.88rem; color: #1b5e20; word-break: break-word; }
+    .quiz-review-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .quiz-review-tag { padding: 2px 10px; border-radius: 999px; font-size: 0.74rem; font-weight: 600; white-space: nowrap; }
+    .quiz-review-tag--answered { background: rgba(27, 94, 32, 0.12); color: #1b5e20; }
+    .quiz-review-tag--skipped { background: rgba(230, 126, 34, 0.18); color: #a85b00; }
+    .quiz-review-tag--blank { background: rgba(183, 28, 28, 0.12); color: #b71c1c; }
+    .quiz-review-go { min-height: 36px; font-size: 0.85rem; }
     .quiz-identity-name { font-size: 1.05rem; font-weight: 700; color: #5c1010; margin: 0 0 4px; }
     .quiz-identity-status { margin: 0; font-size: 0.88rem; color: #555; }
     @media (max-width: 480px) {
@@ -179,7 +262,7 @@
       <div id="quiz-questions-wrap" hidden>
         <div id="quiz-start-step" hidden>
           <p class="quiz-meta" style="margin-top:0;" id="quiz-start-note">
-            Questions appear one at a time. Answer each one before you continue. The quiz stays in full screen.
+            Questions appear one at a time. Answer each one, or skip it, before you continue. The quiz stays in full screen.
           </p>
           <button type="button" class="btn-solid" id="quiz-start">Start quiz</button>
         </div>
@@ -187,8 +270,19 @@
         <div id="quiz-questions"></div>
         <p id="quiz-form-error" class="quiz-error" hidden></p>
         <div class="quiz-nav" id="quiz-nav" hidden>
-          <button type="button" class="chip-ghost" id="quiz-back">Back</button>
+          <button type="button" class="btn-outline" id="quiz-back">Back</button>
+          <button type="button" class="btn-outline" id="quiz-skip">Skip</button>
           <button type="button" class="btn-solid" id="quiz-next">Next</button>
+        </div>
+        <button type="button" class="btn-outline" id="quiz-to-review" hidden>Back to review</button>
+        <div id="quiz-review" hidden>
+          <h2 class="font-heading quiz-review-title">Review your answers</h2>
+          <p class="quiz-meta" id="quiz-review-summary"></p>
+          <ul class="quiz-review-list" id="quiz-review-list"></ul>
+          <div class="quiz-nav" id="quiz-review-actions">
+            <button type="button" class="btn-outline" id="quiz-review-back">Back to questions</button>
+            <button type="button" class="btn-solid" id="quiz-review-submit">Submit</button>
+          </div>
         </div>
         <button type="button" class="btn-solid" id="quiz-submit">Submit Answers</button>
       </div>
@@ -202,6 +296,26 @@
       <a id="quiz-back-portal" class="btn-solid" href="/" style="text-decoration:none;">Back to my subjects</a>
     </div>
   </main>
+
+  <div id="quiz-corner" hidden>
+    <button type="button" id="quiz-sfx-mute" aria-pressed="false" title="Mute sounds" aria-label="Mute sounds">🔊</button>
+    <div id="quiz-timer" hidden role="timer" aria-live="off">
+      <span class="quiz-timer-label" id="quiz-timer-label">Time limit</span>
+      <span class="quiz-timer-value" id="quiz-timer-value">00:00</span>
+    </div>
+  </div>
+
+  <div id="quiz-confirm" hidden role="dialog" aria-modal="true" aria-labelledby="quiz-confirm-title">
+    <div class="quiz-card">
+      <h2 class="font-heading" style="margin-top:0;" id="quiz-confirm-title">Are you sure?</h2>
+      <p id="quiz-confirm-msg" class="quiz-meta" style="margin-bottom:8px;"></p>
+      <p id="quiz-confirm-warn" class="quiz-confirm-warn" hidden></p>
+      <div class="quiz-confirm-actions">
+        <button type="button" class="btn-outline" id="quiz-confirm-cancel">Cancel</button>
+        <button type="button" class="btn-solid" id="quiz-confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <div id="quiz-leave-cover" hidden>
     <div class="quiz-card">
@@ -234,6 +348,26 @@
       const leaveCover = document.getElementById('quiz-leave-cover');
       const leaveMsg = document.getElementById('quiz-leave-msg');
       const changeLrnBtn = document.getElementById('quiz-change-lrn');
+      const skipBtn = document.getElementById('quiz-skip');
+      const toReviewBtn = document.getElementById('quiz-to-review');
+      const reviewEl = document.getElementById('quiz-review');
+      const reviewSummaryEl = document.getElementById('quiz-review-summary');
+      const reviewListEl = document.getElementById('quiz-review-list');
+      const reviewSubmitBtn = document.getElementById('quiz-review-submit');
+      const confirmBox = document.getElementById('quiz-confirm');
+      const cornerEl = document.getElementById('quiz-corner');
+      const muteBtn = document.getElementById('quiz-sfx-mute');
+      const timerEl = document.getElementById('quiz-timer');
+      const timerLabelEl = document.getElementById('quiz-timer-label');
+      const timerValueEl = document.getElementById('quiz-timer-value');
+      let timeLimitMinutes = null; // set by the teacher; null means no limit
+      let timerDeadline = 0; // ms timestamp when this student's time ends
+      let timerTick = null;
+      let timeIsUp = false;
+      let reviewing = false; // the review screen is showing
+      let reviewVisited = false; // the student has opened the review screen at least once
+      let submitting = false;
+      let confirmResolver = null;
       let quizData = null;
       let identified = null;
       let confirmedLrn = '';
@@ -241,6 +375,195 @@
       let quizIndex = 0; // index of the current page (a page holds one item, or all matching / all sequencing items)
       let quizPages = [];
       let quizStarted = false;
+
+      // Game-like SFX (Web Audio). Unlocked on Start / first mute tap so browsers allow sound.
+      const QuizSfx = (function () {
+        const KEY = 'connected_quiz_sfx_muted';
+        let ctx = null;
+        let muted = false;
+        try { muted = localStorage.getItem(KEY) === '1'; } catch (_) { /* private mode */ }
+        let lastTickSec = -1;
+        let lastBand = '';
+
+        function ensure() {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return null;
+          if (!ctx) ctx = new AC();
+          if (ctx.state === 'suspended') ctx.resume();
+          return ctx;
+        }
+
+        function envGain(c, peak, attack, hold, release, at) {
+          const g = c.createGain();
+          const t0 = at != null ? at : c.currentTime;
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + attack);
+          g.gain.setValueAtTime(Math.max(0.0002, peak), t0 + attack + hold);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + attack + hold + release);
+          return g;
+        }
+
+        function beep(c, freq, dur, type, peak, at) {
+          const osc = c.createOscillator();
+          const g = envGain(c, peak || 0.12, 0.01, Math.max(0.01, dur - 0.05), 0.05, at);
+          osc.type = type || 'sine';
+          osc.frequency.setValueAtTime(freq, at != null ? at : c.currentTime);
+          osc.connect(g);
+          g.connect(c.destination);
+          const t0 = at != null ? at : c.currentTime;
+          osc.start(t0);
+          osc.stop(t0 + dur + 0.08);
+        }
+
+        function noiseBurst(c, dur, peak, at) {
+          const len = Math.floor(c.sampleRate * dur);
+          const buf = c.createBuffer(1, len, c.sampleRate);
+          const data = buf.getChannelData(0);
+          for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+          const src = c.createBufferSource();
+          src.buffer = buf;
+          const g = envGain(c, peak || 0.08, 0.005, 0.02, dur * 0.7, at);
+          const filter = c.createBiquadFilter();
+          filter.type = 'bandpass';
+          filter.frequency.value = 1200;
+          filter.Q.value = 0.7;
+          src.connect(filter);
+          filter.connect(g);
+          g.connect(c.destination);
+          const t0 = at != null ? at : c.currentTime;
+          src.start(t0);
+          src.stop(t0 + dur + 0.05);
+        }
+
+        function play(name) {
+          if (muted) return;
+          const c = ensure();
+          if (!c) return;
+          const t = c.currentTime;
+          try {
+            if (name === 'start') {
+              [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+                beep(c, f, 0.14, 'triangle', 0.11, t + i * 0.08);
+              });
+            } else if (name === 'select') {
+              beep(c, 880, 0.07, 'sine', 0.09, t);
+              beep(c, 1320, 0.05, 'sine', 0.05, t + 0.04);
+            } else if (name === 'place') {
+              beep(c, 660, 0.06, 'triangle', 0.08, t);
+            } else if (name === 'next') {
+              noiseBurst(c, 0.12, 0.06, t);
+              beep(c, 520, 0.1, 'sine', 0.07, t);
+              beep(c, 780, 0.12, 'sine', 0.08, t + 0.06);
+            } else if (name === 'back') {
+              beep(c, 780, 0.08, 'sine', 0.06, t);
+              beep(c, 520, 0.1, 'sine', 0.07, t + 0.05);
+            } else if (name === 'skip') {
+              beep(c, 240, 0.16, 'square', 0.05, t);
+              beep(c, 180, 0.18, 'square', 0.04, t + 0.08);
+            } else if (name === 'review') {
+              beep(c, 587.33, 0.12, 'triangle', 0.09, t);
+              beep(c, 880, 0.16, 'triangle', 0.08, t + 0.1);
+            } else if (name === 'identify') {
+              beep(c, 698.46, 0.1, 'sine', 0.09, t);
+              beep(c, 932.33, 0.14, 'sine', 0.08, t + 0.08);
+            } else if (name === 'warn') {
+              beep(c, 740, 0.1, 'square', 0.07, t);
+              beep(c, 740, 0.1, 'square', 0.07, t + 0.14);
+            } else if (name === 'danger') {
+              beep(c, 520, 0.12, 'sawtooth', 0.07, t);
+              beep(c, 420, 0.14, 'sawtooth', 0.07, t + 0.12);
+            } else if (name === 'tick') {
+              beep(c, 980, 0.04, 'square', 0.045, t);
+            } else if (name === 'timeup') {
+              [440, 349.23, 261.63].forEach(function (f, i) {
+                beep(c, f, 0.22, 'triangle', 0.1, t + i * 0.16);
+              });
+            } else if (name === 'submit') {
+              noiseBurst(c, 0.1, 0.05, t);
+              beep(c, 523.25, 0.1, 'sine', 0.08, t + 0.04);
+              beep(c, 783.99, 0.16, 'sine', 0.1, t + 0.12);
+            } else if (name === 'victory') {
+              [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5].forEach(function (f, i) {
+                beep(c, f, 0.16, 'triangle', 0.1, t + i * 0.09);
+              });
+            } else if (name === 'complete') {
+              beep(c, 523.25, 0.12, 'sine', 0.09, t);
+              beep(c, 659.25, 0.14, 'sine', 0.09, t + 0.1);
+              beep(c, 783.99, 0.2, 'sine', 0.1, t + 0.2);
+            } else if (name === 'low') {
+              beep(c, 392, 0.16, 'triangle', 0.08, t);
+              beep(c, 311.13, 0.22, 'triangle', 0.08, t + 0.14);
+            } else if (name === 'error') {
+              beep(c, 160, 0.18, 'sawtooth', 0.07, t);
+            } else if (name === 'leave') {
+              beep(c, 300, 0.12, 'square', 0.06, t);
+              beep(c, 220, 0.16, 'square', 0.06, t + 0.1);
+            } else if (name === 'confirm') {
+              beep(c, 640, 0.08, 'sine', 0.06, t);
+            }
+          } catch (_) { /* ignore audio errors */ }
+        }
+
+        function unlock() {
+          try { ensure(); } catch (_) { /* */ }
+        }
+
+        function setMuted(next) {
+          muted = !!next;
+          try { localStorage.setItem(KEY, muted ? '1' : '0'); } catch (_) { /* */ }
+          syncMuteBtn();
+          if (!muted) unlock();
+        }
+
+        function syncMuteBtn() {
+          if (!muteBtn) return;
+          muteBtn.setAttribute('aria-pressed', muted ? 'true' : 'false');
+          muteBtn.title = muted ? 'Unmute sounds' : 'Mute sounds';
+          muteBtn.setAttribute('aria-label', muted ? 'Unmute sounds' : 'Mute sounds');
+          muteBtn.textContent = muted ? '🔇' : '🔊';
+        }
+
+        function onTimer(remaining) {
+          const band = remaining <= 60 ? 'danger' : (remaining <= 300 ? 'warn' : '');
+          if (band && band !== lastBand) {
+            play(band === 'danger' ? 'danger' : 'warn');
+          }
+          lastBand = band;
+          if (band === 'danger' && remaining > 0 && remaining <= 60 && remaining !== lastTickSec) {
+            lastTickSec = remaining;
+            play('tick');
+          }
+          if (remaining <= 0) lastTickSec = -1;
+        }
+
+        function resetTimerVoice() {
+          lastTickSec = -1;
+          lastBand = '';
+        }
+
+        syncMuteBtn();
+        return {
+          unlock: unlock,
+          play: play,
+          setMuted: setMuted,
+          isMuted: function () { return muted; },
+          toggleMute: function () { setMuted(!muted); },
+          onTimer: onTimer,
+          resetTimerVoice: resetTimerVoice,
+          syncMuteBtn: syncMuteBtn
+        };
+      })();
+
+      muteBtn?.addEventListener('click', function () {
+        QuizSfx.unlock();
+        QuizSfx.toggleMute();
+        if (!QuizSfx.isMuted()) QuizSfx.play('select');
+      });
+
+      function showCorner(show) {
+        if (!cornerEl) return;
+        cornerEl.hidden = !show;
+      }
 
       function workNoun() {
         var kind = String((quizData && quizData.type) || '').toLowerCase();
@@ -251,7 +574,13 @@
         var noun = workNoun();
         var cap = noun.charAt(0).toUpperCase() + noun.slice(1);
         var note = document.getElementById('quiz-start-note');
-        if (note) note.textContent = 'Questions appear one at a time. Answer each one before you continue. The ' + noun + ' stays in full screen.';
+        if (note) {
+          note.textContent = 'Questions appear one at a time. Answer each one, or skip it, before you continue. The ' + noun + ' stays in full screen.';
+          if (timeLimitMinutes) {
+            note.textContent += ' You will have ' + timeLimitMinutes + (timeLimitMinutes === 1 ? ' minute' : ' minutes') +
+              ' once you press Start. Your answers are submitted automatically when time runs out.';
+          }
+        }
         var startBtn = document.getElementById('quiz-start');
         if (startBtn) startBtn.textContent = 'Start ' + noun;
         var retTitle = document.getElementById('quiz-return-title');
@@ -291,7 +620,147 @@
         }
       }
 
+      // In-page confirmation (not window.confirm, so full screen and leave tracking are not disturbed).
+      function confirmDialog(opts) {
+        return new Promise(function (resolve) {
+          if (confirmResolver) confirmResolver(false);
+          confirmResolver = resolve;
+          document.getElementById('quiz-confirm-title').textContent = opts.title || 'Are you sure?';
+          document.getElementById('quiz-confirm-msg').textContent = opts.message || '';
+          const warn = document.getElementById('quiz-confirm-warn');
+          warn.textContent = opts.warning || '';
+          warn.hidden = !opts.warning;
+          document.getElementById('quiz-confirm-ok').textContent = opts.confirmLabel || 'Confirm';
+          document.getElementById('quiz-confirm-cancel').textContent = opts.cancelLabel || 'Cancel';
+          confirmBox.hidden = false;
+          document.getElementById('quiz-confirm-cancel').focus();
+        });
+      }
+
+      function closeConfirm(result) {
+        if (confirmBox) confirmBox.hidden = true;
+        const resolve = confirmResolver;
+        confirmResolver = null;
+        if (resolve) resolve(!!result);
+      }
+
+      document.getElementById('quiz-confirm-ok').addEventListener('click', function () { closeConfirm(true); });
+      document.getElementById('quiz-confirm-cancel').addEventListener('click', function () { closeConfirm(false); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && confirmBox && !confirmBox.hidden) closeConfirm(false);
+      });
+
+      // ----- Timer (quiz and exam, top-right corner) -----
+
+      function formatClock(totalSeconds) {
+        const s = Math.max(0, Math.floor(totalSeconds));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        const pad = function (n) { return String(n).padStart(2, '0'); };
+        return h > 0 ? (h + ':' + pad(m) + ':' + pad(sec)) : (pad(m) + ':' + pad(sec));
+      }
+
+      function setTimerState(state) {
+        if (!timerEl) return;
+        timerEl.classList.toggle('is-warn', state === 'warn');
+        timerEl.classList.toggle('is-danger', state === 'danger');
+      }
+
+      function hideTimer() {
+        if (timerEl) timerEl.hidden = true;
+      }
+
+      function refreshCorner() {
+        if (!isSteppedQuiz() || (doneWrap && !doneWrap.hidden)) {
+          showCorner(false);
+          hideTimer();
+          return;
+        }
+        const blocked = identified && !identified.eligible;
+        if (!identified || blocked) {
+          showCorner(false);
+          hideTimer();
+          return;
+        }
+        showCorner(true);
+        showTimerLimit();
+      }
+
+      // Before Start (or after the session ends) the corner shows the total time allowed.
+      function showTimerLimit() {
+        if (!timerEl || timerTick || timeIsUp) return;
+        const blocked = identified && !identified.eligible;
+        if (!timeLimitMinutes || !isSteppedQuiz() || blocked || (doneWrap && !doneWrap.hidden)) {
+          hideTimer();
+          return;
+        }
+        if (timerLabelEl) timerLabelEl.textContent = 'Time limit';
+        if (timerValueEl) timerValueEl.textContent = formatClock(timeLimitMinutes * 60);
+        setTimerState('');
+        timerEl.hidden = false;
+      }
+
+      function stopTimer() {
+        if (timerTick) clearInterval(timerTick);
+        timerTick = null;
+        timerDeadline = 0;
+        QuizSfx.resetTimerVoice();
+      }
+
+      function paintTimer() {
+        const remaining = Math.max(0, Math.ceil((timerDeadline - Date.now()) / 1000));
+        if (timerLabelEl) timerLabelEl.textContent = 'Time left';
+        if (timerValueEl) timerValueEl.textContent = formatClock(remaining);
+        setTimerState(remaining <= 60 ? 'danger' : (remaining <= 300 ? 'warn' : ''));
+        if (timerEl) timerEl.hidden = false;
+        showCorner(true);
+        QuizSfx.onTimer(remaining);
+        if (remaining <= 0 && !timeIsUp) handleTimeUp();
+      }
+
+      function beginTimer(remainingSeconds) {
+        stopTimer();
+        timeIsUp = false;
+        timerDeadline = Date.now() + Math.max(0, Number(remainingSeconds) || 0) * 1000;
+        paintTimer();
+        if (!timeIsUp) timerTick = setInterval(paintTimer, 500);
+      }
+
+      // Time ran out: send whatever the student has answered. Retries if the network hiccups.
+      async function handleTimeUp() {
+        if (timeIsUp) return;
+        timeIsUp = true;
+        stopTimer();
+        if (timerValueEl) timerValueEl.textContent = '00:00';
+        setTimerState('danger');
+        QuizSfx.play('timeup');
+        closeConfirm(false);
+        questionsWrap.style.pointerEvents = 'none';
+        for (let attempt = 0; attempt < 5; attempt++) {
+          errEl.textContent = 'Time is up. Submitting your answers…';
+          errEl.hidden = false;
+          await doSubmit();
+          if (doneWrap && !doneWrap.hidden) return;
+          await new Promise(function (resolve) { setTimeout(resolve, 3000); });
+        }
+        questionsWrap.style.pointerEvents = '';
+        errEl.textContent = 'Time is up, but your answers could not be sent. Press Submit to try again.';
+        errEl.hidden = false;
+        QuizSfx.play('error');
+      }
+
       function endQuizSession() {
+        stopTimer();
+        timeIsUp = false;
+        questionsWrap.style.pointerEvents = '';
+        refreshCorner();
+        closeConfirm(false);
+        reviewing = false;
+        reviewVisited = false;
+        submitting = false;
+        if (reviewEl) reviewEl.hidden = true;
+        if (toReviewBtn) toReviewBtn.hidden = true;
         quizStarted = false;
         quizIndex = 0;
         if (changeLrnBtn) changeLrnBtn.hidden = false;
@@ -303,8 +772,13 @@
         }
       }
 
+      function blockSkipped(block) {
+        return !!block && block.getAttribute('data-skipped') === '1';
+      }
+
+      // A skipped item counts as blank, even for item types that always hold a value (sequencing).
       function blockAnswered(block) {
-        if (!block) return false;
+        if (!block || blockSkipped(block)) return false;
         const kind = block.getAttribute('data-kind');
         if (kind === 'mcq' || kind === 'true_false') {
           return !!block.querySelector('input[type="radio"]:checked');
@@ -357,12 +831,57 @@
         return !!(page && page.length && page.every(blockAnswered));
       }
 
+      // A page may be left once every item is answered or skipped.
+      function pageDone(index) {
+        if (timeIsUp) return true;
+        const page = quizPages[index];
+        return !!(page && page.length && page.every(function (b) { return blockAnswered(b) || blockSkipped(b); }));
+      }
+
       function pageNotAnsweredMessage(index) {
         const page = quizPages[index];
         return page && page.length > 1
-          ? 'Answer every item on this page before continuing.'
-          : 'Answer this question before continuing.';
+          ? 'Answer every item on this page, or use Skip, before continuing.'
+          : 'Answer this question, or use Skip, before continuing.';
       }
+
+      // Empty an item so it reads as unanswered (used when the student skips it).
+      function clearBlock(block) {
+        const kind = block.getAttribute('data-kind');
+        if (kind === 'mcq' || kind === 'true_false') {
+          block.querySelectorAll('input[type="radio"]').forEach(function (r) { r.checked = false; });
+        } else if (kind === 'fill_blank') {
+          block.querySelectorAll('.quiz-blank').forEach(function (b) {
+            b.textContent = '';
+            b.removeAttribute('data-value');
+            b.removeAttribute('data-word-idx');
+          });
+          block.querySelectorAll('.quiz-word').forEach(function (w) {
+            w.classList.remove('is-used');
+            w.disabled = false;
+          });
+        } else if (kind === 'matching') {
+          block.querySelectorAll('select.quiz-match-select').forEach(function (s) { s.value = ''; });
+          syncMatchingSelects(block);
+        } else if (kind === 'identification') {
+          block.removeAttribute('data-picked');
+        } else if (kind !== 'sequencing') {
+          const ta = block.querySelector('textarea');
+          if (ta) ta.value = '';
+        }
+        // Sequencing keeps its order; the skipped flag alone makes it count as blank.
+      }
+
+      // Touching a skipped item again takes it out of "skipped".
+      function unskipFromEvent(e) {
+        if (!e.target.closest) return;
+        if (e.type === 'click' && !e.target.closest('button, label, input, select, textarea')) return;
+        const block = e.target.closest('.quiz-q');
+        if (block && blockSkipped(block)) block.removeAttribute('data-skipped');
+      }
+      ['click', 'change', 'input'].forEach(function (type) {
+        qBox.addEventListener(type, unskipFromEvent);
+      });
 
       function hideGroupHeads() {
         qBox.querySelectorAll('.quiz-group-head').forEach(function (h) { h.hidden = true; });
@@ -382,6 +901,9 @@
 
       function showStartStep() {
         quizStarted = false;
+        reviewing = false;
+        if (reviewEl) reviewEl.hidden = true;
+        if (toReviewBtn) toReviewBtn.hidden = true;
         questionBlocks().forEach(function (block) { block.hidden = true; });
         syncMatchSets();
         hideGroupHeads();
@@ -395,6 +917,9 @@
       }
 
       function showActivityList() {
+        reviewing = false;
+        if (reviewEl) reviewEl.hidden = true;
+        if (toReviewBtn) toReviewBtn.hidden = true;
         if (startStep) startStep.hidden = true;
         if (progressEl) progressEl.hidden = true;
         if (navEl) navEl.hidden = true;
@@ -417,6 +942,8 @@
         if (index < 0) index = 0;
         if (index > quizPages.length - 1) index = quizPages.length - 1;
         quizIndex = index;
+        reviewing = false;
+        if (reviewEl) reviewEl.hidden = true;
         const page = quizPages[index];
         if (startStep) startStep.hidden = true;
         if (changeLrnBtn) changeLrnBtn.hidden = true;
@@ -450,8 +977,9 @@
         if (nextBtn) nextBtn.hidden = last;
         if (submitBtn) {
           submitBtn.hidden = !last;
-          submitBtn.textContent = 'Submit';
+          submitBtn.textContent = 'Review answers';
         }
+        if (toReviewBtn) toReviewBtn.hidden = !reviewVisited;
         if (errEl) errEl.hidden = true;
       }
 
@@ -465,6 +993,8 @@
           return;
         }
         if (leaveCover && !leaveCover.hidden) return;
+        // The periodic eligibility re-check lands here; keep the student on the review screen.
+        if (reviewing) return;
         showQuestion(quizIndex);
       }
 
@@ -472,8 +1002,30 @@
         return isSteppedQuiz() && quizStarted && identified && identified.eligible && (!doneWrap || doneWrap.hidden);
       }
 
-      function showLeaveCover() {
+      // Tell the server the student left, so the teacher sees it next to their name.
+      // Fire-and-forget: it must never block or break the quiz.
+      function reportLeave(reason) {
+        try {
+          var headers = signedIn ? portalAuthHeaders() : { 'Content-Type': 'application/json' };
+          var payload = { reason: reason };
+          if (!signedIn) payload.lrn = confirmedLrn;
+          fetch('/api/quiz/' + encodeURIComponent(token) + '/focus-leave', {
+            method: 'POST',
+            headers: headers,
+            credentials: 'same-origin',
+            keepalive: true,
+            body: JSON.stringify(payload)
+          }).catch(function () {});
+        } catch (_) { /* ignore */ }
+      }
+
+      function showLeaveCover(reason) {
         if (!quizInProgress() || !leaveCover) return;
+        // Count only the moment the student leaves, not every event while the cover is already up.
+        if (leaveCover.hidden) {
+          reportLeave(reason === 'fullscreen' ? 'fullscreen' : 'hidden');
+          QuizSfx.play('leave');
+        }
         if (leaveMsg) {
           leaveMsg.textContent = fullscreenApiAvailable()
             ? 'The question stays hidden until you are back in full screen.'
@@ -823,9 +1375,13 @@
       }
 
       qBox.addEventListener('change', function (e) {
+        if (e.target && e.target.matches && e.target.matches('input[type="radio"]')) {
+          QuizSfx.play('select');
+        }
         const sel = e.target.closest('select.quiz-match-select');
         if (!sel || !qBox.contains(sel)) return;
         syncMatchingSelects(sel.closest('.quiz-q'));
+        QuizSfx.play('select');
       });
 
       qBox.addEventListener('click', function (e) {
@@ -835,10 +1391,12 @@
           const block = identificationTarget();
           if (!block) return;
           const word = idWord.getAttribute('data-word') || '';
+          block.removeAttribute('data-skipped');
           const current = block.getAttribute('data-picked') || '';
           if (current.toLowerCase() === word.toLowerCase()) block.removeAttribute('data-picked');
           else block.setAttribute('data-picked', word);
           syncIdentificationWords();
+          QuizSfx.play('select');
           return;
         }
         const pickedLine = e.target.closest('[data-picked-line]');
@@ -846,6 +1404,7 @@
           const block = pickedLine.closest('.quiz-q');
           if (block) block.removeAttribute('data-picked');
           syncIdentificationWords();
+          QuizSfx.play('place');
           return;
         }
         const word = e.target.closest('.quiz-word');
@@ -862,6 +1421,7 @@
           blank.setAttribute('data-word-idx', word.getAttribute('data-idx') || '');
           word.classList.add('is-used');
           word.disabled = true;
+          QuizSfx.play('place');
           return;
         }
         const blankEl = e.target.closest('.quiz-blank');
@@ -878,6 +1438,7 @@
           blankEl.textContent = '';
           blankEl.removeAttribute('data-value');
           blankEl.removeAttribute('data-word-idx');
+          QuizSfx.play('place');
           return;
         }
         const move = e.target.closest('[data-move]');
@@ -887,8 +1448,10 @@
           if (!li || !list) return;
           if (move.getAttribute('data-move') === 'up' && li.previousElementSibling) {
             list.insertBefore(li, li.previousElementSibling);
+            QuizSfx.play('place');
           } else if (move.getAttribute('data-move') === 'down' && li.nextElementSibling) {
             list.insertBefore(li.nextElementSibling, li);
+            QuizSfx.play('place');
           }
         }
       });
@@ -907,6 +1470,7 @@
           lrnInput.disabled = false;
           lrnInput.focus();
         }
+        refreshCorner();
       }
 
       async function load() {
@@ -919,11 +1483,14 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Could not load link');
           quizData = data;
+          const limit = Number(data.time_limit_minutes);
+          timeLimitMinutes = Number.isInteger(limit) && limit > 0 ? limit : null;
           statusEl.hidden = true;
           formWrap.hidden = false;
           document.getElementById('quiz-title').textContent =
             (data.title || 'Classwork').replace(/^((?:exam|quiz|activity)\s*[—–-]\s*)(?:(?:exam|quiz|activity)\s*[—–-]\s*)+/i, '$1');
           applyWorkWording();
+          refreshCorner();
           var metaBits = 'Grade ' + data.grade_level + '-' + data.section +
             (data.subject_name ? ' · ' + data.subject_name : '') +
             ' · Total Score: ' + data.max_score;
@@ -1002,7 +1569,7 @@
         }
         signedIn = true;
         document.documentElement.classList.add('quiz-signed-in');
-        return applyIdentity(data);
+        return applyIdentity(data, opts);
       }
 
       async function identifyWithLrn(lrn, opts) {
@@ -1020,10 +1587,13 @@
         if (!res.ok) throw new Error(data.error || 'Could not verify LRN');
 
         confirmedLrn = lrn;
-        return applyIdentity(data);
+        return applyIdentity(data, opts);
       }
 
-      function applyIdentity(data) {
+      function applyIdentity(data, opts) {
+        const silent = !!(opts && opts.silent);
+        const wasIdentified = !!identified;
+        const wasEligible = !!(identified && identified.eligible);
         identified = data;
         lrnStep.hidden = true;
         identityBox.hidden = false;
@@ -1038,6 +1608,8 @@
           questionsWrap.hidden = true;
           blockMsg.textContent = data.block_reason || 'This link is temporarily unavailable. Kindly request for access.';
           blockMsg.hidden = false;
+          if (!silent && (!wasIdentified || wasEligible)) QuizSfx.play('error');
+          refreshCorner();
           return data;
         }
 
@@ -1046,15 +1618,19 @@
         if (!qBox.querySelector('.quiz-q')) renderQuestions();
         questionsWrap.hidden = false;
         applyQuestionView();
+        if (!silent && (!wasIdentified || !wasEligible)) QuizSfx.play('identify');
+        refreshCorner();
         return data;
       }
 
       document.getElementById('quiz-identify').addEventListener('click', async function () {
+        QuizSfx.unlock();
         const lrn = normalizeLrn(lrnInput ? lrnInput.value : '');
         if (lrn.length !== 12) {
           identifyErr.textContent = 'Enter your 12-digit LRN.';
           identifyErr.hidden = false;
           if (lrnInput) lrnInput.focus();
+          QuizSfx.play('error');
           return;
         }
 
@@ -1063,6 +1639,7 @@
         } catch (e) {
           identifyErr.textContent = e.message || 'Could not verify LRN.';
           identifyErr.hidden = false;
+          QuizSfx.play('error');
         }
       });
 
@@ -1091,14 +1668,14 @@
         }
       }
       document.addEventListener('visibilitychange', function () {
-        if (document.visibilityState === 'hidden') showLeaveCover();
+        if (document.visibilityState === 'hidden') showLeaveCover('hidden');
         else recheckEligibility();
       });
       document.addEventListener('fullscreenchange', function () {
-        if (quizInProgress() && fullscreenApiAvailable() && !isFullscreenNow()) showLeaveCover();
+        if (quizInProgress() && fullscreenApiAvailable() && !isFullscreenNow()) showLeaveCover('fullscreen');
       });
       document.addEventListener('webkitfullscreenchange', function () {
-        if (quizInProgress() && fullscreenApiAvailable() && !isFullscreenNow()) showLeaveCover();
+        if (quizInProgress() && fullscreenApiAvailable() && !isFullscreenNow()) showLeaveCover('fullscreen');
       });
       window.addEventListener('focus', recheckEligibility);
       setInterval(recheckEligibility, 15000);
@@ -1106,6 +1683,7 @@
       document.getElementById('quiz-start')?.addEventListener('click', async function () {
         if (!isSteppedQuiz()) return;
         errEl.hidden = true;
+        QuizSfx.unlock();
         if (fullscreenApiAvailable()) {
           try {
             await enterFullscreen();
@@ -1113,25 +1691,54 @@
           if (!isFullscreenNow()) {
             errEl.textContent = 'Allow full screen to start the ' + workNoun() + '.';
             errEl.hidden = false;
+            QuizSfx.play('error');
             return;
           }
         }
+        // Timed quiz or exam: the server starts (or resumes) this student's clock.
+        let remainingSeconds = null;
+        if (timeLimitMinutes) {
+          remainingSeconds = timeLimitMinutes * 60;
+          try {
+            const startRes = await fetch('/api/quiz/' + encodeURIComponent(token) + '/start', {
+              method: 'POST',
+              headers: signedIn ? portalAuthHeaders() : { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify(signedIn ? {} : { lrn: confirmedLrn })
+            });
+            const startData = await startRes.json();
+            if (!startRes.ok) {
+              endQuizSession();
+              errEl.textContent = startData.error || 'Could not start the timer. Try again.';
+              errEl.hidden = false;
+              QuizSfx.play('error');
+              return;
+            }
+            if (startData.remaining_seconds != null) remainingSeconds = Number(startData.remaining_seconds);
+          } catch (_) { /* offline: fall back to the full time limit */ }
+        }
         quizStarted = true;
         document.documentElement.classList.add('quiz-lock');
+        QuizSfx.play('start');
         showQuestion(0);
+        showCorner(true);
+        if (timeLimitMinutes) beginTimer(remainingSeconds);
       });
 
       backBtn?.addEventListener('click', function () {
         if (!quizStarted || quizIndex <= 0) return;
+        QuizSfx.play('back');
         showQuestion(quizIndex - 1);
       });
 
       nextBtn?.addEventListener('click', function () {
-        if (!pageAnswered(quizIndex)) {
+        if (!pageDone(quizIndex)) {
           errEl.textContent = pageNotAnsweredMessage(quizIndex);
           errEl.hidden = false;
+          QuizSfx.play('error');
           return;
         }
+        QuizSfx.play('next');
         showQuestion(quizIndex + 1);
       });
 
@@ -1142,7 +1749,7 @@
         }
         if (!fullscreenApiAvailable() || isFullscreenNow()) {
           if (leaveCover) leaveCover.hidden = true;
-          showQuestion(quizIndex);
+          resumeView();
           return;
         }
         try {
@@ -1150,13 +1757,92 @@
         } catch (_) { /* stay covered */ }
         if (isFullscreenNow()) {
           if (leaveCover) leaveCover.hidden = true;
-          showQuestion(quizIndex);
+          resumeView();
           return;
         }
         if (leaveMsg) leaveMsg.textContent = 'Allow full screen to continue the ' + workNoun() + '.';
       });
 
-      document.getElementById('quiz-submit').addEventListener('click', async function () {
+      // The saved answer for one non-activity item. A skipped item is always sent blank.
+      function blockAnswerValue(block) {
+        const kind = block.getAttribute('data-kind');
+        if (blockSkipped(block)) return '';
+        if (kind === 'mcq' || kind === 'true_false') {
+          const checked = block.querySelector('input[type="radio"]:checked');
+          return checked ? checked.value : '';
+        }
+        if (kind === 'fill_blank') {
+          return [...block.querySelectorAll('.quiz-blank')].map(function (b) {
+            return b.getAttribute('data-value') || '';
+          }).join(', ');
+        }
+        if (kind === 'matching') {
+          return [...block.querySelectorAll('.quiz-match-select')].map(function (s) {
+            return (s.getAttribute('data-left') || '') + ' | ' + (s.value || '');
+          }).join('; ');
+        }
+        if (kind === 'identification') return block.getAttribute('data-picked') || '';
+        if (kind === 'sequencing') {
+          return [...block.querySelectorAll('.quiz-seq li')].map(function (li) {
+            return li.getAttribute('data-step') || '';
+          }).join(' | ');
+        }
+        const ta = block.querySelector('textarea');
+        return ta ? ta.value.trim() : '';
+      }
+
+      // Both the review screen and the submit read answers from here, so they always agree.
+      function collectAnswers() {
+        const answers = {};
+        const fd = new FormData();
+        let hasFile = false;
+        let missingActivity = false;
+        qBox.querySelectorAll('.quiz-q').forEach(function (block) {
+          const qid = block.getAttribute('data-qid');
+          const kind = block.getAttribute('data-kind');
+          if (kind === 'activity') {
+            const ta = block.querySelector('textarea');
+            const text = ta ? ta.value.trim() : '';
+            if (!text) missingActivity = true;
+            answers[qid] = { text: text };
+            const fileInput = block.querySelector('input.quiz-file');
+            if (fileInput && fileInput.files && fileInput.files[0]) {
+              fd.append('file_' + qid, fileInput.files[0]);
+              hasFile = true;
+            }
+            return;
+          }
+          answers[qid] = blockAnswerValue(block);
+        });
+        return { answers: answers, fd: fd, hasFile: hasFile, missingActivity: missingActivity };
+      }
+
+      function clip(text, max) {
+        const s = String(text || '').replace(/\s+/g, ' ').trim();
+        return s.length > max ? s.slice(0, max - 1) + '…' : s;
+      }
+
+      // A short, readable version of what the student answered, for the review screen.
+      function answerPreview(block) {
+        const kind = block.getAttribute('data-kind');
+        if (kind === 'matching') {
+          return [...block.querySelectorAll('select.quiz-match-select')].map(function (s) {
+            const opt = s.options[s.selectedIndex];
+            return (s.getAttribute('data-left') || '') + ' → ' + (s.value && opt ? opt.textContent : '—');
+          }).join('; ');
+        }
+        if (kind === 'sequencing') {
+          return [...block.querySelectorAll('.quiz-seq li')].map(function (li) {
+            return li.getAttribute('data-step') || '';
+          }).join(' → ');
+        }
+        return blockAnswerValue(block);
+      }
+
+      let submitInFlight = false;
+      async function doSubmit() {
+        if (submitInFlight) return;
+        QuizSfx.unlock();
         errEl.hidden = true;
         if (!identified || !identified.eligible || !identified.student_id) {
           errEl.textContent = signedIn ? 'Reload this page to continue.' : 'Confirm your LRN before submitting.';
@@ -1168,69 +1854,20 @@
           errEl.hidden = false;
           return;
         }
-        if (isSteppedQuiz()) {
-          if (!quizStarted || (leaveCover && !leaveCover.hidden)) return;
-          if (!pageAnswered(quizIndex)) {
-            errEl.textContent = pageNotAnsweredMessage(quizIndex);
-            errEl.hidden = false;
-            return;
-          }
-        }
 
-        const answers = {};
-        const fd = new FormData();
-        let hasFile = false;
-        let missingActivity = false;
-        qBox.querySelectorAll('.quiz-q').forEach(function (block) {
-          const qid = block.getAttribute('data-qid');
-          const kind = block.getAttribute('data-kind');
-          if (kind === 'mcq' || kind === 'true_false') {
-            const checked = block.querySelector('input[type="radio"]:checked');
-            answers[qid] = checked ? checked.value : '';
-            return;
-          }
-          if (kind === 'fill_blank') {
-            answers[qid] = [...block.querySelectorAll('.quiz-blank')].map(function (b) {
-              return b.getAttribute('data-value') || '';
-            }).join(', ');
-            return;
-          }
-          if (kind === 'matching') {
-            answers[qid] = [...block.querySelectorAll('.quiz-match-select')].map(function (s) {
-              return (s.getAttribute('data-left') || '') + ' | ' + (s.value || '');
-            }).join('; ');
-            return;
-          }
-          if (kind === 'identification') {
-            answers[qid] = block.getAttribute('data-picked') || '';
-            return;
-          }
-          if (kind === 'sequencing') {
-            answers[qid] = [...block.querySelectorAll('.quiz-seq li')].map(function (li) {
-              return li.getAttribute('data-step') || '';
-            }).join(' | ');
-            return;
-          }
-          const ta = block.querySelector('textarea');
-          const text = ta ? ta.value.trim() : '';
-          if (kind === 'activity') {
-            if (!text) missingActivity = true;
-            answers[qid] = { text: text };
-            const fileInput = block.querySelector('input.quiz-file');
-            if (fileInput && fileInput.files && fileInput.files[0]) {
-              fd.append('file_' + qid, fileInput.files[0]);
-              hasFile = true;
-            }
-            return;
-          }
-          answers[qid] = text;
-        });
+        const collected = collectAnswers();
+        const answers = collected.answers;
+        const fd = collected.fd;
+        const hasFile = collected.hasFile;
+        const missingActivity = collected.missingActivity;
         if (missingActivity) {
           errEl.textContent = 'Write your answer for every activity item before submitting.';
           errEl.hidden = false;
           return;
         }
 
+        submitInFlight = true;
+        if (reviewSubmitBtn) reviewSubmitBtn.disabled = true;
         try {
           let res;
           const authHeaders = signedIn ? portalAuthHeaders() : { 'Content-Type': 'application/json' };
@@ -1258,20 +1895,197 @@
           }
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Submit failed');
+          QuizSfx.play('submit');
           endQuizSession();
           formWrap.hidden = true;
           doneWrap.hidden = false;
+          showCorner(false);
+          hideTimer();
           var doneMsg = data.student_name || 'Student';
           if (data.pending_teacher_score || data.score == null) {
             doneMsg += '. ' + (data.message || 'Submitted. Your teacher will score this in Records.');
+            setTimeout(function () { QuizSfx.play('complete'); }, 220);
           } else {
             doneMsg += ' — score ' + data.score + ' / ' + data.max_score + '. ' + (data.message || '');
+            var pct = Number(data.max_score) > 0 ? (Number(data.score) / Number(data.max_score)) : 0;
+            setTimeout(function () {
+              QuizSfx.play(pct >= 0.7 ? 'victory' : (pct >= 0.4 ? 'complete' : 'low'));
+            }, 220);
           }
           document.getElementById('quiz-done-msg').textContent = doneMsg;
         } catch (e) {
           errEl.textContent = e.message || 'Submit failed.';
           errEl.hidden = false;
+          QuizSfx.play('error');
+        } finally {
+          submitInFlight = false;
+          if (reviewSubmitBtn) reviewSubmitBtn.disabled = false;
         }
+      }
+
+      // ----- Review screen (quiz and exam) -----
+
+      function blockStatus(block) {
+        if (blockAnswered(block)) return 'answered';
+        return blockSkipped(block) ? 'skipped' : 'blank';
+      }
+
+      function reviewCounts() {
+        const counts = { answered: 0, skipped: 0, blank: 0, total: 0 };
+        questionBlocks().forEach(function (block) {
+          counts[blockStatus(block)] += 1;
+          counts.total += 1;
+        });
+        return counts;
+      }
+
+      function questionLabel(block) {
+        const qid = String(block.getAttribute('data-qid'));
+        const q = (quizData.questions || []).find(function (item) { return String(item.id) === qid; });
+        const kind = block.getAttribute('data-kind');
+        if (kind === 'matching') return 'Matching item';
+        const text = q ? q.question : '';
+        return clip(text, 110) || 'Question';
+      }
+
+      function renderReview() {
+        if (!reviewListEl) return;
+        const counts = reviewCounts();
+        const tags = {
+          answered: ['Answered', 'quiz-review-tag--answered'],
+          skipped: ['Skipped', 'quiz-review-tag--skipped'],
+          blank: ['Not answered', 'quiz-review-tag--blank']
+        };
+        if (reviewSummaryEl) {
+          reviewSummaryEl.textContent = counts.answered + ' answered · ' + counts.skipped + ' skipped · ' +
+            counts.blank + ' not answered, out of ' + counts.total + '. Choose an item to go back to it, or submit when you are ready.';
+        }
+        reviewListEl.innerHTML = [...questionBlocks()].map(function (block) {
+          const status = blockStatus(block);
+          const pageIndex = quizPages.findIndex(function (p) { return p.indexOf(block) !== -1; });
+          const preview = status === 'answered' ? clip(answerPreview(block), 140) : '';
+          return '<li class="quiz-review-row">' +
+            '<div class="quiz-review-main"><p class="quiz-review-q"><strong>' + esc(block.getAttribute('data-num')) + '.</strong> ' +
+            esc(questionLabel(block)) + '</p>' +
+            (preview ? '<p class="quiz-review-answer">' + esc(preview) + '</p>' : '') + '</div>' +
+            '<div class="quiz-review-side"><span class="quiz-review-tag ' + tags[status][1] + '">' + tags[status][0] + '</span>' +
+            '<button type="button" class="chip-ghost quiz-review-go" data-review-page="' + pageIndex + '">' +
+            (status === 'answered' ? 'Change' : 'Answer') + '</button></div></li>';
+        }).join('');
+      }
+
+      function showReview() {
+        if (!quizStarted) return;
+        if (!quizPages.length) buildPages();
+        QuizSfx.play('review');
+        reviewing = true;
+        reviewVisited = true;
+        questionBlocks().forEach(function (block) { block.hidden = true; });
+        syncMatchSets();
+        hideGroupHeads();
+        setIdentificationBoxVisible(false);
+        if (startStep) startStep.hidden = true;
+        if (changeLrnBtn) changeLrnBtn.hidden = true;
+        if (progressEl) progressEl.hidden = true;
+        if (navEl) navEl.hidden = true;
+        if (submitBtn) submitBtn.hidden = true;
+        if (toReviewBtn) toReviewBtn.hidden = true;
+        if (errEl) errEl.hidden = true;
+        renderReview();
+        if (reviewEl) reviewEl.hidden = false;
+        window.scrollTo(0, 0);
+      }
+
+      // After the cover or a re-check, return to whichever screen the student was on.
+      function resumeView() {
+        if (reviewing) showReview();
+        else showQuestion(quizIndex);
+      }
+
+      reviewListEl?.addEventListener('click', function (e) {
+        const go = e.target.closest('[data-review-page]');
+        if (!go) return;
+        const index = Number(go.getAttribute('data-review-page'));
+        if (!(index >= 0)) return;
+        QuizSfx.play('next');
+        showQuestion(index);
+        window.scrollTo(0, 0);
+      });
+
+      document.getElementById('quiz-review-back')?.addEventListener('click', function () {
+        QuizSfx.play('back');
+        showQuestion(quizIndex);
+      });
+
+      toReviewBtn?.addEventListener('click', function () {
+        if (!pageDone(quizIndex)) {
+          errEl.textContent = pageNotAnsweredMessage(quizIndex);
+          errEl.hidden = false;
+          QuizSfx.play('error');
+          return;
+        }
+        showReview();
+      });
+
+      // Skip: the student leaves this question blank, after confirming.
+      skipBtn?.addEventListener('click', async function () {
+        if (!quizStarted || reviewing || (leaveCover && !leaveCover.hidden)) return;
+        const page = quizPages[quizIndex];
+        if (!page || !page.length) return;
+        const many = page.length > 1;
+        QuizSfx.play('confirm');
+        const ok = await confirmDialog({
+          title: many ? 'Skip these items?' : 'Skip this question?',
+          message: (many ? 'These items' : 'This question') + ' will be left blank and count as not answered. ' +
+            'You can come back to ' + (many ? 'them' : 'it') + ' from the review screen before you submit.',
+          confirmLabel: 'Skip',
+          cancelLabel: 'Cancel'
+        });
+        if (!ok || !quizStarted || reviewing) return;
+        QuizSfx.play('skip');
+        page.forEach(function (block) {
+          clearBlock(block);
+          block.setAttribute('data-skipped', '1');
+        });
+        syncIdentificationWords();
+        errEl.hidden = true;
+        if (reviewVisited || quizIndex >= quizPages.length - 1) showReview();
+        else showQuestion(quizIndex + 1);
+      });
+
+      // Submit from the review screen needs one last confirmation.
+      reviewSubmitBtn?.addEventListener('click', async function () {
+        if (!quizStarted || !reviewing || submitInFlight || (leaveCover && !leaveCover.hidden)) return;
+        const counts = reviewCounts();
+        const open = counts.skipped + counts.blank;
+        QuizSfx.play('confirm');
+        const ok = await confirmDialog({
+          title: 'Submit your ' + workNoun() + '?',
+          message: 'You will not be able to change your answers after you submit.',
+          warning: open
+            ? open + (open === 1 ? ' item is' : ' items are') + ' skipped or not answered and will score zero.'
+            : '',
+          confirmLabel: 'Yes, submit',
+          cancelLabel: 'Go back'
+        });
+        if (!ok || !quizStarted || !reviewing) return;
+        await doSubmit();
+      });
+
+      document.getElementById('quiz-submit').addEventListener('click', function () {
+        errEl.hidden = true;
+        if (isSteppedQuiz()) {
+          if (!quizStarted || (leaveCover && !leaveCover.hidden)) return;
+          if (!pageDone(quizIndex)) {
+            errEl.textContent = pageNotAnsweredMessage(quizIndex);
+            errEl.hidden = false;
+            QuizSfx.play('error');
+            return;
+          }
+          showReview();
+          return;
+        }
+        doSubmit();
       });
 
       load();

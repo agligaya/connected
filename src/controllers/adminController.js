@@ -1898,9 +1898,11 @@ exports.getOverviewCharts = async (req, res) => {
              u.avatar_url AS sender_avatar
       FROM announcements a
       JOIN users u ON a.sender_id = u.id`;
+    // Automatic "New material" student notices are not school announcements.
+    await ensureAnnouncementAudience();
     const [annRows] = await db.query(
       `${announcementSelect}
-       WHERE DATE(a.created_at) = ?
+       WHERE DATE(a.created_at) = ? AND a.lesson_plan_id IS NULL
        ORDER BY a.created_at DESC
        LIMIT 1`,
       [date]
@@ -1908,7 +1910,7 @@ exports.getOverviewCharts = async (req, res) => {
     const raw = annRows[0] || null;
     const [importantRows] = await db.query(
       `${announcementSelect}
-       WHERE (? IS NULL OR a.id <> ?)
+       WHERE (? IS NULL OR a.id <> ?) AND a.lesson_plan_id IS NULL
        ORDER BY CASE COALESCE(a.priority, 'normal')
          WHEN 'urgent' THEN 1
          WHEN 'high' THEN 2
