@@ -5,6 +5,12 @@ let schemaPromise = null;
 async function ensureActivityGroupsSchema(conn = db) {
   if (schemaPromise) return schemaPromise;
   schemaPromise = (async () => {
+    try {
+      await conn.query(
+        `ALTER TABLE assessments
+         ADD COLUMN activity_grouping VARCHAR(20) NOT NULL DEFAULT 'individual'`
+      );
+    } catch (e) { /* column may already exist */ }
     await conn.query(`
       CREATE TABLE IF NOT EXISTS assessment_groups (
         id INT AUTO_INCREMENT PRIMARY KEY,

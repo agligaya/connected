@@ -9331,10 +9331,13 @@ function activitySettingLine(record) {
     : record.activity_mode === 'classroom'
       ? 'Classroom activity'
       : '';
+  const grouping = String(record.activity_grouping || 'individual').toLowerCase() === 'groupings'
+    ? 'Groupings'
+    : 'Individual';
   const when = record.activity_target_at
     ? formatSharePreviewLocal(toDatetimeLocalValue(record.activity_target_at))
     : '';
-  const bits = [mode, when].filter(Boolean);
+  const bits = [mode, grouping, when].filter(Boolean);
   if (!bits.length) return '';
   return `<p class="page-subheading progress-card-status-line">${escapeHtml(bits.join(' · '))}</p>`;
 }
@@ -9783,7 +9786,10 @@ window.openProgressEditor = async function(id, mode = 'edit') {
     if (titleEl) titleEl.textContent = a.title;
     if (metaEl) {
       const modeLabel = effectiveMode === 'link' ? ' · Shared link' : '';
-      metaEl.textContent = `${typeLabel(a.type)} · ${a.subject_name || 'No subject'} · Total score ${progressEditorMax}${modeLabel}`;
+      const groupingLabel = String(a.type || '').toLowerCase() === 'activity'
+        ? (progressActivityGroupingOf(a) === 'groupings' ? ' · Groupings' : ' · Individual')
+        : '';
+      metaEl.textContent = `${typeLabel(a.type)} · ${a.subject_name || 'No subject'} · Total score ${progressEditorMax}${groupingLabel}${modeLabel}`;
     }
 
     setProgressEditorMode(effectiveMode, hasQuestions);
@@ -9850,8 +9856,15 @@ function progressGroupMemberName(member) {
   return last || first || 'Student';
 }
 
+function progressActivityGroupingOf(assessment) {
+  return String(assessment?.activity_grouping || 'individual').toLowerCase() === 'groupings'
+    ? 'groupings'
+    : 'individual';
+}
+
 function renderProgressActivityGroups(assessment, groups) {
   const section = document.getElementById('progress-activity-groups');
+  const panel = document.getElementById('progress-groups-panel');
   const listEl = document.getElementById('progress-groups-list');
   const sizeInput = document.getElementById('progress-group-size');
   const clearBtn = document.getElementById('progress-groups-clear');
@@ -9868,6 +9881,26 @@ function renderProgressActivityGroups(assessment, groups) {
 
   section.hidden = false;
   section.removeAttribute('hidden');
+
+  const grouping = progressActivityGroupingOf(assessment);
+  document.querySelectorAll('input[name="progress-activity-grouping"]').forEach((input) => {
+    input.checked = input.value === grouping;
+  });
+
+  if (panel) {
+    panel.hidden = grouping !== 'groupings';
+    if (grouping === 'groupings') panel.removeAttribute('hidden');
+    else panel.setAttribute('hidden', '');
+  }
+
+  if (grouping !== 'groupings') {
+    listEl.innerHTML = '';
+    if (clearBtn) {
+      clearBtn.hidden = true;
+      clearBtn.setAttribute('hidden', '');
+    }
+    return;
+  }
 
   const rows = Array.isArray(groups) ? groups : [];
   if (sizeInput && rows[0]?.members_per_group) {
@@ -9895,6 +9928,39 @@ function renderProgressActivityGroups(assessment, groups) {
       <ul>${members}</ul>
     </div>`;
   }).join('');
+}
+
+async function setProgressActivityGrouping(grouping) {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  if (!id) return;
+  const next = grouping === 'groupings' ? 'groupings' : 'individual';
+  if (
+    next === 'individual'
+    && Array.isArray(window._progressActivityGroups)
+    && window._progressActivityGroups.length
+    && !confirm('Switch to Individual? Existing groups will be cleared.')
+  ) {
+    document.querySelectorAll('input[name="progress-activity-grouping"]').forEach((input) => {
+      input.checked = input.value === 'groupings';
+    });
+    return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ activity_grouping: next })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update work style');
+    showToast(next === 'groupings' ? 'Activity set to Groupings.' : 'Activity set to Individual.');
+    const openFn = window.openProgressEditor;
+    if (typeof openFn === 'function') {
+      await openFn(Number(id), document.getElementById('progress-editor')?.dataset.mode || 'edit');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 async function autoGroupProgressActivity() {
@@ -9952,6 +10018,12 @@ document.getElementById('progress-groups-auto')?.addEventListener('click', () =>
 });
 document.getElementById('progress-groups-clear')?.addEventListener('click', () => {
   clearProgressActivityGroups();
+});
+document.querySelectorAll('input[name="progress-activity-grouping"]').forEach((input) => {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    setProgressActivityGrouping(input.value);
+  });
 });
 
 function buildProgressRubricColumns(questions, assessmentRubric) {
@@ -15847,10 +15919,16 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
   }
   let activity_mode = null;
   let activity_target_at = null;
+  let activity_grouping = null;
   if (type === 'activity') {
     activity_mode = document.querySelector('input[name="qb-create-activity-mode"]:checked')?.value || '';
     if (activity_mode !== 'classroom' && activity_mode !== 'take_home') {
       showToast('Choose Classroom activity or Take home.', 'error');
+      return;
+    }
+    activity_grouping = document.querySelector('input[name="qb-create-activity-grouping"]:checked')?.value || 'individual';
+    if (activity_grouping !== 'individual' && activity_grouping !== 'groupings') {
+      showToast('Choose Individual or Groupings.', 'error');
       return;
     }
     // Target date applies to take-home activities only.
@@ -15879,7 +15957,8 @@ document.getElementById('qb-create-confirm')?.addEventListener('click', async ()
         max_score,
         section_totals,
         activity_mode,
-        activity_target_at
+        activity_target_at,
+        activity_grouping
       })
     });
     const data = await res.json();

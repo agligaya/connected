@@ -3436,7 +3436,8 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       max_score,
       section_totals: sectionTotalsBody,
       activity_mode: activityModeBody,
-      activity_target_at: activityTargetBody
+      activity_target_at: activityTargetBody,
+      activity_grouping: activityGroupingBody
     } = req.body || {};
 
     if (!['quiz', 'activity', 'exam'].includes(type)) {
@@ -3444,10 +3445,15 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
     }
     let activityMode = null;
     let activityTargetAt = null;
+    let activityGrouping = null;
     if (type === 'activity') {
       activityMode = String(activityModeBody || '').toLowerCase();
       if (activityMode !== 'classroom' && activityMode !== 'take_home') {
         return res.status(400).json({ error: 'Choose Classroom activity or Take home' });
+      }
+      activityGrouping = String(activityGroupingBody || 'individual').toLowerCase();
+      if (activityGrouping !== 'individual' && activityGrouping !== 'groupings') {
+        return res.status(400).json({ error: 'Choose Individual or Groupings for the activity.' });
       }
       // Only take-home activities have a target date (deadline). Classroom activities
       // are timed by the "minutes open" window when the link is enabled.
@@ -3618,10 +3624,17 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
       }
 
       if (activityMode) {
-        await db.query(
-          `UPDATE assessments SET activity_mode = ?, activity_target_at = ? WHERE id = ?`,
-          [activityMode, activityTargetAt, assessmentId]
-        );
+        try {
+          await db.query(
+            `UPDATE assessments SET activity_mode = ?, activity_target_at = ?, activity_grouping = ? WHERE id = ?`,
+            [activityMode, activityTargetAt, activityGrouping || 'individual', assessmentId]
+          );
+        } catch (groupColErr) {
+          await db.query(
+            `UPDATE assessments SET activity_mode = ?, activity_target_at = ? WHERE id = ?`,
+            [activityMode, activityTargetAt, assessmentId]
+          );
+        }
       }
 
       for (let i = 0; i < ordered.length; i++) {
@@ -4513,7 +4526,7 @@ router.get('/assessments', verifyToken, async (req, res) => {
                       a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                       a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
                       a.quiz_opens_at, a.quiz_closes_at, a.shared_with_adviser,
-                      a.activity_mode, a.activity_target_at,
+                      a.activity_mode, a.activity_target_at, a.activity_grouping,
                       s.NAME as subject_name,
                       (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count,
                       (SELECT COUNT(*) FROM assessment_questions aq WHERE aq.assessment_id = a.id) as question_count
@@ -4688,10 +4701,10 @@ router.put('/assessments/:id', verifyToken, async (req, res) => {
     await ensureAssessmentSchema();
     const teacherId = req.user?.id || req.user?.userId;
     const { id } = req.params;
-    const { quiz_link, max_score } = req.body || {};
+    const { quiz_link, max_score, activity_grouping } = req.body || {};
 
     const [[assessment]] = await db.query(
-      'SELECT id, title, max_score, quiz_link FROM assessments WHERE id = ? AND created_by = ?',
+      'SELECT id, title, TYPE as type, max_score, quiz_link FROM assessments WHERE id = ? AND created_by = ?',
       [id, teacherId]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
@@ -4722,6 +4735,23 @@ router.put('/assessments/:id', verifyToken, async (req, res) => {
       out.max_score = maxScore;
     }
 
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'activity_grouping')) {
+      if (String(assessment.type || '').toLowerCase() !== 'activity') {
+        return res.status(400).json({ error: 'Grouping mode is only for activities.' });
+      }
+      const grouping = String(activity_grouping || '').toLowerCase();
+      if (grouping !== 'individual' && grouping !== 'groupings') {
+        return res.status(400).json({ error: 'Choose Individual or Groupings.' });
+      }
+      updates.push('activity_grouping = ?');
+      params.push(grouping);
+      out.activity_grouping = grouping;
+      if (grouping === 'individual') {
+        await clearAssessmentGroups(id);
+        out.groups = [];
+      }
+    }
+
     if (!updates.length) {
       return res.status(400).json({ error: 'Nothing to update.' });
     }
@@ -4733,7 +4763,9 @@ router.put('/assessments/:id', verifyToken, async (req, res) => {
     );
 
     res.json({
-      message: out.max_score != null && out.quiz_link !== undefined
+      message: out.activity_grouping
+        ? (out.activity_grouping === 'groupings' ? 'Activity set to groupings' : 'Activity set to individual')
+        : out.max_score != null && out.quiz_link !== undefined
         ? 'Record updated'
         : out.max_score != null
           ? 'Total score saved'
@@ -4759,7 +4791,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
                 a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id, a.quiz_makeup_student_ids,
                 a.quiz_opens_at, a.quiz_closes_at, a.quiz_makeup_closes_at, a.time_limit_minutes,
                 a.share_awaiting_attendance, a.quiz_live_duration_minutes, a.shared_with_adviser,
-                a.activity_mode, a.activity_target_at, a.rubric,
+                a.activity_mode, a.activity_target_at, a.activity_grouping, a.rubric,
                 s.NAME as subject_name
          FROM assessments a
          LEFT JOIN subjects s ON a.subject_id = s.id
@@ -4768,17 +4800,31 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       );
       assessment = row;
     } catch (inner) {
-      const [[row]] = await db.query(
-        `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
-                a.max_score, a.created_by, a.created_at, s.NAME as subject_name
-         FROM assessments a
-         LEFT JOIN subjects s ON a.subject_id = s.id
-         WHERE a.id = ?`,
-        [id]
-      );
-      assessment = row;
+      try {
+        const [[row]] = await db.query(
+          `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
+                  a.max_score, a.created_by, a.created_at, a.activity_mode, a.activity_target_at,
+                  a.activity_grouping, s.NAME as subject_name
+           FROM assessments a
+           LEFT JOIN subjects s ON a.subject_id = s.id
+           WHERE a.id = ?`,
+          [id]
+        );
+        assessment = row;
+      } catch (inner2) {
+        const [[row]] = await db.query(
+          `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
+                  a.max_score, a.created_by, a.created_at, s.NAME as subject_name
+           FROM assessments a
+           LEFT JOIN subjects s ON a.subject_id = s.id
+           WHERE a.id = ?`,
+          [id]
+        );
+        assessment = row;
+      }
     }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (!assessment.activity_grouping) assessment.activity_grouping = 'individual';
 
     const teacherId = req.user?.id || req.user?.userId;
     const isOwner = Number(assessment.created_by) === Number(teacherId);
@@ -4926,7 +4972,10 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
 
     let groups = [];
     try {
-      if (String(assessment.type || '').toLowerCase() === 'activity') {
+      const isGroupedActivity =
+        String(assessment.type || '').toLowerCase() === 'activity'
+        && String(assessment.activity_grouping || 'individual') === 'groupings';
+      if (isGroupedActivity) {
         groups = await loadAssessmentGroups(assessment.id);
         const byStudent = new Map();
         for (const group of groups) {
@@ -4971,13 +5020,16 @@ router.post('/assessments/:id/groups', verifyToken, async (req, res) => {
     }
 
     const [[assessment]] = await db.query(
-      `SELECT id, title, TYPE as type, grade_level, section, created_by, shared_with_adviser
+      `SELECT id, title, TYPE as type, grade_level, section, created_by, shared_with_adviser, activity_grouping
        FROM assessments WHERE id = ?`,
       [id]
     );
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
     if (String(assessment.type || '').toLowerCase() !== 'activity') {
       return res.status(400).json({ error: 'Grouping is only available for activities.' });
+    }
+    if (String(assessment.activity_grouping || 'individual') !== 'groupings') {
+      return res.status(400).json({ error: 'Set this activity to Groupings before auto-grouping.' });
     }
 
     const teacherId = req.user?.id || req.user?.userId;
@@ -5082,12 +5134,24 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'scores must be an array' });
     }
 
-    const [[assessment]] = await db.query(
-      `SELECT id, title, TYPE as type, max_score, share_enabled, grade_level, section, subject_id,
-              quiz_attendance_date, quiz_attendance_session, quiz_subject_id
-       FROM assessments WHERE id = ?`,
-      [id]
-    );
+    let assessment;
+    try {
+      const [[row]] = await db.query(
+        `SELECT id, title, TYPE as type, max_score, share_enabled, grade_level, section, subject_id,
+                quiz_attendance_date, quiz_attendance_session, quiz_subject_id, activity_grouping
+         FROM assessments WHERE id = ?`,
+        [id]
+      );
+      assessment = row;
+    } catch (e) {
+      const [[row]] = await db.query(
+        `SELECT id, title, TYPE as type, max_score, share_enabled, grade_level, section, subject_id,
+                quiz_attendance_date, quiz_attendance_session, quiz_subject_id
+         FROM assessments WHERE id = ?`,
+        [id]
+      );
+      assessment = row;
+    }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
 
     const maxScore = Number(assessment.max_score) || 100;
@@ -5116,7 +5180,10 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       (scores || []).map((row) => Number(row.student_id)).filter((id) => id > 0)
     );
     let scoreRows = scores;
-    if (String(assessment.type || '').toLowerCase() === 'activity') {
+    if (
+      String(assessment.type || '').toLowerCase() === 'activity'
+      && String(assessment.activity_grouping || 'individual') === 'groupings'
+    ) {
       try {
         const groups = await loadAssessmentGroups(assessment.id);
         scoreRows = expandScoresForGroups(scores, groups);

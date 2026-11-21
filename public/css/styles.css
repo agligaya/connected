@@ -2198,6 +2198,21 @@ html.layout-mobile .admin-student-filter-select {
   flex-wrap: wrap;
 }
 
+.progress-grouping-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+}
+
+.progress-grouping-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
 .progress-groups-controls {
   display: flex;
   flex-wrap: wrap;
