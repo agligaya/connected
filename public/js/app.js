@@ -6322,6 +6322,7 @@ wireSimpleModal('qb-exam-modal');
 wireSimpleModal('parent-concern-modal');
 wireSimpleModal('progress-makeup-modal');
 wireSimpleModal('progress-activity-work-modal');
+wireSimpleModal('teacher-student-progress-modal');
 wireSimpleModal('transfer-teacher-modal');
 
 document.getElementById('parent-concern-form')?.addEventListener('submit', submitParentConcern);
@@ -7691,16 +7692,15 @@ function paintTeacherProgressList(listId, students, emptyText, options = {}) {
     list.innerHTML = `<li class="page-subheading" style="list-style:none;">${escapeHtml(emptyText)}</li>`;
     return;
   }
-  list.innerHTML = rows.map((student) => teacherProgressPersonHtml(student, !!options.showLesson)).join('');
+  list.innerHTML = rows.map((student) => teacherProgressPersonHtml(student)).join('');
 }
 
-function teacherProgressPersonHtml(student, showLesson) {
-  const topicPrefix = student.topic_side === 'strength' ? 'Strength' : 'Weakest';
-  const lesson = showLesson && student.weakest_lesson
-    ? ` <span class="page-subheading">· ${topicPrefix}: ${escapeHtml(student.weakest_lesson)}</span>`
-    : '';
-  const pct = student.avg_percent == null ? '' : ` <span class="page-subheading">(${student.avg_percent}%)</span>`;
-  return `<li>${escapeHtml(teacherProgressName(student))}${pct}${lesson}</li>`;
+function teacherProgressPersonHtml(student) {
+  const name = teacherProgressName(student);
+  const nameBtn = student?.id
+    ? `<button type="button" class="teacher-progress-student-link" data-student-id="${Number(student.id)}">${escapeHtml(name)}</button>`
+    : escapeHtml(name);
+  return `<li>${nameBtn}</li>`;
 }
 
 function renderTeacherProgressGroups(data) {
@@ -7708,13 +7708,13 @@ function renderTeacherProgressGroups(data) {
   if (!box) return;
   const block = (title, students, emptyText) => {
     const body = students.length
-      ? `<ul>${students.map((student) => teacherProgressPersonHtml(student, true)).join('')}</ul>`
+      ? `<ul>${students.map((student) => teacherProgressPersonHtml(student)).join('')}</ul>`
       : `<p class="page-subheading" style="margin:0;">${escapeHtml(emptyText)}</p>`;
     return `<div><h4>${escapeHtml(title)}</h4>${body}</div>`;
   };
   const unscored = data.unscored || [];
   const none = unscored.length
-    ? `<ul>${unscored.map((student) => `<li>${escapeHtml(teacherProgressName(student))}</li>`).join('')}</ul>`
+    ? `<ul>${unscored.map((student) => teacherProgressPersonHtml(student)).join('')}</ul>`
     : '<p class="page-subheading" style="margin:0;">None</p>';
   box.innerHTML = `
     <div class="teacher-progress-lists teacher-progress-all-grid">
@@ -7724,6 +7724,300 @@ function renderTeacherProgressGroups(data) {
       <div><h4>No scores yet</h4>${none}</div>
     </div>`;
 }
+
+const TEACHER_STUDENT_PROGRESS_TYPES = [
+  { key: 'quiz', label: 'Quizzes' },
+  { key: 'activity', label: 'Activities' },
+  { key: 'exam', label: 'Exams' }
+];
+
+const TEACHER_STUDENT_BAND_LABELS = {
+  excels: 'Excelling',
+  on_track: 'On track',
+  behind: 'Left behind',
+  unscored: 'No scores yet'
+};
+
+const TEACHER_STUDENT_SCORE_COLORS = {
+  excels: '#2e7d32',
+  on_track: '#f39c12',
+  behind: '#c62828'
+};
+
+let teacherStudentProgressRecords = [];
+let teacherStudentProgressFilter = 'all';
+let teacherStudentProgressChart = null;
+
+function teacherJoinTopics(list) {
+  const arr = (list || []).map((t) => String(t || '').trim()).filter(Boolean);
+  if (arr.length <= 1) return arr[0] || '';
+  if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+  return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
+}
+
+function teacherStudentProgressTopicLine(data) {
+  const weak = teacherJoinTopics(data.weak_topics);
+  const strong = teacherJoinTopics(data.strong_topics);
+  const bits = [];
+  if (weak) bits.push(`Needs practice: ${weak}`);
+  if (strong) bits.push(`Going well: ${strong}`);
+  return bits.join(' · ');
+}
+
+function teacherStudentProgressScoreBand(percent) {
+  const n = Number(percent);
+  if (!Number.isFinite(n)) return 'behind';
+  if (n >= 85) return 'excels';
+  if (n >= 75) return 'on_track';
+  return 'behind';
+}
+
+function teacherStudentProgressFilteredRecords() {
+  const filter = teacherStudentProgressFilter;
+  const rows = Array.isArray(teacherStudentProgressRecords) ? teacherStudentProgressRecords : [];
+  if (filter === 'all') return rows;
+  return rows.filter((row) => row.type === filter);
+}
+
+function teacherStudentProgressRecordsHtml(records) {
+  if (!records.length) {
+    const empty = teacherStudentProgressFilter === 'all'
+      ? 'No scores recorded yet for this student in the current class view.'
+      : `No ${TEACHER_STUDENT_PROGRESS_TYPES.find((t) => t.key === teacherStudentProgressFilter)?.label?.toLowerCase() || 'scores'} yet.`;
+    return `<p class="page-subheading" style="margin:0;">${escapeHtml(empty)}</p>`;
+  }
+  const types = teacherStudentProgressFilter === 'all'
+    ? TEACHER_STUDENT_PROGRESS_TYPES
+    : TEACHER_STUDENT_PROGRESS_TYPES.filter((t) => t.key === teacherStudentProgressFilter);
+  return types.map(({ key, label }) => {
+    const group = records.filter((row) => row.type === key);
+    if (!group.length) return '';
+    const items = group.map((row) => {
+      const subject = String(row.subject_name || '').trim();
+      const date = row.date ? String(row.date).slice(0, 10) : '';
+      const meta = [subject, date].filter(Boolean).join(' · ');
+      return `<li>
+        <span class="teacher-student-progress-title">${escapeHtml(row.title || 'Untitled')}</span>
+        <span class="page-subheading teacher-student-progress-score">${Number(row.score)}/${Number(row.max_score)} (${Number(row.percent)}%)${meta ? ` · ${escapeHtml(meta)}` : ''}</span>
+      </li>`;
+    }).join('');
+    return `<div class="teacher-student-progress-group">
+      <h5 class="teacher-student-progress-heading">${escapeHtml(label)}</h5>
+      <ul>${items}</ul>
+    </div>`;
+  }).join('');
+}
+
+function syncTeacherStudentProgressFilterChips() {
+  document.querySelectorAll('#teacher-student-progress-filters [data-progress-type]').forEach((btn) => {
+    const active = btn.getAttribute('data-progress-type') === teacherStudentProgressFilter;
+    btn.classList.toggle('is-active', active);
+    btn.classList.toggle('is-pressed', active);
+  });
+}
+
+function destroyTeacherStudentProgressChart() {
+  if (teacherStudentProgressChart) {
+    teacherStudentProgressChart.destroy();
+    teacherStudentProgressChart = null;
+  }
+}
+
+function paintTeacherStudentProgressChart() {
+  const wrap = document.getElementById('teacher-student-progress-chart-wrap');
+  if (!wrap) return;
+
+  destroyTeacherStudentProgressChart();
+
+  const filtered = teacherStudentProgressFilteredRecords();
+  // Chart oldest → newest so progress reads left-to-right / top-to-bottom.
+  const rows = [...filtered].reverse();
+
+  if (!rows.length) {
+    wrap.style.height = '120px';
+    wrap.innerHTML = '<p class="parent-chart-empty">No scores to chart for this filter.</p>';
+    return;
+  }
+
+  const ChartLib = typeof window !== 'undefined' ? window.Chart : null;
+  if (!ChartLib) {
+    wrap.style.height = '120px';
+    wrap.innerHTML = '<p class="parent-chart-empty">Chart is unavailable right now.</p>';
+    return;
+  }
+
+  wrap.innerHTML = '<canvas id="teacher-student-progress-chart" aria-label="Student scores" role="img"></canvas>';
+  wrap.style.height = `${Math.max(180, Math.min(420, 44 * rows.length + 64))}px`;
+  const canvas = document.getElementById('teacher-student-progress-chart');
+  const labels = rows.map((row) => {
+    const title = String(row.title || 'Untitled').trim();
+    return title.length > 36 ? `${title.slice(0, 34)}…` : title;
+  });
+  const values = rows.map((row) => Number(row.percent) || 0);
+  const colors = rows.map((row) => TEACHER_STUDENT_SCORE_COLORS[teacherStudentProgressScoreBand(row.percent)] || '#8a726b');
+
+  teacherStudentProgressChart = new ChartLib(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Score %',
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 6,
+        maxBarThickness: 22,
+        categoryPercentage: 0.7,
+        barPercentage: 0.85
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          min: 0,
+          max: 100,
+          ticks: { callback: (v) => `${v}%` },
+          grid: { color: 'rgba(93,17,13,0.08)' }
+        },
+        y: {
+          ticks: { autoSkip: false, font: { size: 11 } },
+          grid: { display: false }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => rows[items[0]?.dataIndex]?.title || '',
+            label: (item) => {
+              const row = rows[item.dataIndex];
+              if (!row) return '';
+              const typeLabel = TEACHER_STUDENT_PROGRESS_TYPES.find((t) => t.key === row.type)?.label || row.type;
+              const band = TEACHER_STUDENT_BAND_LABELS[teacherStudentProgressScoreBand(row.percent)] || '';
+              return [
+                `${row.score}/${row.max_score} (${row.percent}%)`,
+                typeLabel,
+                band,
+                row.subject_name || ''
+              ].filter(Boolean);
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderTeacherStudentProgressView() {
+  const bodyEl = document.getElementById('teacher-student-progress-body');
+  syncTeacherStudentProgressFilterChips();
+  paintTeacherStudentProgressChart();
+  if (bodyEl) bodyEl.innerHTML = teacherStudentProgressRecordsHtml(teacherStudentProgressFilteredRecords());
+}
+
+function setTeacherStudentProgressFilter(type) {
+  const allowed = new Set(['all', 'quiz', 'activity', 'exam']);
+  teacherStudentProgressFilter = allowed.has(type) ? type : 'all';
+  renderTeacherStudentProgressView();
+}
+
+async function openTeacherStudentProgressModal(studentId) {
+  const modal = document.getElementById('teacher-student-progress-modal');
+  const titleEl = document.getElementById('teacher-student-progress-title');
+  const subEl = document.getElementById('teacher-student-progress-sub');
+  const topicsEl = document.getElementById('teacher-student-progress-topics');
+  const bodyEl = document.getElementById('teacher-student-progress-body');
+  const wrap = document.getElementById('teacher-student-progress-chart-wrap');
+  if (!modal || !bodyEl) return;
+
+  const grade = teacherCurrentClass?.grade;
+  const section = teacherCurrentClass?.section;
+  if (!grade || !section || !studentId) {
+    teacherStudentProgressRecords = [];
+    destroyTeacherStudentProgressChart();
+    if (wrap) {
+      wrap.style.height = '120px';
+      wrap.innerHTML = '<p class="parent-chart-empty">Select a class first.</p>';
+    }
+    bodyEl.innerHTML = '<p class="page-subheading" style="margin:0;">Select a class first.</p>';
+    modal.removeAttribute('hidden');
+    return;
+  }
+
+  teacherStudentProgressFilter = 'all';
+  teacherStudentProgressRecords = [];
+  destroyTeacherStudentProgressChart();
+  syncTeacherStudentProgressFilterChips();
+
+  if (titleEl) titleEl.textContent = 'Student progress';
+  if (subEl) subEl.textContent = 'Loading…';
+  if (topicsEl) {
+    topicsEl.textContent = '';
+    topicsEl.hidden = true;
+  }
+  if (wrap) {
+    wrap.style.height = '160px';
+    wrap.innerHTML = '<p class="parent-chart-empty">Loading chart…</p>';
+  }
+  bodyEl.innerHTML = '<p class="page-subheading" style="margin:0;">Loading scores…</p>';
+  modal.removeAttribute('hidden');
+
+  const params = new URLSearchParams();
+  if (teacherCurrentClass?.subjectId) params.set('subject_id', String(teacherCurrentClass.subjectId));
+  const qs = params.toString();
+  try {
+    const res = await fetch(
+      `${API_URL}/teacher/class-progress/${encodeURIComponent(grade)}/${encodeURIComponent(String(section).trim())}/student/${encodeURIComponent(studentId)}${qs ? `?${qs}` : ''}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load student progress');
+
+    const name = data.student?.name || teacherProgressName(data.student || {});
+    const bandLabel = TEACHER_STUDENT_BAND_LABELS[data.band] || TEACHER_STUDENT_BAND_LABELS.unscored;
+    const avgBit = data.avg_percent == null ? bandLabel : `${data.avg_percent}% · ${bandLabel}`;
+    if (titleEl) titleEl.textContent = name;
+    if (subEl) {
+      const scope = teacherCurrentClass?.subjectName
+        ? teacherCurrentClass.subjectName
+        : `Grade ${grade} ${section}`;
+      subEl.textContent = `${avgBit} · ${scope}`;
+    }
+    const topicLine = teacherStudentProgressTopicLine(data);
+    if (topicsEl) {
+      topicsEl.textContent = topicLine;
+      topicsEl.hidden = !topicLine;
+    }
+    teacherStudentProgressRecords = Array.isArray(data.records) ? data.records : [];
+    renderTeacherStudentProgressView();
+  } catch (err) {
+    console.error('Student progress modal error:', err);
+    if (subEl) subEl.textContent = '';
+    teacherStudentProgressRecords = [];
+    destroyTeacherStudentProgressChart();
+    if (wrap) {
+      wrap.style.height = '120px';
+      wrap.innerHTML = '<p class="parent-chart-empty">Could not load chart.</p>';
+    }
+    bodyEl.innerHTML = `<p class="page-subheading" style="margin:0;color:#b71c1c;">${escapeHtml(err.message || 'Could not load student progress.')}</p>`;
+  }
+}
+
+document.getElementById('teacher-progress-card')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.teacher-progress-student-link');
+  if (!btn || !e.currentTarget.contains(btn)) return;
+  const studentId = Number(btn.getAttribute('data-student-id'));
+  if (!studentId) return;
+  openTeacherStudentProgressModal(studentId);
+});
+
+document.getElementById('teacher-student-progress-filters')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-progress-type]');
+  if (!btn) return;
+  setTeacherStudentProgressFilter(btn.getAttribute('data-progress-type'));
+});
 
 const SUBJECT_RECORD_SHEETS = [
   { key: 'quizzes', label: 'Quizzes' },
@@ -9537,6 +9831,8 @@ window.openProgressEditor = async function(id, mode = 'edit') {
     }
 
     renderProgressRubricGuide(questions, a);
+    window._progressActivityGroups = Array.isArray(data.groups) ? data.groups : [];
+    renderProgressActivityGroups(a, window._progressActivityGroups);
 
     if (effectiveMode !== 'link') {
       renderProgressScoresTable(effectiveMode, a, data.students || []);
@@ -9546,6 +9842,117 @@ window.openProgressEditor = async function(id, mode = 'edit') {
     loadProgressList();
   }
 };
+
+function progressGroupMemberName(member) {
+  const last = String(member?.last_name || '').trim();
+  const first = String(member?.first_name || '').trim();
+  if (last && first) return `${last}, ${first}`;
+  return last || first || 'Student';
+}
+
+function renderProgressActivityGroups(assessment, groups) {
+  const section = document.getElementById('progress-activity-groups');
+  const listEl = document.getElementById('progress-groups-list');
+  const sizeInput = document.getElementById('progress-group-size');
+  const clearBtn = document.getElementById('progress-groups-clear');
+  if (!section || !listEl) return;
+
+  const isActivity = String(assessment?.type || '').toLowerCase() === 'activity';
+  const mode = document.getElementById('progress-editor')?.dataset.mode || 'edit';
+  if (!isActivity || mode === 'link') {
+    section.hidden = true;
+    section.setAttribute('hidden', '');
+    listEl.innerHTML = '';
+    return;
+  }
+
+  section.hidden = false;
+  section.removeAttribute('hidden');
+
+  const rows = Array.isArray(groups) ? groups : [];
+  if (sizeInput && rows[0]?.members_per_group) {
+    sizeInput.value = String(rows[0].members_per_group);
+  }
+  if (clearBtn) {
+    clearBtn.hidden = !rows.length;
+    if (rows.length) clearBtn.removeAttribute('hidden');
+    else clearBtn.setAttribute('hidden', '');
+  }
+
+  if (!rows.length) {
+    listEl.innerHTML = '<p class="page-subheading" style="margin:0;">No groups yet. Set members per group and click Auto-group.</p>';
+    return;
+  }
+
+  listEl.innerHTML = rows.map((group) => {
+    const members = (group.members || []).map((m) => {
+      const label = progressGroupMemberName(m);
+      const leader = m.is_leader ? ' <span class="progress-group-leader-tag">Leader</span>' : '';
+      return `<li>${escapeHtml(label)}${leader}</li>`;
+    }).join('');
+    return `<div class="progress-group-card">
+      <h5 class="progress-group-card-title">Group ${Number(group.group_number)}</h5>
+      <ul>${members}</ul>
+    </div>`;
+  }).join('');
+}
+
+async function autoGroupProgressActivity() {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  const sizeInput = document.getElementById('progress-group-size');
+  const membersPerGroup = Number(sizeInput?.value);
+  if (!id) return;
+  if (!Number.isFinite(membersPerGroup) || membersPerGroup < 2 || membersPerGroup > 20) {
+    showToast('Members per group must be between 2 and 20.', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}/groups`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ members_per_group: membersPerGroup })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not create groups');
+    window._progressActivityGroups = data.groups || [];
+    showToast(`Grouped into ${window._progressActivityGroups.length} group${window._progressActivityGroups.length === 1 ? '' : 's'}.`);
+    const openFn = window.openProgressEditor;
+    if (typeof openFn === 'function') {
+      await openFn(Number(id), document.getElementById('progress-editor')?.dataset.mode || 'edit');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function clearProgressActivityGroups() {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  if (!id) return;
+  if (!confirm('Clear all groups for this activity?')) return;
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}/groups`, {
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not clear groups');
+    window._progressActivityGroups = [];
+    showToast('Groups cleared.');
+    const openFn = window.openProgressEditor;
+    if (typeof openFn === 'function') {
+      await openFn(Number(id), document.getElementById('progress-editor')?.dataset.mode || 'edit');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+document.getElementById('progress-groups-auto')?.addEventListener('click', () => {
+  autoGroupProgressActivity();
+});
+document.getElementById('progress-groups-clear')?.addEventListener('click', () => {
+  clearProgressActivityGroups();
+});
 
 function buildProgressRubricColumns(questions, assessmentRubric) {
   const cols = [];
@@ -9778,7 +10185,10 @@ function renderProgressScoresTable(mode, assessment, students) {
     const score = s.score === null || s.score === undefined ? '' : s.score;
     const pct = score === '' ? '—' : scorePercentDisplay(score, progressEditorMax);
     const leaveBadge = quizLeaveBadgeHtml(s.focus_leaves, s.focus_last_at);
-    const nameCell = `<td class="att-name-cell"><div class="student-name-with-flag"><strong>${formatStudentNameStacked(s)}</strong>${leaveBadge}</div></td>`;
+    const groupBadge = s.group_number
+      ? `<span class="progress-group-badge${s.is_group_leader ? ' progress-group-badge--leader' : ''}" title="${s.is_group_leader ? 'Group leader' : 'Group member'}">G${Number(s.group_number)}${s.is_group_leader ? ' · Leader' : ''}</span>`
+      : '';
+    const nameCell = `<td class="att-name-cell"><div class="student-name-with-flag"><strong>${formatStudentNameStacked(s)}</strong>${leaveBadge}${groupBadge}</div></td>`;
     const savedRubric = parseRubricScoresClient(s.rubric_scores) || {};
     const stEarly = String(s.attendance_status || '');
     const scoreLocked = !!(shareOn && !s.submitted && (stEarly === 'Absent' || stEarly === 'Excused'));
@@ -10221,7 +10631,6 @@ function setProgressEditorMode(mode, hasQuestions = true) {
   const saveBtn = document.getElementById('progress-scores-save');
   const editBtn = document.getElementById('progress-mode-edit');
   const linkBtn = document.getElementById('progress-mode-link');
-  const scoresSection = document.querySelector('#progress-editor .progress-scores-only');
   const allowLink = !!hasQuestions;
 
   if (saveBtn) {
@@ -10249,12 +10658,15 @@ function setProgressEditorMode(mode, hasQuestions = true) {
     else el.setAttribute('hidden', '');
   });
 
-  if (scoresSection) {
-    const showScores = !allowLink || normalized !== 'link';
-    scoresSection.hidden = !showScores;
-    if (showScores) scoresSection.removeAttribute('hidden');
-    else scoresSection.setAttribute('hidden', '');
-  }
+  // Scores + activity groups share this class (querySelectorAll — both must toggle).
+  const showScores = !allowLink || normalized !== 'link';
+  document.querySelectorAll('#progress-editor .progress-scores-only').forEach((el) => {
+    // Activity groups section still decides visibility for non-activities itself.
+    if (el.id === 'progress-activity-groups' && showScores) return;
+    el.hidden = !showScores;
+    if (showScores) el.removeAttribute('hidden');
+    else el.setAttribute('hidden', '');
+  });
 }
 
 function progressRubricGuideActivities(questions, assessment) {
@@ -11487,7 +11899,12 @@ document.getElementById('progress-scores-save')?.addEventListener('click', async
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    showToast('Scores saved. Parents can see them in Records.');
+    const hasGroups = Array.isArray(window._progressActivityGroups) && window._progressActivityGroups.length > 0;
+    showToast(
+      hasGroups
+        ? 'Scores saved. Group scores were applied to every member.'
+        : 'Scores saved. Parents can see them in Records.'
+    );
     loadProgressList();
     const openFn = window.openProgressEditor || window.loadProgressEditor;
     if (typeof openFn === 'function') {

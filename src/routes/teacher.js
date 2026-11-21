@@ -61,7 +61,14 @@ const {
   normalizeTrueFalseAnswer,
   ITEM_TYPES
 } = require('../utils/questionBank');
-const { topicInsightForStudent, writeClassSkillInsightWithAi, PASSING } = require('../utils/parentInsights');
+const { topicInsightForStudent, writeClassSkillInsightWithAi, PASSING, STRONG } = require('../utils/parentInsights');
+const {
+  ensureActivityGroupsSchema,
+  saveAutoGroups,
+  clearAssessmentGroups,
+  loadAssessmentGroups,
+  expandScoresForGroups
+} = require('../utils/activityGroups');
 const {
   ensureQuizAttendanceSchema,
   parseMakeupIds,
@@ -1597,6 +1604,148 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
     const status = error.status || 500;
     res.status(status).json({
       error: error.status ? error.message : 'Server error fetching class progress'
+    });
+  }
+});
+
+/** Single-student progress for the Class progress modal. */
+router.get('/class-progress/:grade/:section/student/:studentId', verifyToken, async (req, res) => {
+  try {
+    const teacherId = req.user?.id || req.user?.userId;
+    const grade = req.params.grade;
+    const sectionNorm = String(req.params.section || '').trim();
+    const studentId = Number(req.params.studentId);
+    const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
+    if (!studentId) {
+      return res.status(400).json({ error: 'Student is required.' });
+    }
+    await assertTeacherClassAssignment(teacherId, grade, sectionNorm);
+
+    const [[student]] = await db.query(
+      `SELECT id, first_name, last_name
+       FROM students
+       WHERE id = ? AND grade_level = ? AND TRIM(section) = ? AND \`STATUS\` = 'active'
+       LIMIT 1`,
+      [studentId, grade, sectionNorm]
+    );
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found in this class.' });
+    }
+
+    const homeGate = isSubjectGrade(grade)
+      ? await viewerHomeSlot(teacherId, grade, sectionNorm)
+      : null;
+
+    const buildScoreSql = (includeRecordedAt) => {
+      // Match class-progress scope: scores for this student in the class (optional subject + adviser share gate).
+      let sql = `SELECT a.id, a.title, a.TYPE as type, a.max_score, a.created_at,
+              sub.NAME as subject_name, sc.score,
+              ${includeRecordedAt ? 'sc.recorded_at' : 'NULL as recorded_at'}
+       FROM assessment_scores sc
+       JOIN assessments a ON a.id = sc.assessment_id
+       LEFT JOIN subjects sub ON sub.id = a.subject_id
+       WHERE sc.student_id = ?
+         AND LOWER(a.TYPE) IN ('quiz', 'activity', 'exam')`;
+      const params = [studentId];
+      if (subjectId) {
+        sql += ' AND a.subject_id = ?';
+        params.push(subjectId);
+      }
+      if (homeGate) {
+        sql += ' AND (a.created_by = ? OR COALESCE(a.shared_with_adviser, 0) = 1)';
+        params.push(teacherId);
+      }
+      sql += includeRecordedAt
+        ? ' ORDER BY COALESCE(sc.recorded_at, a.created_at) DESC, a.id DESC'
+        : ' ORDER BY a.created_at DESC, a.id DESC';
+      return { sql, params };
+    };
+
+    let rows;
+    try {
+      const primary = buildScoreSql(true);
+      [rows] = await db.query(primary.sql, primary.params);
+    } catch (e) {
+      // recorded_at may be missing on older schemas
+      const fallback = buildScoreSql(false);
+      [rows] = await db.query(fallback.sql, fallback.params);
+    }
+
+    const records = [];
+    const percents = [];
+    for (const row of rows) {
+      const max = Number(row.max_score) || 0;
+      const raw = Number(row.score);
+      if (!Number.isFinite(raw) || max <= 0) continue;
+      const percent = Math.min(100, Math.max(0, Math.round((raw / max) * 100)));
+      percents.push(percent);
+      const type = String(row.type || '').toLowerCase();
+      records.push({
+        id: row.id,
+        title: row.title,
+        type: type === 'exam' || type === 'activity' ? type : 'quiz',
+        subject_name: String(row.subject_name || '').trim() || 'General',
+        score: raw,
+        max_score: max,
+        percent,
+        date: sqlDateToISO(row.recorded_at || row.created_at) || null
+      });
+    }
+
+    const avg_percent = percents.length
+      ? Math.round(percents.reduce((sum, n) => sum + n, 0) / percents.length)
+      : null;
+    let band = 'unscored';
+    if (avg_percent != null) {
+      if (avg_percent >= STRONG) band = 'excels';
+      else if (avg_percent >= PASSING) band = 'on_track';
+      else band = 'behind';
+    }
+
+    let weak_topics = [];
+    let strong_topics = [];
+    if (percents.length) {
+      try {
+        const insight = await topicInsightForStudent(db, studentId);
+        const reports = insight?.subjects || [];
+        if (subjectId) {
+          const want = String(records[0]?.subject_name || '').trim().toLowerCase();
+          const match = reports.find((r) => String(r.subject || '').trim().toLowerCase() === want)
+            || reports[0];
+          weak_topics = (match?.weakTopics || []).slice(0, 4);
+          strong_topics = (match?.strongTopics || []).slice(0, 4);
+        } else {
+          const weak = [];
+          const strong = [];
+          for (const report of reports) {
+            weak.push(...(report.weakTopics || []));
+            strong.push(...(report.strongTopics || []));
+          }
+          weak_topics = [...new Set(weak.map((t) => String(t).trim()).filter(Boolean))].slice(0, 4);
+          strong_topics = [...new Set(strong.map((t) => String(t).trim()).filter(Boolean))].slice(0, 4);
+        }
+      } catch (topicErr) {
+        console.warn('[student-progress] topics:', topicErr.message);
+      }
+    }
+
+    const last = String(student.last_name || '').trim();
+    const first = String(student.first_name || '').trim();
+    const name = last && first ? `${last}, ${first}` : (last || first || 'Student');
+
+    res.json({
+      student: { id: student.id, first_name: student.first_name, last_name: student.last_name, name },
+      avg_percent,
+      band,
+      weak_topics,
+      strong_topics,
+      records
+    });
+  } catch (error) {
+    console.error('Student progress error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.status ? error.message : 'Server error fetching student progress'
     });
   }
 });
@@ -3615,6 +3764,11 @@ async function ensureAssessmentSchema() {
   } catch (e) {
     console.warn('[quiz-attendance] schema ensure:', e.message);
   }
+  try {
+    await ensureActivityGroupsSchema();
+  } catch (e) {
+    console.warn('[activity-groups] schema ensure:', e.message);
+  }
   await backfillAssessmentLessons();
 }
 
@@ -4770,10 +4924,133 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       console.warn('[assessment] activity work:', workErr.message);
     }
 
-    res.json({ assessment, students, questions, attendance_meta, makeup_candidates });
+    let groups = [];
+    try {
+      if (String(assessment.type || '').toLowerCase() === 'activity') {
+        groups = await loadAssessmentGroups(assessment.id);
+        const byStudent = new Map();
+        for (const group of groups) {
+          for (const member of group.members || []) {
+            byStudent.set(Number(member.student_id), {
+              group_number: group.group_number,
+              is_leader: !!member.is_leader,
+              leader_student_id: group.leader_student_id
+            });
+          }
+        }
+        students = students.map((s) => {
+          const info = byStudent.get(Number(s.id));
+          if (!info) return s;
+          return {
+            ...s,
+            group_number: info.group_number,
+            is_group_leader: info.is_leader,
+            group_leader_student_id: info.leader_student_id
+          };
+        });
+      }
+    } catch (groupErr) {
+      console.warn('[assessment] groups:', groupErr.message);
+    }
+
+    res.json({ assessment, students, questions, attendance_meta, makeup_candidates, groups });
   } catch (error) {
     console.error('Get assessment error:', error);
     res.status(500).json({ error: 'Server error fetching assessment', details: error.message });
+  }
+});
+
+/** Auto-group active roster for an activity; picks a random leader per group. */
+router.post('/assessments/:id/groups', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    const { id } = req.params;
+    const membersPerGroup = Number(req.body?.members_per_group);
+    if (!Number.isFinite(membersPerGroup) || membersPerGroup < 2 || membersPerGroup > 20) {
+      return res.status(400).json({ error: 'Members per group must be between 2 and 20.' });
+    }
+
+    const [[assessment]] = await db.query(
+      `SELECT id, title, TYPE as type, grade_level, section, created_by, shared_with_adviser
+       FROM assessments WHERE id = ?`,
+      [id]
+    );
+    if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (String(assessment.type || '').toLowerCase() !== 'activity') {
+      return res.status(400).json({ error: 'Grouping is only available for activities.' });
+    }
+
+    const teacherId = req.user?.id || req.user?.userId;
+    await assertTeacherClassAssignment(teacherId, assessment.grade_level, assessment.section);
+    if (
+      isSubjectGrade(assessment.grade_level)
+      && Number(assessment.created_by) !== Number(teacherId)
+      && !Number(assessment.shared_with_adviser)
+    ) {
+      return res.status(403).json({ error: 'This record has not been shared with the class adviser yet.' });
+    }
+
+    const [roster] = await db.query(
+      `SELECT id FROM students
+       WHERE grade_level = ? AND TRIM(section) = ? AND \`STATUS\` = 'active'
+       ORDER BY last_name, first_name`,
+      [assessment.grade_level, String(assessment.section || '').trim()]
+    );
+    const groups = await saveAutoGroups(
+      assessment.id,
+      membersPerGroup,
+      roster.map((s) => s.id)
+    );
+
+    await logActivity(
+      db,
+      teacherId,
+      'Auto-grouped activity',
+      'assessment',
+      assessment.title,
+      `${groups.length} group${groups.length === 1 ? '' : 's'} · ${membersPerGroup} per group`
+    );
+
+    res.json({ groups, members_per_group: membersPerGroup });
+  } catch (error) {
+    console.error('Activity groups error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.status ? error.message : 'Server error creating groups',
+      details: error.message
+    });
+  }
+});
+
+router.delete('/assessments/:id/groups', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    const { id } = req.params;
+    const [[assessment]] = await db.query(
+      `SELECT id, title, TYPE as type, grade_level, section, created_by, shared_with_adviser
+       FROM assessments WHERE id = ?`,
+      [id]
+    );
+    if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+    if (String(assessment.type || '').toLowerCase() !== 'activity') {
+      return res.status(400).json({ error: 'Grouping is only available for activities.' });
+    }
+
+    const teacherId = req.user?.id || req.user?.userId;
+    await assertTeacherClassAssignment(teacherId, assessment.grade_level, assessment.section);
+    if (
+      isSubjectGrade(assessment.grade_level)
+      && Number(assessment.created_by) !== Number(teacherId)
+      && !Number(assessment.shared_with_adviser)
+    ) {
+      return res.status(403).json({ error: 'This record has not been shared with the class adviser yet.' });
+    }
+
+    await clearAssessmentGroups(assessment.id);
+    res.json({ message: 'Groups cleared', groups: [] });
+  } catch (error) {
+    console.error('Clear activity groups error:', error);
+    res.status(500).json({ error: 'Server error clearing groups', details: error.message });
   }
 });
 
@@ -4835,8 +5112,21 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       }
     }
 
+    const originalScoreIds = new Set(
+      (scores || []).map((row) => Number(row.student_id)).filter((id) => id > 0)
+    );
+    let scoreRows = scores;
+    if (String(assessment.type || '').toLowerCase() === 'activity') {
+      try {
+        const groups = await loadAssessmentGroups(assessment.id);
+        scoreRows = expandScoresForGroups(scores, groups);
+      } catch (groupErr) {
+        console.warn('[scores] group fan-out:', groupErr.message);
+      }
+    }
+
     const recorded = [];
-    for (const row of scores) {
+    for (const row of scoreRows) {
       if (!row.student_id) continue;
       const hasScore = !(row.score === '' || row.score === null || row.score === undefined);
       const rubricObj =
@@ -4846,7 +5136,8 @@ router.post('/assessments/:id/scores', verifyToken, async (req, res) => {
       const hasRubric = rubricObj && Object.keys(rubricObj).length > 0;
 
       if (!hasScore && !hasRubric) continue;
-      if (blockedIds.has(Number(row.student_id))) {
+      // Fan-out from a scored leader may write to absent groupmates; only block original rows.
+      if (blockedIds.has(Number(row.student_id)) && originalScoreIds.has(Number(row.student_id))) {
         return res.status(400).json({
           error: 'Cannot score a student who is absent or excused until they submit.'
         });
