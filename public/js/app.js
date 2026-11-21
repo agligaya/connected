@@ -30,7 +30,7 @@ let accountSortMenuApi = null;
 
 function normalizeQuarterClient(value) {
   const q = String(value || 'Q1').toUpperCase();
-  return ['Q1', 'Q2', 'Q3', 'Q4'].includes(q) ? q : 'Q1';
+  return ['Q1', 'Q2', 'Q3'].includes(q) ? q : 'Q1';
 }
 
 /** Fill a <select> with unlocked quarters only (future quarters stay inaccessible). */
@@ -77,7 +77,7 @@ function applyQuarterUnlockUI() {
 
   const help = document.getElementById('admin-quarter-help');
   if (help) {
-    help.textContent = CURRENT_QUARTER === 'Q4'
+    help.textContent = CURRENT_QUARTER === 'Q3'
       ? 'All quarters are unlocked for Progress records.'
       : `Teachers can record Progress through ${CURRENT_QUARTER}.`;
   }
@@ -821,9 +821,26 @@ function switchView(viewName) {
   if (window.__routingV2 && !window.__routeLock && window.__syncRoute) window.__syncRoute(viewName);
 }
 
+function clearTeacherClassContext() {
+  teacherCurrentClass = null;
+  teacherAssignedClasses = [];
+  progressSubjectFilter = null;
+  setMyClassesTriggerLabel();
+  const titleEl = document.getElementById('teacher-class-title');
+  if (titleEl) titleEl.textContent = 'Select a class';
+  const infoEl = document.getElementById('stat-class-info');
+  if (infoEl) infoEl.textContent = '—';
+  const modeBadge = document.getElementById('teacher-mode-badge');
+  if (modeBadge) modeBadge.textContent = 'Class';
+  const summaryEl = document.getElementById('teacher-performance-text');
+  if (summaryEl) summaryEl.textContent = 'Select a class to see how the class is doing.';
+  renderSubjectTeacherReports(null);
+}
+
 function showLoginScreen() {
   clearAuth();
   clearUserAvatars();
+  clearTeacherClassContext();
   const emailEl = document.getElementById('login-email');
   const passwordEl = document.getElementById('login-password');
   if (emailEl) emailEl.value = '';
@@ -4360,7 +4377,7 @@ async function refreshTeacherClassesPreserveSelection() {
     if (!listEl) return;
 
     if (!classes.length) {
-      setMyClassesTriggerLabel();
+      clearTeacherClassContext();
       listEl.innerHTML = '<div class="class-nav-empty">No classes assigned</div>';
       return;
     }
@@ -4386,11 +4403,12 @@ async function refreshTeacherClassesPreserveSelection() {
 
     const first = classes[0];
     if (first) {
+      const defaults = defaultSubjectForClass(first);
       await selectTeacherClassContext({
         grade: first.grade_level,
         section: first.section,
-        subjectName: null,
-        subjectId: null,
+        subjectName: defaults.subjectName,
+        subjectId: defaults.subjectId,
         goToPanel: null
       });
     }
@@ -4517,7 +4535,7 @@ async function loadOverviewStats() {
 
     if (settings?.currentQuarter) {
       CURRENT_QUARTER = normalizeQuarterClient(settings.currentQuarter);
-      UNLOCKED_QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'].slice(0, ['Q1', 'Q2', 'Q3', 'Q4'].indexOf(CURRENT_QUARTER) + 1);
+      UNLOCKED_QUARTERS = ['Q1', 'Q2', 'Q3'].slice(0, Math.max(0, ['Q1', 'Q2', 'Q3'].indexOf(CURRENT_QUARTER)) + 1);
       applyQuarterUnlockUI();
     }
 
@@ -6797,9 +6815,13 @@ function applyTeacherPanel(panelId) {
     loadProgressList();
     const progressMeta = document.getElementById('progress-class-meta');
     if (progressMeta && teacherCurrentClass) {
-      progressMeta.textContent = progressSubjectFilter
-        ? `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${progressSubjectFilter} · ${teacherCurrentQuarter}`
-        : `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${teacherCurrentQuarter} · Quizzes, activities, and exams for this class.`;
+      const roleLabel = teacherClassRoleLabel(
+        teacherCurrentClass.role,
+        teacherCurrentClass.subjectName || progressSubjectFilter
+      );
+      progressMeta.textContent = progressSubjectFilter || teacherCurrentClass.subjectName
+        ? `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${progressSubjectFilter || teacherCurrentClass.subjectName} · ${teacherCurrentQuarter} · ${roleLabel}`
+        : `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${teacherCurrentQuarter} · ${roleLabel}`;
     }
   }
 }
@@ -6932,6 +6954,49 @@ function currentManilaSessionClient() {
 
 function isSubjectAttendanceGrade(grade) {
   return Number(grade) >= 4;
+}
+
+/** Role for this grade+section: adviser / assistant / subject / class. */
+function resolveTeacherClassRole(classInfo, subjectId = null) {
+  const subjects = normalizeClassSubjects(classInfo?.subjects);
+  const sid = subjectId != null && String(subjectId).trim() !== '' ? Number(subjectId) : null;
+  if (sid && subjects.some((s) => Number(s.id) === sid)) return 'subject';
+  if (classInfo?.is_assistant) return 'assistant';
+  if (classInfo?.is_class_adviser) return 'adviser';
+  if (subjects.length) return 'subject';
+  return 'class';
+}
+
+function teacherClassRoleLabel(role, subjectName = null) {
+  if (role === 'subject') {
+    return subjectName ? `Subject Teacher · ${subjectName}` : 'Subject Teacher';
+  }
+  if (role === 'assistant') return 'Assistant Teacher';
+  if (role === 'adviser') return 'Class Adviser';
+  return 'Class';
+}
+
+/** Default subject when this section is subject-only (not home for that class). */
+function defaultSubjectForClass(classInfo) {
+  const subjects = normalizeClassSubjects(classInfo?.subjects);
+  const isHome = !!(classInfo?.is_class_adviser || classInfo?.is_assistant);
+  if (isHome || !subjects.length) return { subjectId: null, subjectName: null };
+  return { subjectId: subjects[0].id || null, subjectName: subjects[0].name || null };
+}
+
+/** Grades 4–6 subject-teacher context for a section (not adviser/assistant for that same class). */
+function canShareRecordsWithAdviser() {
+  if (!teacherCurrentClass?.subjectId || !isSubjectAttendanceGrade(teacherCurrentClass.grade)) {
+    return false;
+  }
+  if (teacherCurrentClass.role !== 'subject') return false;
+  const classInfo = (teacherAssignedClasses || []).find(
+    (c) => String(c.grade_level) === String(teacherCurrentClass.grade)
+      && String(c.section) === String(teacherCurrentClass.section)
+  );
+  // Home for this section → they are the adviser here; upload is for other sections they teach.
+  if (classInfo?.is_class_adviser || classInfo?.is_assistant) return false;
+  return true;
 }
 
 function weekStartMondayClient(isoDate) {
@@ -7302,6 +7367,7 @@ function renderTeacherClassNav(classes) {
 
   listEl.innerHTML = classes.map((c, i) => {
     const subjects = normalizeClassSubjects(c.subjects);
+    const isHome = !!(c.is_class_adviser || c.is_assistant);
     const subjectsHtml = subjects.length
       ? subjects.map(s => `
           <button type="button" class="class-nav-subject"
@@ -7309,12 +7375,12 @@ function renderTeacherClassNav(classes) {
             data-section="${c.section}"
             data-subject-id="${s.id || ''}"
             data-subject-name="${String(s.name).replace(/"/g, '&quot;')}">
-            ${s.name}
+            ${escapeHtml(s.name)}
           </button>`).join('')
       : `<span class="class-nav-subject">${c.is_assistant ? 'Assistant teacher' : (c.is_class_adviser ? 'Class adviser' : 'No subjects listed')}</span>`;
 
     return `
-      <div class="class-nav-group ${i === 0 ? 'is-expanded' : ''}" data-grade="${c.grade_level}" data-section="${c.section}">
+      <div class="class-nav-group ${i === 0 ? 'is-expanded' : ''}" data-grade="${c.grade_level}" data-section="${c.section}" data-home="${isHome ? '1' : '0'}">
         <button type="button" class="class-nav-item ${i === 0 ? 'active' : ''}"
           data-grade="${c.grade_level}"
           data-section="${c.section}"
@@ -7338,9 +7404,8 @@ async function loadTeacherClasses() {
     if (!res.ok) throw new Error(classes.error);
 
     if (!classes.length) {
-      teacherAssignedClasses = [];
+      clearTeacherClassContext();
       fillTeacherNoticeClasses();
-      setMyClassesTriggerLabel();
       listEl.innerHTML = '<div class="class-nav-empty">No classes assigned</div>';
       return;
     }
@@ -7351,16 +7416,18 @@ async function loadTeacherClasses() {
 
     const first = classes[0];
     if (first) {
+      const defaults = defaultSubjectForClass(first);
       await selectTeacherClassContext({
         grade: first.grade_level,
         section: first.section,
-        subjectName: null,
-        subjectId: null,
+        subjectName: defaults.subjectName,
+        subjectId: defaults.subjectId,
         goToPanel: null
       });
     }
   } catch (err) {
     console.error('Load classes error:', err);
+    clearTeacherClassContext();
     listEl.innerHTML = '<div class="class-nav-empty">Failed to load classes</div>';
   }
 }
@@ -7397,11 +7464,16 @@ if (myClassesTrigger && myClassesFlyout) {
     }
 
     if (classBtn) {
+      const classInfo = (teacherAssignedClasses || []).find(
+        (c) => String(c.grade_level) === String(classBtn.dataset.grade)
+          && String(c.section) === String(classBtn.dataset.section)
+      );
+      const defaults = defaultSubjectForClass(classInfo);
       await selectTeacherClassContext({
         grade: classBtn.dataset.grade,
         section: classBtn.dataset.section,
-        subjectName: null,
-        subjectId: null,
+        subjectName: defaults.subjectName,
+        subjectId: defaults.subjectId,
         goToPanel: null,
         expandGroup: true
       });
@@ -7430,15 +7502,31 @@ async function selectTeacherClassContext({
     c => String(c.grade_level) === String(grade) && String(c.section) === String(section)
   );
   const subjects = normalizeClassSubjects(classInfo?.subjects);
+  let nextSubjectId = subjectId || null;
+  let nextSubjectName = subjectName || null;
+  // Subject-only section: keep subject-teacher context even if the class row was clicked.
+  if (!nextSubjectId) {
+    const defaults = defaultSubjectForClass(classInfo);
+    if (defaults.subjectId) {
+      nextSubjectId = defaults.subjectId;
+      nextSubjectName = defaults.subjectName;
+    }
+  } else if (!nextSubjectName) {
+    const match = subjects.find((s) => Number(s.id) === Number(nextSubjectId));
+    if (match) nextSubjectName = match.name;
+  }
+  const role = resolveTeacherClassRole(classInfo, nextSubjectId);
 
   teacherCurrentClass = {
     grade,
     section,
     subjects,
-    subjectName: subjectName || null,
-    subjectId: subjectId || null
+    subjectName: nextSubjectName || null,
+    subjectId: nextSubjectId || null,
+    role,
+    isHome: !!(classInfo?.is_class_adviser || classInfo?.is_assistant)
   };
-  progressSubjectFilter = subjectName || null;
+  progressSubjectFilter = nextSubjectName || null;
   if (teacherSubjectsCache.length) fillTeacherSubjectSelects();
 
   document.querySelectorAll('#teacher-class-list .class-nav-group').forEach(g => {
@@ -7453,7 +7541,7 @@ async function selectTeacherClassContext({
 
   document.querySelectorAll('#teacher-class-list .class-nav-subject').forEach(btn => {
     const matchClass = String(btn.dataset.grade) === String(grade) && String(btn.dataset.section) === String(section);
-    const matchSub = subjectName && btn.dataset.subjectName === subjectName;
+    const matchSub = nextSubjectName && btn.dataset.subjectName === nextSubjectName;
     btn.classList.toggle('active', !!(matchClass && matchSub));
   });
 
@@ -7461,19 +7549,17 @@ async function selectTeacherClassContext({
   const metaEl = document.getElementById('teacher-session-meta');
   const dateEl = document.getElementById('teacher-session-date');
   const modeBadge = document.getElementById('teacher-mode-badge');
+  const roleLabel = teacherClassRoleLabel(role, nextSubjectName);
 
   if (titleEl) {
-    titleEl.textContent = subjectName
-      ? `Grade ${grade} – ${section} · ${subjectName}`
+    titleEl.textContent = nextSubjectName
+      ? `Grade ${grade} – ${section} · ${nextSubjectName}`
       : `Grade ${grade} – ${section}`;
   }
-  setMyClassesTriggerLabel(grade, section, subjectName);
+  setMyClassesTriggerLabel(grade, section, nextSubjectName);
   if (metaEl) metaEl.style.display = 'flex';
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  if (modeBadge) {
-    modeBadge.textContent = subjectName
-      || (classInfo?.is_assistant ? 'Assistant Teacher' : (classInfo?.is_class_adviser ? 'Class Adviser' : 'Class'));
-  }
+  if (modeBadge) modeBadge.textContent = roleLabel;
 
   const classroomSearch = document.getElementById('classroom-search-input');
   if (classroomSearch) classroomSearch.value = '';
@@ -7482,16 +7568,16 @@ async function selectTeacherClassContext({
 
   const todayMeta = document.getElementById('attendance-today-meta');
   if (todayMeta) {
-    todayMeta.textContent = subjectName
-      ? `Grade ${grade} – ${section} · ${subjectName}`
-      : `Grade ${grade} – ${section}`;
+    todayMeta.textContent = nextSubjectName
+      ? `Grade ${grade} – ${section} · ${nextSubjectName} · ${roleLabel}`
+      : `Grade ${grade} – ${section} · ${roleLabel}`;
   }
 
   const progressMeta = document.getElementById('progress-class-meta');
   if (progressMeta) {
-    progressMeta.textContent = subjectName
-      ? `Grade ${grade} – ${section} · ${subjectName} · ${teacherCurrentQuarter}`
-      : `Grade ${grade} – ${section} · ${teacherCurrentQuarter} · Quizzes, activities, and exams for this class.`;
+    progressMeta.textContent = nextSubjectName
+      ? `Grade ${grade} – ${section} · ${nextSubjectName} · ${teacherCurrentQuarter} · ${roleLabel}`
+      : `Grade ${grade} – ${section} · ${teacherCurrentQuarter} · ${roleLabel}`;
   }
 
   if (goToPanel === 'classroom') {
@@ -7644,7 +7730,7 @@ const SUBJECT_RECORD_SHEETS = [
   { key: 'activities', label: 'Activities' },
   { key: 'exams', label: 'Exams' }
 ];
-const SUBJECT_RECORD_QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
+const SUBJECT_RECORD_QUARTERS = ['Q1', 'Q2', 'Q3'];
 let subjectRecordLoadGen = 0;
 let subjectRecordData = null;
 let subjectRecordKind = 'quizzes';
@@ -7667,8 +7753,35 @@ function recordColumns(grouped, quarter) {
   }));
 }
 
+function subjectRecordSheetChrome(spec, quarter) {
+  const kindOptions = SUBJECT_RECORD_SHEETS.map((item) =>
+    `<option value="${item.key}"${item.key === spec.key ? ' selected' : ''}>${item.label}</option>`
+  ).join('');
+  const quarterOptions = SUBJECT_RECORD_QUARTERS.map((item) =>
+    `<option value="${item}"${item === quarter ? ' selected' : ''}>${item}</option>`
+  ).join('');
+  return `<div class="subject-record-sheet-bar">
+      <label class="subject-record-quarter">
+        <span class="visually-hidden">Quarter</span>
+        <select id="teacher-subject-record-quarter">${quarterOptions}</select>
+      </label>
+      <h4>${escapeHtml(spec.label)}</h4>
+      <label class="subject-record-kind">
+        <span class="visually-hidden">Score type</span>
+        <select id="teacher-subject-record-kind">${kindOptions}</select>
+      </label>
+    </div>`;
+}
+
 function renderRecordSheet(spec, grouped, students, quarter) {
   const cols = recordColumns(grouped, quarter);
+  const hasUploaded = cols.some((col) => col.id);
+  if (!hasUploaded) {
+    return `<section class="subject-record-sheet">
+      ${subjectRecordSheetChrome(spec, quarter)}
+      <p class="page-subheading subject-record-empty">Records from the subject teacher will appear here once uploaded.</p>
+    </section>`;
+  }
   const head = cols.map((col) => `<th title="${escapeHtml(col.title)}">${escapeHtml(col.title)}</th>`).join('');
   const body = students.length
     ? students.map((student) => {
@@ -7680,24 +7793,8 @@ function renderRecordSheet(spec, grouped, students, quarter) {
       return `<tr><th scope="row">${escapeHtml(teacherProgressName(student))}</th>${cells}</tr>`;
     }).join('')
     : `<tr><td colspan="${cols.length + 1}">No students in this class</td></tr>`;
-  const kindOptions = SUBJECT_RECORD_SHEETS.map((item) =>
-    `<option value="${item.key}"${item.key === spec.key ? ' selected' : ''}>${item.label}</option>`
-  ).join('');
-  const quarterOptions = SUBJECT_RECORD_QUARTERS.map((item) =>
-    `<option value="${item}"${item === quarter ? ' selected' : ''}>${item}</option>`
-  ).join('');
   return `<section class="subject-record-sheet">
-    <div class="subject-record-sheet-bar">
-      <label class="subject-record-quarter">
-        <span class="visually-hidden">Quarter</span>
-        <select id="teacher-subject-record-quarter">${quarterOptions}</select>
-      </label>
-      <h4>${spec.label}</h4>
-      <label class="subject-record-kind">
-        <span class="visually-hidden">Score type</span>
-        <select id="teacher-subject-record-kind">${kindOptions}</select>
-      </label>
-    </div>
+    ${subjectRecordSheetChrome(spec, quarter)}
     <div class="subject-record-sheet-scroll">
       <table>
         <thead>
@@ -7864,6 +7961,14 @@ async function loadTeacherClassProgress(grade, section) {
   const summaryEl = document.getElementById('teacher-performance-text');
   const hintEl = document.getElementById('teacher-progress-hint');
   if (!grade || !section) {
+    if (summaryEl) summaryEl.textContent = 'Select a class to see how the class is doing.';
+    renderSubjectTeacherReports(null);
+    return;
+  }
+  const assigned = (teacherAssignedClasses || []).some(
+    (c) => String(c.grade_level) === String(grade) && String(c.section).trim().toUpperCase() === String(section).trim().toUpperCase()
+  );
+  if (!assigned) {
     if (summaryEl) summaryEl.textContent = 'Select a class to see how the class is doing.';
     renderSubjectTeacherReports(null);
     return;
@@ -8748,7 +8853,14 @@ document.querySelectorAll('#teacher-quarter-list [data-quarter]').forEach(chip =
     if (teacherCurrentClass) {
       const progressMeta = document.getElementById('progress-class-meta');
       if (progressMeta) {
-        progressMeta.textContent = `Grade ${teacherCurrentClass.grade}-${teacherCurrentClass.section} · ${teacherCurrentQuarter} · Quizzes, activities, and exams for this class.`;
+        const roleLabel = teacherClassRoleLabel(
+          teacherCurrentClass.role,
+          teacherCurrentClass.subjectName || progressSubjectFilter
+        );
+        const subjectBit = teacherCurrentClass.subjectName || progressSubjectFilter;
+        progressMeta.textContent = subjectBit
+          ? `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${subjectBit} · ${teacherCurrentQuarter} · ${roleLabel}`
+          : `Grade ${teacherCurrentClass.grade} – ${teacherCurrentClass.section} · ${teacherCurrentQuarter} · ${roleLabel}`;
       }
     }
   });
@@ -8767,7 +8879,7 @@ document.getElementById('admin-save-quarter-btn')?.addEventListener('click', asy
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to save quarter');
     CURRENT_QUARTER = normalizeQuarterClient(data.currentQuarter || quarter);
-    UNLOCKED_QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'].slice(0, ['Q1', 'Q2', 'Q3', 'Q4'].indexOf(CURRENT_QUARTER) + 1);
+    UNLOCKED_QUARTERS = ['Q1', 'Q2', 'Q3'].slice(0, Math.max(0, ['Q1', 'Q2', 'Q3'].indexOf(CURRENT_QUARTER)) + 1);
     applyQuarterUnlockUI();
     if (msgEl) { msgEl.textContent = data.message || `Current quarter set to ${CURRENT_QUARTER}`; msgEl.style.color = '#1b5e20'; }
     showToast(data.message || `Current quarter set to ${CURRENT_QUARTER}`);
@@ -8959,10 +9071,21 @@ function renderProgressCards(records) {
       ? `<button type="button" class="row-menu-item" data-action="copy-online-link" data-record-id="${r.id}">Copy Online Link</button>
           <button type="button" class="row-menu-item" data-action="open-online-link" data-quiz-link="${quizLink}">Open Online Link</button>`
       : '';
+    const me = Number(getCurrentUserId());
+    const isOwner = Number(r.created_by) === me;
+    const adviserShared = Number(r.shared_with_adviser) === 1;
+    const showAdviserShare = isOwner && canShareRecordsWithAdviser();
+    const adviserItems = showAdviserShare
+      ? `<button type="button" class="row-menu-item" data-action="${adviserShared ? 'unshare-adviser' : 'share-adviser'}" data-record-id="${r.id}">${adviserShared ? 'Hide from Adviser' : 'Share with Adviser'}</button>`
+      : '';
     const statusRow = activitySettingLine(r);
+    const adviserStatus = showAdviserShare
+      ? `<p class="page-subheading progress-card-status-line">${adviserShared ? 'Visible to class adviser' : 'Not yet shared with class adviser'}</p>`
+      : '';
+    const menuBits = [shareItems, onlineItems, adviserItems].filter(Boolean).join('');
     return `
     <article class="lesson-plan-card">
-      ${statusRow ? `<div class="progress-card-status">${statusRow}</div>` : ''}
+      ${statusRow || adviserStatus ? `<div class="progress-card-status">${statusRow}${adviserStatus}</div>` : ''}
       <div class="progress-card-top">
         <div class="progress-card-top-left">
           <span class="badge type-${r.type}">${typeLabel(r.type)}</span>
@@ -8971,9 +9094,8 @@ function renderProgressCards(records) {
         <div class="row-menu-wrap">
           <button type="button" class="icon-btn row-menu-toggle" title="More actions" aria-label="More actions" aria-expanded="false">⋮</button>
           <div class="row-menu" hidden>
-            ${shareItems}
-            ${onlineItems}
-            ${(shareItems || onlineItems) ? '<div class="row-menu-divider" role="separator"></div>' : ''}
+            ${menuBits}
+            ${menuBits ? '<div class="row-menu-divider" role="separator"></div>' : ''}
             <button type="button" class="row-menu-item row-menu-item--danger" data-action="delete-record" data-record-id="${r.id}">Delete</button>
           </div>
         </div>
@@ -9010,6 +9132,8 @@ function renderProgressCards(records) {
 
     if (action === 'enable-link' && recordId) assignSharedQuizLink(recordId);
     else if (action === 'disable-link' && recordId) revokeSharedQuizLink(recordId);
+    else if (action === 'share-adviser' && recordId) setRecordSharedWithAdviser(recordId, true);
+    else if (action === 'unshare-adviser' && recordId) setRecordSharedWithAdviser(recordId, false);
     else if (action === 'copy-share-link' && btn.dataset.shareToken) copySharedQuizLink(btn.dataset.shareToken, btn.dataset.shareType);
     else if (action === 'open-share-link' && btn.dataset.shareUrl) {
       window.open(btn.dataset.shareUrl, '_blank', 'noopener');
@@ -9040,6 +9164,8 @@ function filterProgressList() {
     });
   }
 
+  updateProgressAdviserBulkUi();
+
   if (!filtered.length) {
     const listEl = document.getElementById('progress-list');
     if (listEl) {
@@ -9052,6 +9178,107 @@ function filterProgressList() {
 
   renderProgressCards(filtered);
 }
+
+function ownProgressRecordsForAdviserBulk() {
+  const me = Number(getCurrentUserId());
+  return (progressAssessments || []).filter((r) => {
+    if (Number(r.created_by) !== me) return false;
+    if (!isSubjectAttendanceGrade(r.grade_level ?? teacherCurrentClass?.grade)) return false;
+    if (progressTypeFilter && progressTypeFilter !== 'all') {
+      if (String(r.type).toLowerCase() !== progressTypeFilter) return false;
+    }
+    if (progressSubjectFilter) {
+      if (String(r.subject_name || '').toLowerCase() !== String(progressSubjectFilter).toLowerCase()) {
+        return false;
+      }
+    }
+    if (teacherCurrentClass?.subjectId && r.subject_id != null) {
+      if (Number(r.subject_id) !== Number(teacherCurrentClass.subjectId)) return false;
+    }
+    return true;
+  });
+}
+
+function updateProgressAdviserBulkUi() {
+  const wrap = document.getElementById('progress-adviser-bulk');
+  const note = document.getElementById('progress-adviser-bulk-note');
+  const shareBtn = document.getElementById('progress-adviser-share-all');
+  if (!wrap) return;
+
+  const show = canShareRecordsWithAdviser();
+  wrap.hidden = !show;
+  if (show) wrap.removeAttribute('hidden');
+  else wrap.setAttribute('hidden', '');
+  if (!show) return;
+
+  const own = ownProgressRecordsForAdviserBulk();
+  const sharedCount = own.filter((r) => Number(r.shared_with_adviser) === 1).length;
+  const scopeBits = [
+    teacherCurrentQuarter || 'this quarter',
+    teacherCurrentClass?.subjectName || progressSubjectFilter || null,
+    progressTypeFilter && progressTypeFilter !== 'all' ? typeLabel(progressTypeFilter) : null
+  ].filter(Boolean);
+
+  if (note) {
+    if (!own.length) {
+      note.textContent = `No records of yours to upload for ${scopeBits.join(' · ')}.`;
+    } else {
+      note.textContent = `${sharedCount} of ${own.length} uploaded to the class adviser (${scopeBits.join(' · ')}). Share all when scores are ready.`;
+    }
+  }
+  if (shareBtn) shareBtn.disabled = !own.length || sharedCount === own.length;
+}
+
+window.bulkSetRecordsSharedWithAdviser = async function(shared) {
+  if (!canShareRecordsWithAdviser()) {
+    showToast('Open your subject class first. Only subject teachers upload records to the class adviser.', 'error');
+    return;
+  }
+  const own = ownProgressRecordsForAdviserBulk();
+  if (!own.length) {
+    showToast('No matching records to update.', 'error');
+    return;
+  }
+  const next = !!shared;
+  const scopeLabel = [
+    teacherCurrentQuarter,
+    teacherCurrentClass.subjectName,
+    progressTypeFilter && progressTypeFilter !== 'all' ? typeLabel(progressTypeFilter) : null
+  ].filter(Boolean).join(' · ');
+  if (next) {
+    if (!confirm(`Upload all ${own.length} of your record(s) to the class adviser (${scopeLabel})?`)) return;
+  } else if (!confirm(`Hide all ${own.length} of your record(s) from the class adviser (${scopeLabel})?`)) {
+    return;
+  }
+
+  try {
+    const body = {
+      grade: teacherCurrentClass.grade,
+      section: teacherCurrentClass.section,
+      subject_id: teacherCurrentClass.subjectId,
+      quarter: teacherCurrentQuarter || null,
+      shared: next,
+      ids: own.map((r) => r.id)
+    };
+    if (progressTypeFilter && progressTypeFilter !== 'all') body.type = progressTypeFilter;
+
+    const res = await fetch(`${API_URL}/teacher/assessments/share-with-adviser-bulk`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update adviser share');
+    showToast(data.message || (next ? 'Shared with adviser.' : 'Hidden from adviser.'));
+    await loadProgressList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+document.getElementById('progress-adviser-share-all')?.addEventListener('click', () => {
+  bulkSetRecordsSharedWithAdviser(true);
+});
 
 async function loadProgressList() {
   const listEl = document.getElementById('progress-list');
@@ -9072,6 +9299,7 @@ async function loadProgressList() {
 
   if (!teacherCurrentClass) {
     listEl.innerHTML = '<p class="empty-state">Select a class from the sidebar first.</p>';
+    updateProgressAdviserBulkUi();
     return;
   }
 
@@ -9089,6 +9317,7 @@ async function loadProgressList() {
   } catch (err) {
     console.error('Load progress error:', err);
     listEl.innerHTML = '<p class="empty-state">Failed to load progress records.</p>';
+    updateProgressAdviserBulkUi();
   }
 }
 
@@ -9292,6 +9521,7 @@ window.openProgressEditor = async function(id, mode = 'edit') {
     const qList = document.getElementById('progress-questions-list');
     const qCount = document.getElementById('progress-questions-count');
     updateProgressShareUi(a, data.attendance_meta, questions.length);
+    updateProgressAdviserShareUi(a);
     if (qWrap && qList) {
       if (effectiveMode === 'link' && questions.length) {
         qWrap.hidden = false;
@@ -11059,6 +11289,65 @@ window.revokeSharedQuizLink = async function(id) {
     showToast(err.message, 'error');
   }
 };
+
+function updateProgressAdviserShareUi(assessment) {
+  const wrap = document.getElementById('progress-adviser-share');
+  const note = document.getElementById('progress-adviser-share-note');
+  const btn = document.getElementById('progress-adviser-share-btn');
+  if (!wrap || !btn) return;
+  const me = Number(getCurrentUserId());
+  const isOwner = Number(assessment?.created_by) === me;
+  const show = isOwner && canShareRecordsWithAdviser();
+  wrap.hidden = !show;
+  if (show) wrap.removeAttribute('hidden');
+  else wrap.setAttribute('hidden', '');
+  if (!show) return;
+  const shared = Number(assessment?.shared_with_adviser) === 1;
+  if (note) {
+    note.textContent = shared
+      ? 'Uploaded to the class adviser (Subject teachers panel and class progress).'
+      : 'The class adviser cannot see this record until you upload it.';
+  }
+  btn.textContent = shared ? 'Hide from Adviser' : 'Upload to Adviser';
+  btn.dataset.shared = shared ? '1' : '0';
+}
+
+window.setRecordSharedWithAdviser = async function(id, shared) {
+  if (!canShareRecordsWithAdviser()) {
+    showToast('Open your subject class first. Only subject teachers upload records to the class adviser.', 'error');
+    return;
+  }
+  const next = !!shared;
+  if (!next && !confirm('Hide this record from the class adviser again?')) return;
+  try {
+    const res = await fetch(`${API_URL}/teacher/assessments/${id}/share-with-adviser`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ shared: next })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update adviser share');
+    showToast(data.message || (next ? 'Shared with adviser.' : 'Hidden from adviser.'));
+    if (window._progressEditorAssessment && String(window._progressEditorAssessment.id) === String(id)) {
+      window._progressEditorAssessment.shared_with_adviser = next ? 1 : 0;
+      updateProgressAdviserShareUi(window._progressEditorAssessment);
+    }
+    const rec = (progressAssessments || []).find((r) => Number(r.id) === Number(id));
+    if (rec) rec.shared_with_adviser = next ? 1 : 0;
+    const editor = document.getElementById('progress-editor');
+    if (!editor || editor.hidden) filterProgressList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+document.getElementById('progress-adviser-share-btn')?.addEventListener('click', () => {
+  const id = document.getElementById('progress-editor')?.dataset.assessmentId;
+  const btn = document.getElementById('progress-adviser-share-btn');
+  if (!id || !btn) return;
+  const currentlyShared = btn.dataset.shared === '1';
+  setRecordSharedWithAdviser(id, !currentlyShared);
+});
 
 document.getElementById('progress-share-assign')?.addEventListener('click', () => {
   const id = document.getElementById('progress-editor')?.dataset.assessmentId;
@@ -15788,7 +16077,7 @@ async function renderParentOverview(student) {
         <div class="teacher-header-row" style="align-items:center;">
           <div>
             <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Lesson Performance</h3>
-            <p class="page-subheading" style="margin:2px 0 0;">Average score on each lesson. Filter by subject. Up to 12 most recent lessons.</p>
+            <p class="page-subheading" id="parent-lesson-chart-hint" style="margin:2px 0 0;">Average score on each lesson. Filter by subject. Up to 12 most recent lessons.</p>
           </div>
         </div>
         <div class="parent-chart-filters" id="parent-lesson-filters" role="group" aria-label="Filter by subject"></div>
@@ -15850,9 +16139,18 @@ async function renderParentOverview(student) {
         <div id="parent-classwork-table" style="margin-top:10px;"></div>
       </div>
 
-      <div class="chart-card" style="background:var(--peach-soft);border-color:rgba(243,156,18,0.35);">
-        <h3 style="font-size:1rem;color:var(--maroon-deep);margin-bottom:8px;">Progress Summary</h3>
-        <div class="page-subheading" id="parent-ai-summary" style="margin:0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
+      <div class="chart-card" id="parent-exam-card" style="background:var(--peach-soft);border-color:rgba(243,156,18,0.35);">
+        <div class="teacher-header-row" style="align-items:flex-start;">
+          <div>
+            <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Progress Summary</h3>
+            <p class="page-subheading" style="margin:2px 0 0;">Overall exam performance by quarter. Shows if scores are rising or going down.</p>
+          </div>
+        </div>
+        <p class="page-subheading" id="parent-exam-trend" style="margin:10px 0 0;"></p>
+        <div class="parent-chart-wrap parent-chart-wrap--line" id="parent-exam-chart-wrap">
+          <canvas id="parent-exam-chart" aria-label="Overall exam performance by quarter" role="img"></canvas>
+        </div>
+        <div class="page-subheading" id="parent-ai-summary" style="margin:12px 0 0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
           Loading summary…
         </div>
       </div>
@@ -15861,6 +16159,7 @@ async function renderParentOverview(student) {
 
   destroyParentCharts();
   loadParentAttendanceTable(student.id);
+  loadParentExamPerformance(student.id);
   loadParentAiSummary(student.id);
   loadParentLessonAnalytics(student.id);
   wireParentWeekNav(student.id);
@@ -15878,6 +16177,7 @@ let parentLessonData = null;      // { subjects, lessons }
 let parentLessonSubject = 'all';  // 'all' | subject_id string
 let parentClassworkWeek = '';     // YYYY-MM-DD (Monday)
 let parentClassworkData = null;
+let parentExamData = null;        // overall exam performance by quarter
 let parentAttRange = 'month';     // day | week | month | year
 let parentAttSummaryData = null;
 
@@ -15991,6 +16291,87 @@ function parentFilteredLessons() {
   return lessons.filter((l) => String(l.subject_id) === String(parentLessonSubject));
 }
 
+function parentFilteredRecords() {
+  const records = parentLessonData?.records || [];
+  if (parentLessonSubject === 'all') return [];
+  return records.filter((r) => String(r.subject_id) === String(parentLessonSubject));
+}
+
+function parentRecordTypeLabel(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'exam') return 'Exam';
+  if (t === 'activity') return 'Activity';
+  return 'Quiz';
+}
+
+function parentLessonChartRows() {
+  const showSubject = parentLessonSubject === 'all';
+  if (!showSubject) {
+    return parentFilteredRecords().map((rec) => {
+      const typeKey = String(rec.type || 'quiz').toLowerCase();
+      const typeLabel = parentRecordTypeLabel(typeKey);
+      const title = String(rec.title || rec.lesson || typeLabel).trim();
+      return {
+        label: `${typeLabel} · ${title}`,
+        title,
+        type: typeKey === 'exam' || typeKey === 'activity' ? typeKey : 'quiz',
+        type_label: typeLabel,
+        percent: rec.percent,
+        status: rec.status,
+        subject_name: rec.subject_name,
+        lesson: rec.lesson || title,
+        items: 1,
+        weak_skills: rec.weak_skills || [],
+        strong_skills: rec.strong_skills || [],
+        trend: rec.trend || 'first',
+        latest: rec.latest != null ? rec.latest : rec.percent,
+        previous: rec.previous != null ? rec.previous : null,
+        separated: true
+      };
+    });
+  }
+  return parentFilteredLessons().map((lesson) => ({
+    label: parentLessonChartLabel(lesson, true),
+    title: lesson.lesson,
+    type: 'lesson',
+    type_label: 'Lesson',
+    percent: lesson.avg_percent,
+    status: lesson.status,
+    subject_name: lesson.subject_name,
+    lesson: lesson.lesson,
+    items: lesson.items,
+    weak_skills: lesson.weak_skills || [],
+    strong_skills: lesson.strong_skills || [],
+    trend: lesson.trend,
+    latest: lesson.latest,
+    previous: lesson.previous,
+    separated: false
+  }));
+}
+
+const PARENT_FEEDBACK_TYPE_ORDER = [
+  { key: 'quiz', label: 'Quizzes' },
+  { key: 'activity', label: 'Activities' },
+  { key: 'exam', label: 'Exams' },
+  { key: 'lesson', label: 'Lessons' }
+];
+
+function parentFeedbackGroupedHtml(rows, side, liFn) {
+  if (!rows.length) return '';
+  const hasTyped = rows.some((row) => row.type && row.type !== 'lesson');
+  if (!hasTyped) {
+    return `<ul>${rows.map((row) => liFn(row, side)).join('')}</ul>`;
+  }
+  return PARENT_FEEDBACK_TYPE_ORDER.map(({ key, label }) => {
+    const group = rows.filter((row) => row.type === key);
+    if (!group.length) return '';
+    return `<div class="parent-lesson-type-group">
+      <h5 class="parent-lesson-type-heading">${escapeHtml(label)}</h5>
+      <ul>${group.map((row) => liFn(row, side)).join('')}</ul>
+    </div>`;
+  }).join('');
+}
+
 function parentLessonChartLabel(lesson, showSubject) {
   const name = String(lesson.lesson || lesson.subject_name || 'Lesson').trim();
   if (!showSubject) return name;
@@ -16022,6 +16403,62 @@ function parentLessonSkillLine(row) {
   return bits.length === 1 ? `${bits[0]}.` : `${bits[0]}. ${bits[1]}.`;
 }
 
+/** Specific parent-facing note for Going well / Needs practice cards. */
+function parentFeedbackDetail(row, side) {
+  const who = parentChildFirstName();
+  const subject = String(row.subject_name || '').trim();
+  const typeLabel = row.type_label || (row.separated ? 'Record' : 'Lesson');
+  const title = String(row.title || row.lesson || row.label || '').trim();
+  const work = row.separated
+    ? `${typeLabel.toLowerCase()} “${title}”`
+    : `lesson “${title}”${subject ? ` in ${subject}` : ''}`;
+  const subjectBit = row.separated && subject ? ` in ${subject}` : '';
+  const scoreBit = Number.isFinite(Number(row.percent)) ? `${row.percent}%` : '';
+  const weak = parentJoinSkills(row.weak_skills);
+  const strong = parentJoinSkills(row.strong_skills);
+  const parts = [];
+
+  if (side === 'well') {
+    parts.push(
+      scoreBit
+        ? `${who} scored ${scoreBit} on the ${work}${subjectBit}.`
+        : `${who} is doing well on the ${work}${subjectBit}.`
+    );
+    if (strong) parts.push(`${who} can already work with ${strong}.`);
+    else if (!row.separated && Number(row.items) > 1) {
+      parts.push(`This is from ${row.items} scored records at a strong level.`);
+    } else {
+      parts.push('This is at a strong level (85% or higher).');
+    }
+  } else {
+    parts.push(
+      scoreBit
+        ? `${who} scored ${scoreBit} on the ${work}${subjectBit}.`
+        : `${who} needs more practice on the ${work}${subjectBit}.`
+    );
+    if (weak) parts.push(`${who} has difficulty with ${weak}.`);
+    else if (Number(row.percent) < 75) {
+      parts.push('This is below the 75% passing mark.');
+    } else {
+      parts.push('Focus review on the missed items from this work.');
+    }
+  }
+
+  // Never compare different quizzes/activities/exams as "last time."
+  // Trend only belongs on aggregated lesson rows (All subjects view).
+  if (!row.separated && row.previous != null && row.latest != null) {
+    if (row.trend === 'up') {
+      parts.push(`Improving from the previous result (${row.previous}% → ${row.latest}%).`);
+    } else if (row.trend === 'down') {
+      parts.push(`Lower than last time (${row.previous}% → ${row.latest}%).`);
+    } else if (row.trend === 'same') {
+      parts.push(`About the same as last time (${row.latest}%).`);
+    }
+  }
+
+  return parts.join(' ');
+}
+
 function parentTrendLabel(row) {
   if (row.trend === 'up' && row.previous != null) return `Improving (${row.previous}% → ${row.latest}%)`;
   if (row.trend === 'down' && row.previous != null) return `Lower than last time (${row.previous}% → ${row.latest}%)`;
@@ -16029,31 +16466,162 @@ function parentTrendLabel(row) {
   return 'First scored result';
 }
 
+function parentExamStatusLabel(status) {
+  if (status === 'excels') return 'Excelling';
+  if (status === 'on_track') return 'On track';
+  if (status === 'needs_improvement') return 'Needs practice';
+  return '';
+}
+
+function parentExamTrendSentence(data) {
+  if (!data || data.overall == null) {
+    return 'Exam scores will appear here once periodic exams are recorded.';
+  }
+  const status = parentExamStatusLabel(data.status);
+  const overallBit = status
+    ? `Overall exam average is ${data.overall}% (${status}).`
+    : `Overall exam average is ${data.overall}%.`;
+  if (data.trend === 'up' && data.previous != null) {
+    return `${overallBit} Performance is rising (${data.previous}% → ${data.latest}%).`;
+  }
+  if (data.trend === 'down' && data.previous != null) {
+    return `${overallBit} Performance went down (${data.previous}% → ${data.latest}%).`;
+  }
+  if (data.trend === 'same' && data.previous != null) {
+    return `${overallBit} Performance is about the same as the previous quarter (${data.latest}%).`;
+  }
+  return `${overallBit} More quarters will show the trend over time.`;
+}
+
+async function loadParentExamPerformance(studentId) {
+  const trendEl = document.getElementById('parent-exam-trend');
+  try {
+    const res = await fetch(`${API_URL}/parent/child/${studentId}/analytics/exams`, {
+      headers: getAuthHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load exam performance');
+    parentExamData = data;
+    if (trendEl) trendEl.textContent = parentExamTrendSentence(data);
+    paintParentExamChart();
+  } catch (err) {
+    console.error('Exam performance error:', err);
+    parentExamData = null;
+    if (trendEl) trendEl.textContent = 'Could not load exam performance right now.';
+    parentChartUnavailable('parent-exam-chart-wrap', 'Could not load exam performance.');
+  }
+}
+
+function paintParentExamChart() {
+  const wrap = document.getElementById('parent-exam-chart-wrap');
+  if (!wrap) return;
+  const points = parentExamData?.points || [];
+  const scored = points.filter((p) => p.percent != null);
+
+  if (!scored.length) {
+    if (parentCharts.exams) { parentCharts.exams.destroy(); delete parentCharts.exams; }
+    wrap.innerHTML = '<p class="parent-chart-empty">No exam scores recorded yet.</p>';
+    return;
+  }
+
+  const Chart = parentChartLib();
+  if (!Chart) {
+    parentChartUnavailable('parent-exam-chart-wrap');
+    return;
+  }
+
+  if (!document.getElementById('parent-exam-chart')) {
+    wrap.innerHTML = '<canvas id="parent-exam-chart" aria-label="Overall exam performance by quarter" role="img"></canvas>';
+  }
+  const canvas = document.getElementById('parent-exam-chart');
+  const labels = points.map((p) => p.quarter);
+  const values = points.map((p) => (p.percent == null ? null : p.percent));
+  const pointColors = points.map((p) => {
+    if (p.percent == null) return 'rgba(138,114,107,0.35)';
+    return PARENT_STATUS_COLORS[p.status] || '#60100b';
+  });
+
+  if (parentCharts.exams) { parentCharts.exams.destroy(); delete parentCharts.exams; }
+  parentCharts.exams = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Overall exam %',
+        data: values,
+        spanGaps: true,
+        borderColor: '#60100b',
+        backgroundColor: 'rgba(96,16,11,0.12)',
+        fill: true,
+        tension: 0.25,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        pointBackgroundColor: pointColors,
+        pointBorderColor: '#fff',
+        pointBorderWidth: 1.5
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          min: 0,
+          max: 100,
+          ticks: { callback: (v) => `${v}%` },
+          grid: { color: 'rgba(93,17,13,0.08)' }
+        },
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 12, weight: '600' } }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              const point = points[item.dataIndex];
+              if (!point || point.percent == null) return 'No exams yet';
+              const st = parentExamStatusLabel(point.status);
+              const n = Number(point.exams) || 0;
+              const count = n === 1 ? '1 exam' : `${n} exams`;
+              return [`Overall: ${point.percent}%`, st, count].filter(Boolean);
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
 function paintParentLessonChart() {
   const wrap = document.getElementById('parent-lesson-chart-wrap');
   const lists = document.getElementById('parent-lesson-lists');
+  const hint = document.getElementById('parent-lesson-chart-hint');
   if (!wrap) return;
 
-  const lessons = parentFilteredLessons();
-  const showSubject = parentLessonSubject === 'all';
-  const rows = lessons.map((lesson) => ({
-    label: parentLessonChartLabel(lesson, showSubject),
-    percent: lesson.avg_percent,
-    status: lesson.status,
-    subject_name: lesson.subject_name,
-    lesson: lesson.lesson,
-    items: lesson.items,
-    weak_skills: lesson.weak_skills || [],
-    strong_skills: lesson.strong_skills || [],
-    trend: lesson.trend,
-    latest: lesson.latest,
-    previous: lesson.previous
-  }));
+  const separated = parentLessonSubject !== 'all';
+  let rows = parentLessonChartRows();
+  if (separated) {
+    const typeRank = { quiz: 0, activity: 1, exam: 2 };
+    rows = [...rows].sort((a, b) => (
+      (typeRank[a.type] ?? 9) - (typeRank[b.type] ?? 9)
+      || String(a.label).localeCompare(String(b.label))
+    ));
+  }
+  if (hint) {
+    hint.textContent = separated
+      ? 'Each quiz, activity, and exam for this subject is shown as its own bar.'
+      : 'Average score on each lesson. Filter by subject. Up to 12 most recent lessons.';
+  }
 
-  if (!lessons.length) {
+  if (!rows.length) {
     if (parentCharts.lessons) { parentCharts.lessons.destroy(); delete parentCharts.lessons; }
     wrap.style.height = '';
-    wrap.innerHTML = '<p class="parent-chart-empty">No quiz, activity, or exam scores recorded yet.</p>';
+    wrap.innerHTML = separated
+      ? '<p class="parent-chart-empty">No scores for this subject yet.</p>'
+      : '<p class="parent-chart-empty">No quiz, activity, or exam scores recorded yet.</p>';
     if (lists) lists.innerHTML = '';
     return;
   }
@@ -16063,10 +16631,11 @@ function paintParentLessonChart() {
     parentChartUnavailable('parent-lesson-chart-wrap');
   } else {
     if (!document.getElementById('parent-lesson-chart')) {
-      wrap.innerHTML = '<canvas id="parent-lesson-chart" aria-label="Average score per lesson" role="img"></canvas>';
+      wrap.innerHTML = '<canvas id="parent-lesson-chart" aria-label="Lesson performance" role="img"></canvas>';
     }
-    // Horizontal bars: one row per lesson, grow card height with the list
-    wrap.style.height = `${Math.max(180, Math.min(560, 48 * rows.length + 64))}px`;
+    // More vertical space per bar when subject view separates each record.
+    const rowH = separated ? 58 : 48;
+    wrap.style.height = `${Math.max(180, Math.min(640, rowH * rows.length + 72))}px`;
     const canvas = document.getElementById('parent-lesson-chart');
     const labels = rows.map((row) => (row.label.length > 42 ? `${row.label.slice(0, 40)}…` : row.label));
     const values = rows.map((row) => row.percent);
@@ -16078,20 +16647,30 @@ function paintParentLessonChart() {
       data: {
         labels,
         datasets: [{
-          label: 'Average %',
+          label: separated ? 'Score %' : 'Average %',
           data: values,
           backgroundColor: colors,
           borderRadius: 6,
-          maxBarThickness: 26
+          maxBarThickness: separated ? 22 : 26,
+          categoryPercentage: separated ? 0.55 : 0.8,
+          barPercentage: separated ? 0.7 : 0.9
         }]
       },
       options: {
         indexAxis: 'y',
         responsive: true,
         maintainAspectRatio: false,
+        layout: separated ? { padding: { top: 6, bottom: 6 } } : undefined,
         scales: {
           x: { min: 0, max: 100, ticks: { callback: (v) => `${v}%` }, grid: { color: 'rgba(93,17,13,0.08)' } },
-          y: { ticks: { autoSkip: false, font: { size: 11 } }, grid: { display: false } }
+          y: {
+            ticks: { autoSkip: false, font: { size: 11 } },
+            grid: { display: false },
+            // Extra gap between categories when bars are separated by subject.
+            afterFit: separated
+              ? (axis) => { axis.paddingTop = 4; axis.paddingBottom = 4; }
+              : undefined
+          }
         },
         plugins: {
           legend: { display: false },
@@ -16101,6 +16680,9 @@ function paintParentLessonChart() {
               label: (item) => {
                 const row = rows[item.dataIndex];
                 const st = row.status === 'excels' ? 'Going well' : row.status === 'on_track' ? 'On track' : 'Needs practice';
+                if (row.separated) {
+                  return [`Score: ${row.percent}%`, st];
+                }
                 const n = Number(row.items) || 0;
                 const score = n === 1 ? `${row.percent}% (1 record)` : `${row.percent}% (${n} records)`;
                 const skill = parentLessonSkillLine(row);
@@ -16114,24 +16696,30 @@ function paintParentLessonChart() {
   }
 
   if (lists) {
-    const well = rows.filter((row) => row.status === 'excels' || (row.strong_skills && row.strong_skills.length && row.status !== 'needs_improvement'));
-    const needs = rows.filter((row) => row.status === 'needs_improvement' || (row.weak_skills && row.weak_skills.length && row.status === 'on_track'));
-    const li = (row) => {
-      const skill = parentLessonSkillLine(row);
-      const trend = row.trend === 'up' ? ' Improving.' : row.trend === 'down' ? ' Lower than last time.' : '';
+    // Keep Going well / Needs practice for both All subjects and single-subject views.
+    const well = rows.filter((row) => (
+      row.status === 'excels'
+      || (row.strong_skills && row.strong_skills.length && row.status !== 'needs_improvement')
+    ));
+    const needs = rows.filter((row) => (
+      row.status === 'needs_improvement'
+      || (row.weak_skills && row.weak_skills.length && row.status === 'on_track')
+    ));
+    const li = (row, side) => {
+      const detail = parentFeedbackDetail(row, side);
       return `<li>
         <span class="parent-lesson-subject">${escapeHtml(row.label)}</span>
-        ${skill ? `<span class="page-subheading parent-lesson-parts">${escapeHtml(skill)}${escapeHtml(trend)}</span>` : (trend ? `<span class="page-subheading parent-lesson-parts">${escapeHtml(trend.trim())}</span>` : '')}
+        <span class="page-subheading parent-lesson-parts">${escapeHtml(detail)}</span>
       </li>`;
     };
     lists.innerHTML = `
       <div class="parent-lesson-list parent-lesson-list--good">
         <h4>Going well</h4>
-        ${well.length ? `<ul>${well.map(li).join('')}</ul>` : '<p class="parent-chart-empty">Nothing at a strong level yet. Start with the notes on the right.</p>'}
+        ${well.length ? parentFeedbackGroupedHtml(well, 'well', li) : '<p class="parent-chart-empty">Nothing at a strong level yet. Start with the notes on the right.</p>'}
       </div>
       <div class="parent-lesson-list parent-lesson-list--bad">
         <h4>Needs practice</h4>
-        ${needs.length ? `<ul>${needs.map(li).join('')}</ul>` : '<p class="parent-chart-empty">Nothing below 75%. Keep the same kind of practice going.</p>'}
+        ${needs.length ? parentFeedbackGroupedHtml(needs, 'needs', li) : '<p class="parent-chart-empty">Nothing below 75%. Keep the same kind of practice going.</p>'}
       </div>`;
   }
 }

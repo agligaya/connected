@@ -11,6 +11,7 @@ router.get('/child/:id/progress', verifyToken, requireRole('parent'), parentCont
 router.get('/child/:id/progress/:assessmentId/work', verifyToken, requireRole('parent'), parentController.getChildSubmission);
 router.get('/child/:id/insights', verifyToken, requireRole('parent'), parentController.getChildInsights);
 router.get('/child/:id/analytics/lessons', verifyToken, requireRole('parent'), parentController.getChildLessonAnalytics);
+router.get('/child/:id/analytics/exams', verifyToken, requireRole('parent'), parentController.getChildExamPerformance);
 router.get('/child/:id/analytics/classwork', verifyToken, requireRole('parent'), parentController.getChildWeeklyClasswork);
 router.get('/child/:id/analytics/attendance', verifyToken, requireRole('parent'), parentController.getChildAttendanceSummary);
 router.get('/inbox', verifyToken, requireRole('parent'), parentController.getParentInbox);

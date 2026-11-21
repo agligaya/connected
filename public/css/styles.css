@@ -4008,6 +4008,10 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
   gap: 14px;
 }
 
+.subject-record-empty {
+  margin: 12px 14px 14px;
+}
+
 .subject-record-sheet {
   border: 1px solid #1f1f1f;
   border-radius: 8px;
@@ -4208,6 +4212,11 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
   height: 280px;
 }
 
+.parent-chart-wrap--line {
+  height: 240px;
+  margin-top: 8px;
+}
+
 .parent-chart-wrap--pie {
   height: 220px;
   flex: 1 1 180px;
@@ -4277,6 +4286,26 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
   font-size: 0.82rem;
   color: var(--text-dark);
 }
+
+.parent-lesson-type-group {
+  margin-top: 8px;
+}
+
+.parent-lesson-type-group:first-child {
+  margin-top: 2px;
+}
+
+.parent-lesson-type-heading {
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.parent-lesson-list--good .parent-lesson-type-heading { color: #2e7d32; }
+.parent-lesson-list--bad .parent-lesson-type-heading { color: #8a1c1c; }
 
 .parent-lesson-list .parent-chart-empty {
   padding: 4px 0;
@@ -6845,6 +6874,26 @@ html.layout-mobile .attendance-matrix-table col.att-col-name {
   justify-content: space-between;
   gap: 12px;
   margin: 0 0 16px;
+}
+
+.progress-adviser-bulk {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-maroon);
+  border-radius: 10px;
+  background: rgba(128, 0, 32, 0.04);
+}
+
+.progress-adviser-bulk .progress-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.progress-adviser-bulk button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 #qb-filter-toolbar {

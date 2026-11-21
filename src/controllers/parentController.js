@@ -622,11 +622,27 @@ exports.getChildLessonAnalytics = async (req, res) => {
 
     const subjectsMap = new Map();
     const groups = new Map();
+    const records = [];
     for (const r of rows) {
       const subjectId = r.subject_id != null ? Number(r.subject_id) : 0;
       const subjectName = String(r.subject_name || '').trim() || 'General';
       if (!subjectsMap.has(subjectId)) subjectsMap.set(subjectId, { id: subjectId, name: subjectName });
       const lesson = displayLessonTitle(lessonName(r.lesson_title, r.title));
+      const percent = cappedPercent(r.score, r.max_score);
+      const at = r.recorded_at || r.created_at || null;
+      const type = String(r.type || '').toLowerCase();
+      records.push({
+        id: r.id,
+        title: displayLessonTitle(r.title) || lesson,
+        type,
+        subject_id: subjectId,
+        subject_name: subjectName,
+        lesson,
+        percent,
+        status: lessonStatus(percent),
+        at,
+        scored_at: at ? new Date(at).getTime() : 0
+      });
       const key = `${subjectId}|${lessonLookupKey(lesson)}`;
       if (!groups.has(key)) {
         groups.set(key, {
@@ -636,11 +652,10 @@ exports.getChildLessonAnalytics = async (req, res) => {
           scores: []
         });
       }
-      groups.get(key).scores.push({
-        percent: cappedPercent(r.score, r.max_score),
-        at: r.recorded_at || r.created_at || null
-      });
+      groups.get(key).scores.push({ percent, at });
     }
+    records.sort((a, b) => (b.scored_at || 0) - (a.scored_at || 0)
+      || a.title.localeCompare(b.title));
 
     let topicMap = new Map();
     try {
@@ -683,10 +698,156 @@ exports.getChildLessonAnalytics = async (req, res) => {
     if (lessons.length > LESSON_CHART_CAP) lessons = lessons.slice(0, LESSON_CHART_CAP);
 
     const subjects = [...subjectsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
-    res.json({ subjects, lessons, thresholds: { passing: PASSING, strong: STRONG } });
+    // Individual scored items (used when a parent filters to one subject).
+    const recordCap = Math.max(LESSON_CHART_CAP, 20);
+    const lessonByKey = new Map(
+      lessons.map((l) => [`${l.subject_id}|${String(l.lesson || '').trim().toLowerCase()}`, l])
+    );
+    const enrichedRecords = records.map((rec) => {
+      const lessonMatch = lessonByKey.get(`${rec.subject_id}|${String(rec.lesson || '').trim().toLowerCase()}`);
+      const info = topicInfoForLesson(topicMap, rec.subject_name, rec.lesson);
+      const weakSkills = uniqueTopicNames(info?.weakTopics).slice(0, 2);
+      const strongSkills = uniqueTopicNames(info?.strongTopics).slice(0, 2);
+      if (!weakSkills.length && info?.activityWeak) weakSkills.push(info.activityWeak);
+      if (!strongSkills.length && info?.activityStrong) strongSkills.push(info.activityStrong);
+      // Do not copy lesson-level trend onto individual quizzes/activities/exams —
+      // those are different items and must not be compared as "last time."
+      return {
+        ...rec,
+        weak_skills: weakSkills.length ? weakSkills : (lessonMatch?.weak_skills || []),
+        strong_skills: strongSkills.length ? strongSkills : (lessonMatch?.strong_skills || []),
+        trend: 'first',
+        latest: rec.percent,
+        previous: null
+      };
+    });
+    const cappedRecords = enrichedRecords.length > recordCap
+      ? enrichedRecords.slice(0, recordCap)
+      : enrichedRecords;
+    res.json({
+      subjects,
+      lessons,
+      records: cappedRecords,
+      thresholds: { passing: PASSING, strong: STRONG }
+    });
   } catch (error) {
     console.error('Get child lesson analytics error:', error);
     res.status(500).json({ error: 'Server error fetching lesson analytics', details: error.message });
+  }
+};
+
+function normalizeQuarterLabel(raw) {
+  const q = String(raw || '').trim().toUpperCase();
+  if (['Q1', 'Q2', 'Q3'].includes(q)) return q;
+  // School year uses 3 quarters; map any Q4 leftovers into Q3.
+  if (q === 'Q4' || q.includes('4')) return 'Q3';
+  const m = q.match(/([1-3])/);
+  return m ? `Q${m[1]}` : 'Q1';
+}
+
+function examOverallTrend(points) {
+  const scored = (points || []).filter((p) => p.percent != null && Number(p.exams) > 0);
+  if (scored.length < 2) {
+    const latest = scored.length ? scored[scored.length - 1].percent : null;
+    return { trend: 'first', latest, previous: null };
+  }
+  const previous = scored[scored.length - 2].percent;
+  const latest = scored[scored.length - 1].percent;
+  let trend = 'same';
+  if (latest >= previous + 5) trend = 'up';
+  else if (latest <= previous - 5) trend = 'down';
+  return { trend, latest, previous };
+}
+
+// GET /api/parent/child/:id/analytics/exams — overall periodic exam performance by quarter
+exports.getChildExamPerformance = async (req, res) => {
+  try {
+    const parentId = req.user.id;
+    const { id: studentId } = req.params;
+    if (!(await assertParentChild(parentId, studentId))) {
+      return res.status(403).json({ error: 'You do not have access to this student' });
+    }
+
+    let rows;
+    try {
+      [rows] = await db.query(
+        `SELECT a.id, a.title, a.quarter, a.max_score, a.created_at, a.subject_id,
+                s.NAME as subject_name, sc.score, sc.recorded_at
+         FROM assessment_scores sc
+         JOIN assessments a ON sc.assessment_id = a.id
+         LEFT JOIN subjects s ON a.subject_id = s.id
+         WHERE sc.student_id = ? AND LOWER(a.TYPE) = 'exam'
+         ORDER BY a.created_at ASC, a.id ASC`,
+        [studentId]
+      );
+    } catch (e) {
+      [rows] = await db.query(
+        `SELECT a.id, a.title, 'Q1' as quarter, a.max_score, a.created_at, a.subject_id,
+                s.NAME as subject_name, sc.score, sc.recorded_at
+         FROM assessment_scores sc
+         JOIN assessments a ON sc.assessment_id = a.id
+         LEFT JOIN subjects s ON a.subject_id = s.id
+         WHERE sc.student_id = ? AND LOWER(a.TYPE) = 'exam'
+         ORDER BY a.created_at ASC, a.id ASC`,
+        [studentId]
+      );
+    }
+
+    const quarterOrder = ['Q1', 'Q2', 'Q3'];
+    const buckets = new Map(quarterOrder.map((q) => [q, []]));
+
+    const exams = [];
+    for (const r of rows) {
+      const percent = cappedPercent(r.score, r.max_score);
+      const quarter = normalizeQuarterLabel(r.quarter);
+      const item = {
+        id: r.id,
+        title: r.title,
+        quarter,
+        subject_id: r.subject_id != null ? Number(r.subject_id) : null,
+        subject_name: String(r.subject_name || '').trim() || 'General',
+        percent,
+        score: Number(r.score),
+        max_score: Number(r.max_score) || 100,
+        at: r.recorded_at || r.created_at || null
+      };
+      exams.push(item);
+      if (!buckets.has(quarter)) buckets.set(quarter, []);
+      buckets.get(quarter).push(item);
+    }
+
+    const points = quarterOrder.map((quarter) => {
+      const list = buckets.get(quarter) || [];
+      if (!list.length) {
+        return { quarter, percent: null, exams: 0, status: null };
+      }
+      const percent = Math.round(list.reduce((sum, it) => sum + it.percent, 0) / list.length);
+      return {
+        quarter,
+        percent,
+        exams: list.length,
+        status: lessonStatus(percent)
+      };
+    });
+
+    const scoredPoints = points.filter((p) => p.percent != null);
+    const overall = scoredPoints.length
+      ? Math.round(scoredPoints.reduce((sum, p) => sum + p.percent, 0) / scoredPoints.length)
+      : null;
+    const trendInfo = examOverallTrend(points);
+    const latestPoint = [...scoredPoints].pop() || null;
+
+    res.json({
+      points,
+      exams,
+      overall,
+      status: latestPoint ? latestPoint.status : (overall != null ? lessonStatus(overall) : null),
+      ...trendInfo,
+      thresholds: { passing: PASSING, strong: STRONG }
+    });
+  } catch (error) {
+    console.error('Get child exam performance error:', error);
+    res.status(500).json({ error: 'Server error fetching exam performance', details: error.message });
   }
 };
 

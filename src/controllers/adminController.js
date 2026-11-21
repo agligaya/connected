@@ -1756,7 +1756,7 @@ exports.updateCurrentQuarter = async (req, res) => {
     const adminId = req.user?.id || req.user?.userId;
     const raw = String(req.body?.current_quarter || req.body?.quarter || '').toUpperCase();
     if (!QUARTERS.includes(raw)) {
-      return res.status(400).json({ error: 'Quarter must be Q1, Q2, Q3, or Q4' });
+      return res.status(400).json({ error: 'Quarter must be Q1, Q2, or Q3' });
     }
 
     const saved = await setCurrentQuarter(raw);

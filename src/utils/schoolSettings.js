@@ -1,14 +1,17 @@
 const db = require('../../db');
 const { schoolYear, currentQuarter: envQuarter } = require('../config');
 
-const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
+const QUARTERS = ['Q1', 'Q2', 'Q3'];
 
 let schemaPromise = null;
 let cachedQuarter = null;
 
 function normalizeQuarter(value) {
   const q = String(value || 'Q1').toUpperCase();
-  return QUARTERS.includes(q) ? q : 'Q1';
+  if (QUARTERS.includes(q)) return q;
+  // Legacy Q4 schools map to the final quarter (Q3).
+  if (q === 'Q4') return 'Q3';
+  return 'Q1';
 }
 
 function quarterRank(value) {

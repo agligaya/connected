@@ -681,11 +681,26 @@ function normalizeGeneratedContent(parsed, fallbackMeta) {
   };
 }
 
-async function callOpenAiGenerate({ title, gradeLevel, subjectName, sourceText, quizItemCount, quizItemTypes, quizItemCounts, quizItemMax = 30, draftKind = 'quiz', teacherFocus = '' }) {
+async function callOpenAiGenerate({
+  title,
+  gradeLevel,
+  subjectName,
+  sourceText,
+  quizItemCount,
+  quizItemTypes,
+  quizItemCounts,
+  quizItemMax = 30,
+  draftKind = 'quiz',
+  teacherFocus = '',
+  multiLesson = false,
+  materialCount = 1
+}) {
   if (!isAiConfigured()) throw new Error('GROQ_API_KEY is not set');
 
   const kind = draftKind === 'activity' ? 'activity' : 'quiz';
   const grade = Number(gradeLevel) || 1;
+  const sources = Math.max(1, Number(materialCount) || 1);
+  const multi = !!(multiLesson && sources > 1);
   const fallback = {
     title,
     gradeLevel,
@@ -770,9 +785,17 @@ ${sourceText || '(title/objectives only)'}${teacherFocusInstruction(teacherFocus
     ? `Do NOT include these item types: ${omitted.join(', ')}.`
     : '';
 
+  const sourceRule = multi
+    ? `- Source materials: ${sources} separate lesson files are provided below (Material 1 of ${sources}, Material 2 of ${sources}, …). You MUST use ALL of them.
+- Spread the ${mix.total} questions across every material. Do not take almost all items from only the first material.
+- Use facts, terms, and steps that appear in those materials. Do not invent a different topic.
+- Content must cover all ${sources} materials, not only the first one.`
+    : `- Use facts, terms, and steps that appear in the source material. Do not invent a different topic.
+- Content must fit THIS single lesson only.`;
+
   const system = `You are an education assistant for a Philippine Montessori elementary school (Grades 1–6).
-Generate an age-appropriate QUIZ from ONE lesson plan only.
-Do NOT generate an activity or a full exam.
+Generate an age-appropriate ${multi ? 'EXAM-STYLE QUIZ from ALL of the source materials below' : 'QUIZ from ONE lesson plan only'}.
+Do NOT generate an activity${multi ? '' : ' or a full exam'}.
 
 Return ONLY valid JSON with key: quiz.
 - quiz: {
@@ -786,20 +809,19 @@ Return ONLY valid JSON with key: quiz.
 
 Rules by grade level:
 - Grade ${grade}: use vocabulary and sentence length suitable for that grade.
-- Quiz MUST have exactly ${mix.total} questions in total: ${mixLine} — drawn from the uploaded lesson material below. Each matching pair counts as one question.
+- Quiz MUST have exactly ${mix.total} questions in total: ${mixLine} — drawn from the uploaded material below. Each matching pair counts as one question.
 - Every quiz item type must be one of: ${mix.types.join(', ')}. ${omitLine}
 - ${typeRules.join('\n- ')}
-- Use facts, terms, and steps that appear in the source material. Do not invent a different topic.
+${sourceRule}
 - List items grouped in this order: ${QUIZ_DRAFT_TYPE_ORDER.filter((t) => (mix.counts[t] || 0) > 0).join(', ')}.
 - No student names, LRNs, or private data.
-- Language clear for elementary teachers and learners.
-- Content must fit THIS single lesson only.`;
+- Language clear for elementary teachers and learners.`;
 
   const user = `Grade: ${gradeLevel}
 Subject: ${subjectName || 'General'}
-Lesson: ${title}
+${multi ? `Exam covering ${sources} materials: ${title}` : `Lesson: ${title}`}
 Quiz item count required: ${mix.total}
-
+${multi ? `Materials to cover: all ${sources} sections below.\n` : ''}
 Source material (no student PII):
 ${sourceText || '(title/objectives only)'}${teacherFocusInstruction(teacherFocus)}`;
 
@@ -974,12 +996,13 @@ async function generateRecommendationsForLesson({
   };
 }
 
-function buildCombinedSourceText(lessons, maxChars = 12000, teacherFocus = '') {
+function buildCombinedSourceText(lessons, maxChars = 18000, teacherFocus = '') {
   const list = (lessons || []).filter(Boolean);
   if (!list.length) return '';
-  const per = Math.max(500, Math.floor(maxChars / list.length));
+  // Give each material a fair share so later files are not dropped when many are selected.
+  const per = Math.max(800, Math.floor(maxChars / list.length));
   const blocks = [];
-  for (const lesson of list) {
+  list.forEach((lesson, index) => {
     let block = buildSourceText({
       title: lesson.title,
       objectives: lesson.objectives,
@@ -987,9 +1010,11 @@ function buildCombinedSourceText(lessons, maxChars = 12000, teacherFocus = '') {
       teacherFocus
     });
     if (block.length > per) block = block.slice(0, per).trim();
-    if (block) blocks.push(block);
-  }
-  return blocks.join('\n\n---\n\n').slice(0, maxChars).trim();
+    if (!block) return;
+    const label = String(lesson.title || `Material ${index + 1}`).trim() || `Material ${index + 1}`;
+    blocks.push(`=== Material ${index + 1} of ${list.length}: ${label} ===\n${block}`);
+  });
+  return blocks.join('\n\n').slice(0, maxChars).trim();
 }
 
 async function generateRecommendationsForLessons({
@@ -1003,8 +1028,17 @@ async function generateRecommendationsForLessons({
   teacherFocus = '',
   onProgress = null
 }) {
+  const list = (lessons || []).filter(Boolean);
   const prepared = [];
-  for (const lesson of lessons || []) {
+  for (let i = 0; i < list.length; i += 1) {
+    const lesson = list[i];
+    if (typeof onProgress === 'function' && list.length > 1) {
+      onProgress({
+        step: 1,
+        total: 3,
+        label: `Reading material ${i + 1} of ${list.length}`
+      });
+    }
     prepared.push({
       title: lesson.title,
       objectives: lesson.objectives,
@@ -1012,7 +1046,16 @@ async function generateRecommendationsForLessons({
       grade_level: lesson.grade_level
     });
   }
-  const sourceText = buildCombinedSourceText(prepared, 12000, teacherFocus);
+  if (typeof onProgress === 'function') {
+    onProgress({
+      step: 1,
+      total: 3,
+      label: prepared.length > 1
+        ? `Reading ${prepared.length} materials`
+        : 'Reading the lesson'
+    });
+  }
+  const sourceText = buildCombinedSourceText(prepared, 18000, teacherFocus);
   if (!sourceText) {
     throw Object.assign(new Error('Add a lesson with a title, objectives, or readable file'), {
       status: 400
@@ -1034,13 +1077,21 @@ async function generateRecommendationsForLessons({
     quizItemCounts,
     quizItemMax,
     draftKind,
-    teacherFocus
+    teacherFocus,
+    multiLesson: prepared.length > 1,
+    materialCount: prepared.length
   };
 
   let provider = 'mock';
   let content;
   if (typeof onProgress === 'function') {
-    onProgress({ step: 2, total: 3, label: 'Writing the exam' });
+    onProgress({
+      step: 2,
+      total: 3,
+      label: prepared.length > 1
+        ? `Writing the exam from ${prepared.length} materials`
+        : 'Writing the exam'
+    });
   }
   if (!isAiDryRun() && isAiConfigured()) {
     content = await callOpenAiGenerate(meta);

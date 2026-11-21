@@ -1158,6 +1158,43 @@ async function viewerHomeSlot(viewerId, grade, sectionNorm) {
   return homeRows[0] || null;
 }
 
+/**
+ * Grades 4–6: only subject teachers (not the class adviser/assistant) confirm
+ * records for the class adviser. subjectId required.
+ */
+async function assertSubjectTeacherForAdviserShare(teacherId, gradeLevel, section, subjectId) {
+  const grade = Number(gradeLevel);
+  const sectionNorm = String(section || '').trim();
+  const sid = Number(subjectId);
+  if (!isSubjectGrade(grade)) {
+    const err = new Error('Sharing with the class adviser applies to Grades 4–6 only.');
+    err.status = 400;
+    throw err;
+  }
+  if (!sid) {
+    const err = new Error('Select your subject class to share records with the class adviser.');
+    err.status = 400;
+    throw err;
+  }
+  // Block only for this grade+section. Dual-role teachers may still upload
+  // when they open a different section/grade where they are the subject teacher.
+  const home = await viewerHomeSlot(teacherId, grade, sectionNorm);
+  if (home) {
+    const err = new Error(
+      'For this class you are the adviser or assistant. Open a subject class in another section or grade to upload records to that class adviser.'
+    );
+    err.status = 403;
+    throw err;
+  }
+  const rows = await getTeacherAssignmentRows(teacherId);
+  if (!teacherHasSubjectOnClass(rows, grade, sectionNorm, sid)) {
+    const err = new Error('You are not assigned to that subject for this class.');
+    err.status = 403;
+    throw err;
+  }
+  return rows;
+}
+
 function teacherDisplayName(row) {
   return [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || 'Teacher';
 }
@@ -1241,12 +1278,18 @@ router.get('/class-progress/:grade/:section/subject-record', verifyToken, async 
       [grade, sectionNorm]
     );
 
+    // Grades 4–6: only records the subject teacher has confirmed for the adviser.
+    const gradeNum = Number(grade);
+    const adviserGate = isSubjectGrade(gradeNum)
+      ? ' AND COALESCE(a.shared_with_adviser, 0) = 1'
+      : '';
     const [assessments] = await db.query(
       `SELECT a.id, a.title, a.TYPE AS type, a.quarter, a.max_score
        FROM assessments a
        WHERE a.subject_id = ? AND a.created_by = ?
          AND a.grade_level = ? AND TRIM(UPPER(a.section)) = TRIM(UPPER(?))
          AND a.TYPE IN ('quiz', 'activity', 'exam')
+         ${adviserGate}
        ORDER BY a.created_at, a.id`,
       [subjectId, recordTeacherId, grade, sectionNorm]
     );
@@ -1267,14 +1310,13 @@ router.get('/class-progress/:grade/:section/subject-record', verifyToken, async 
       }
     }
 
-    const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
+    const quarters = ['Q1', 'Q2', 'Q3'];
     function sheet(type) {
-      const grouped = { Q1: [], Q2: [], Q3: [], Q4: [] };
+      const grouped = { Q1: [], Q2: [], Q3: [] };
       for (const row of assessments) {
         if (String(row.type || '').toLowerCase() !== type) continue;
-        const quarter = quarters.includes(String(row.quarter || '').toUpperCase())
-          ? String(row.quarter).toUpperCase()
-          : 'Q1';
+        const rawQ = String(row.quarter || '').toUpperCase();
+        const quarter = quarters.includes(rawQ) ? rawQ : (rawQ === 'Q4' ? 'Q3' : 'Q1');
         grouped[quarter].push({
           id: row.id,
           title: row.title,
@@ -1332,6 +1374,14 @@ router.get('/class-progress/:grade/:section', verifyToken, async (req, res) => {
     if (subjectId) {
       scoreSql += ' AND a.subject_id = ?';
       scoreParams.push(subjectId);
+    }
+    // Grades 4–6 advisers/assistants only see other teachers' scores after those records are shared.
+    if (isSubjectGrade(grade)) {
+      const home = await viewerHomeSlot(teacherId, grade, sectionNorm);
+      if (home) {
+        scoreSql += ' AND (a.created_by = ? OR COALESCE(a.shared_with_adviser, 0) = 1)';
+        scoreParams.push(teacherId);
+      }
     }
     const [scores] = await db.query(scoreSql, scoreParams);
 
@@ -2157,7 +2207,13 @@ router.post('/ai/generate-exam', verifyToken, async (req, res) => {
 
     setImmediate(async () => {
       try {
-        setJobProgress(jobId, { step: 1, total: 3, label: 'Reading the lessons' });
+        setJobProgress(jobId, {
+          step: 1,
+          total: 3,
+          label: ordered.length > 1
+            ? `Reading ${ordered.length} materials`
+            : 'Reading the lesson'
+        });
         const generated = await runExclusive(() => generateRecommendationsForLessons({
           lessons: ordered,
           subjectName: ordered[0]?.subject_name,
@@ -3542,6 +3598,12 @@ async function ensureAssessmentSchema() {
   try {
     await db.query(`ALTER TABLE assessments ADD COLUMN rubric JSON NULL`);
   } catch (e) { /* column may already exist */ }
+  // Grades 4–6: subject teachers confirm before the class adviser can see the record.
+  try {
+    await db.query(
+      `ALTER TABLE assessments ADD COLUMN shared_with_adviser TINYINT(1) NOT NULL DEFAULT 0`
+    );
+  } catch (e) { /* column may already exist */ }
   try {
     const { ensureQuizShareSchema } = require('../utils/quizShare');
     await ensureQuizShareSchema();
@@ -3886,6 +3948,163 @@ router.post('/assessments/:id/revoke-link', verifyToken, async (req, res) => {
   }
 });
 
+/** Grades 4–6: subject teacher confirms the whole record is visible to the class adviser. */
+router.post('/assessments/:id/share-with-adviser', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const { id } = req.params;
+    const shared = req.body?.shared === false || req.body?.shared === 0 || req.body?.shared === '0'
+      ? 0
+      : 1;
+
+    const [[assessment]] = await db.query(
+      `SELECT id, title, grade_level, section, subject_id, created_by, shared_with_adviser
+       FROM assessments WHERE id = ? AND created_by = ?`,
+      [id, teacherId]
+    );
+    if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+
+    try {
+      await assertSubjectTeacherForAdviserShare(
+        teacherId,
+        assessment.grade_level,
+        assessment.section,
+        assessment.subject_id
+      );
+    } catch (e) {
+      return res.status(e.status || 403).json({ error: e.message });
+    }
+
+    await db.query(
+      `UPDATE assessments SET shared_with_adviser = ? WHERE id = ? AND created_by = ?`,
+      [shared, id, teacherId]
+    );
+
+    await logActivity(
+      db,
+      teacherId,
+      shared ? 'Shared record with class adviser' : 'Unshared record from class adviser',
+      'assessment',
+      assessment.title,
+      null
+    );
+
+    res.json({
+      message: shared
+        ? 'Record is now visible to the class adviser.'
+        : 'Record is hidden from the class adviser again.',
+      shared_with_adviser: shared
+    });
+  } catch (error) {
+    console.error('Share with adviser error:', error);
+    res.status(500).json({ error: 'Server error updating adviser share', details: error.message });
+  }
+});
+
+/**
+ * Grades 4–6: subject teacher shares or hides all of their own subject records
+ * for a class (optional quarter/type) with the class adviser in one step.
+ */
+router.post('/assessments/share-with-adviser-bulk', verifyToken, async (req, res) => {
+  try {
+    await ensureAssessmentSchema();
+    const teacherId = req.user?.id || req.user?.userId;
+    const grade = Number(req.body?.grade);
+    const section = String(req.body?.section || '').trim();
+    const subjectId = req.body?.subject_id != null && req.body?.subject_id !== ''
+      ? Number(req.body.subject_id)
+      : null;
+    const quarter = String(req.body?.quarter || '').trim().toUpperCase() || null;
+    const typeRaw = String(req.body?.type || '').trim().toLowerCase();
+    const type = ['quiz', 'activity', 'exam'].includes(typeRaw) ? typeRaw : null;
+    const idList = Array.isArray(req.body?.ids)
+      ? [...new Set(req.body.ids.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))]
+      : [];
+    const shared = req.body?.shared === false || req.body?.shared === 0 || req.body?.shared === '0'
+      ? 0
+      : 1;
+
+    if (!grade || !section) {
+      return res.status(400).json({ error: 'grade and section are required' });
+    }
+
+    try {
+      await assertSubjectTeacherForAdviserShare(teacherId, grade, section, subjectId);
+    } catch (e) {
+      return res.status(e.status || 403).json({ error: e.message });
+    }
+
+    let where = `created_by = ? AND grade_level = ? AND TRIM(UPPER(section)) = TRIM(UPPER(?))
+      AND subject_id = ? AND TYPE IN ('quiz', 'activity', 'exam')`;
+    const params = [teacherId, grade, section, subjectId];
+    if (quarter) {
+      where += ' AND UPPER(COALESCE(quarter, \'Q1\')) = ?';
+      params.push(quarter);
+    }
+    if (type) {
+      where += ' AND LOWER(TYPE) = ?';
+      params.push(type);
+    }
+    if (idList.length) {
+      where += ` AND id IN (${idList.map(() => '?').join(',')})`;
+      params.push(...idList);
+    }
+
+    const [matched] = await db.query(
+      `SELECT id FROM assessments WHERE ${where}`,
+      params
+    );
+    if (!matched.length) {
+      return res.json({
+        message: shared
+          ? 'No matching records to share with the class adviser.'
+          : 'No matching records to hide from the class adviser.',
+        updated: 0,
+        shared_with_adviser: shared
+      });
+    }
+
+    const ids = matched.map((r) => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const [result] = await db.query(
+      `UPDATE assessments SET shared_with_adviser = ?
+       WHERE id IN (${placeholders}) AND created_by = ?`,
+      [shared, ...ids, teacherId]
+    );
+
+    const scopeBits = [
+      `Grade ${grade}-${section}`,
+      quarter || null,
+      type || null,
+      subjectId ? `subject #${subjectId}` : null
+    ].filter(Boolean);
+
+    await logActivity(
+      db,
+      teacherId,
+      shared
+        ? `Shared ${ids.length} record(s) with class adviser`
+        : `Unshared ${ids.length} record(s) from class adviser`,
+      'assessment',
+      scopeBits.join(' · '),
+      null
+    );
+
+    res.json({
+      message: shared
+        ? `${ids.length} record(s) are now visible to the class adviser.`
+        : `${ids.length} record(s) are hidden from the class adviser again.`,
+      updated: result.affectedRows || ids.length,
+      ids,
+      shared_with_adviser: shared
+    });
+  } catch (error) {
+    console.error('Bulk share with adviser error:', error);
+    res.status(500).json({ error: 'Server error updating adviser share', details: error.message });
+  }
+});
+
 router.post('/assessments/:id/quiz-windows', verifyToken, async (req, res) => {
   try {
     await ensureAssessmentSchema();
@@ -4129,6 +4348,8 @@ router.post('/assessments/:id/makeup-quiz', verifyToken, async (req, res) => {
 
 router.get('/assessments', verifyToken, async (req, res) => {
   try {
+    await ensureAssessmentSchema();
+    const teacherId = req.user?.id || req.user?.userId;
     const { grade, section, quarter } = req.query;
     if (!grade || !section) {
       return res.status(400).json({ error: 'grade and section are required' });
@@ -4137,7 +4358,7 @@ router.get('/assessments', verifyToken, async (req, res) => {
     let sql = `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
                       a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                       a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id,
-                      a.quiz_opens_at, a.quiz_closes_at,
+                      a.quiz_opens_at, a.quiz_closes_at, a.shared_with_adviser,
                       a.activity_mode, a.activity_target_at,
                       s.NAME as subject_name,
                       (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count,
@@ -4152,6 +4373,12 @@ router.get('/assessments', verifyToken, async (req, res) => {
       params.push(quarter);
     }
 
+    // Grades 4–6: teachers always see their own; others only after share-with-adviser.
+    if (isSubjectGrade(grade)) {
+      sql += ' AND (a.created_by = ? OR COALESCE(a.shared_with_adviser, 0) = 1)';
+      params.push(teacherId);
+    }
+
     sql += ` ORDER BY a.created_at DESC`;
 
     try {
@@ -4163,16 +4390,19 @@ router.get('/assessments', verifyToken, async (req, res) => {
           : r.quiz_attendance_date
       })));
     } catch (inner) {
-      const [rows] = await db.query(
-        `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
+      const listParams = [grade, section];
+      let fallback = `SELECT a.id, a.title, a.TYPE as type, a.subject_id, a.grade_level, a.section,
                 a.max_score, a.created_by, a.created_at, s.NAME as subject_name,
                 (SELECT COUNT(*) FROM assessment_scores sc WHERE sc.assessment_id = a.id) as scored_count
          FROM assessments a
          LEFT JOIN subjects s ON a.subject_id = s.id
-         WHERE a.grade_level = ? AND a.section = ?
-         ORDER BY a.created_at DESC`,
-        [grade, section]
-      );
+         WHERE a.grade_level = ? AND a.section = ?`;
+      if (isSubjectGrade(grade)) {
+        fallback += ' AND (a.created_by = ? OR COALESCE(a.shared_with_adviser, 0) = 1)';
+        listParams.push(teacherId);
+      }
+      fallback += ' ORDER BY a.created_at DESC';
+      const [rows] = await db.query(fallback, listParams);
       return res.json(rows);
     }
   } catch (error) {
@@ -4374,7 +4604,7 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
                 a.max_score, a.quiz_link, a.share_token, a.share_enabled, a.created_by, a.created_at,
                 a.quiz_attendance_date, a.quiz_attendance_session, a.quiz_subject_id, a.quiz_makeup_student_ids,
                 a.quiz_opens_at, a.quiz_closes_at, a.quiz_makeup_closes_at, a.time_limit_minutes,
-                a.share_awaiting_attendance, a.quiz_live_duration_minutes,
+                a.share_awaiting_attendance, a.quiz_live_duration_minutes, a.shared_with_adviser,
                 a.activity_mode, a.activity_target_at, a.rubric,
                 s.NAME as subject_name
          FROM assessments a
@@ -4395,6 +4625,24 @@ router.get('/assessments/:id', verifyToken, async (req, res) => {
       assessment = row;
     }
     if (!assessment) return res.status(404).json({ error: 'Assessment not found' });
+
+    const teacherId = req.user?.id || req.user?.userId;
+    const isOwner = Number(assessment.created_by) === Number(teacherId);
+    if (
+      isSubjectGrade(assessment.grade_level)
+      && !isOwner
+      && !Number(assessment.shared_with_adviser)
+    ) {
+      return res.status(403).json({
+        error: 'This record has not been shared with the class adviser yet.'
+      });
+    }
+    try {
+      await assertTeacherClassAssignment(teacherId, assessment.grade_level, assessment.section);
+    } catch (e) {
+      return res.status(e.status || 403).json({ error: e.message });
+    }
+
     assessment.rubric = normalizeRubric(assessment.rubric, assessment.max_score);
     if (assessment.quiz_attendance_date != null && assessment.quiz_attendance_date !== '') {
       assessment.quiz_attendance_date = sqlDateToISO(assessment.quiz_attendance_date) || null;
