@@ -3850,6 +3850,24 @@ a.chip-ghost {
     grid-template-columns: 1fr;
     gap: 22px;
   }
+
+  /* Status filters stay 3-across on mobile */
+  .student-work-board.student-work-status-board {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .student-work-status-tab .student-work-group-title {
+    padding: 8px 6px;
+    font-size: 0.95rem;
+    min-height: 40px;
+  }
+
+  .student-work-status-tab .student-work-group-count {
+    min-width: 20px;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+  }
 }
 
 .student-work-group-title {
