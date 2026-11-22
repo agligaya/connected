@@ -266,7 +266,7 @@ function renderStudentWorkCard(item) {
     detail = `Submitted ${studentDateLabel(item.submitted_at)}`.trim();
   }
   const action = item.state === 'open' && item.path
-    ? `<a class="chip-ghost" href="${escapeHtml(item.path)}">Open →</a>`
+    ? `<a class="chip-ghost" href="${escapeHtml(item.path)}">Open&nbsp;→</a>`
     : '';
   return `<div class="chart-card student-work-card student-work-card--${escapeHtml(studentWorkGroupOf(item))}">
     <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(type)}</p>
@@ -361,7 +361,7 @@ function renderStudentMaterialCard(item) {
   return `<div class="chart-card">
     <p class="page-subheading" style="margin:0 0 4px;">${escapeHtml(item.file_type || 'File')}</p>
     <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0 0 10px;">${escapeHtml(item.title || 'Lesson file')}</h3>
-    <a class="chip-ghost" href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">Open →</a>
+    <a class="chip-ghost" href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">Open&nbsp;→</a>
   </div>`;
 }
 
@@ -378,7 +378,7 @@ function renderStudentRecordsTable(records) {
       <td>${escapeHtml(percent)}</td>
       <td>${escapeHtml(studentDateLabel(row.taken_at) || '—')}</td>
       <td>${row.has_submission
-        ? `<button type="button" class="chip-ghost" onclick="viewStudentWork(${Number(row.id)})">View Work</button>`
+        ? `<button type="button" class="chip-ghost student-view-work-btn" onclick="viewStudentWork(${Number(row.id)})">View&nbsp;Work</button>`
         : '—'}</td>
     </tr>`;
   }).join('');
@@ -418,7 +418,7 @@ window.viewStudentWork = async function (assessmentId) {
     const parts = [];
     const box = identificationAnswerBoxHtml(data.identification_bank);
     if (quiz.length) {
-      parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderParentQuizTakenItem, {
+      parts.push(quizTakenHtmlWithAnswerBox(quiz, box, renderStudentQuizTakenItem, {
         given: 'Your answer',
         expected: 'Correct answer'
       }));
@@ -430,6 +430,31 @@ window.viewStudentWork = async function (assessmentId) {
     if (bodyEl) bodyEl.innerHTML = `<p class="page-subheading">${escapeHtml(err.message || 'Could not load submitted work')}</p>`;
   }
 };
+
+/** Student portal View Work — same layout as parent, with “Your answer” (not “child’s”). */
+function renderStudentQuizTakenItem(item) {
+  const n = Number(item.n) || 1;
+  const isId = isIdentificationTakenItem(item);
+  const choices = isId ? [] : (Array.isArray(item.choices) ? item.choices : []);
+  const given = formatQuizTakenAnswer(item.given, choices);
+  const expected = formatQuizTakenAnswer(item.expected, choices);
+  const mark = item.correct === true ? 'Correct' : item.correct === false ? 'Incorrect' : '';
+  const markHtml = mark ? ` <span class="page-subheading">${escapeHtml(mark)}</span>` : '';
+  const choiceHtml = choices.length
+    ? `<p class="page-subheading" style="margin:0 0 4px;"><strong>Choices:</strong></p>
+       <ul class="progress-quiz-choices">${choices.map((c, i) => {
+         const body = stripMcqChoicePrefix(c) || String(c || '');
+         return `<li>${escapeHtml(mcqLetterAt(i))}. ${escapeHtml(body)}</li>`;
+       }).join('')}</ul>`
+    : '';
+  return `<div class="progress-work-item">
+    <p class="page-subheading" style="margin:0 0 8px;"><strong>Item ${n}</strong>${markHtml}</p>
+    <p style="margin:0 0 8px;font-size:0.86rem;"><strong>Question:</strong> ${escapeHtml(item.question || '')}</p>
+    ${choiceHtml}
+    <p class="progress-activity-work"><strong>Your answer:</strong> ${given ? escapeHtml(given) : '—'}</p>
+    <p class="progress-activity-work" style="margin-bottom:0;"><strong>Correct answer:</strong> ${expected ? escapeHtml(expected) : '—'}</p>
+  </div>`;
+}
 
 function renderStudentSection() {
   const body = document.getElementById('student-section-body');

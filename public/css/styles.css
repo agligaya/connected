@@ -3733,8 +3733,11 @@ tbody tr:nth-child(even) {
 
 /* Link version of the white "Open →" pill used in the teacher and parent portals. */
 a.chip-ghost {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-decoration: none;
+  line-height: 1.2;
 }
 
 /* Status (Open / Not open / Closed ...) always sits at the bottom of the card. */
@@ -3952,6 +3955,16 @@ html.layout-mobile .student-records-card td {
 html.layout-mobile .student-records-card td:first-child {
   white-space: normal !important;
   min-width: 170px;
+}
+
+/* Keep “View Work” on one line (global mobile chips allow wrap). */
+html.layout-mobile .student-records-card .chip-ghost,
+html.layout-mobile #parent-progress-table-wrap .chip-ghost {
+  white-space: nowrap !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* Parent portal records: keep columns readable and scroll sideways inside the card */
@@ -6047,10 +6060,19 @@ html.layout-mobile [class*="toast"] {
   max-width: calc(100% - 24px) !important;
 }
 
-html.layout-mobile .chip-ghost,
+/* Toolbar/session labels may wrap; action pills stay one line. */
 html.layout-mobile .btn-toolbar,
 html.layout-mobile .session-chip {
   white-space: normal !important;
+}
+
+html.layout-mobile .chip-ghost,
+html.layout-mobile a.chip-ghost {
+  white-space: nowrap !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
 }
 
 html.layout-mobile .btn-record-add,
