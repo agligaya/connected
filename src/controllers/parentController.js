@@ -830,6 +830,44 @@ exports.getChildExamPerformance = async (req, res) => {
       };
     });
 
+    // One series per subject (same Q1–Q3 axis) for multi-color parent chart.
+    const bySubject = new Map();
+    for (const item of exams) {
+      const key = item.subject_id != null ? `id:${item.subject_id}` : `name:${item.subject_name.toLowerCase()}`;
+      if (!bySubject.has(key)) {
+        bySubject.set(key, {
+          subject_id: item.subject_id,
+          subject_name: item.subject_name,
+          buckets: new Map(quarterOrder.map((q) => [q, []]))
+        });
+      }
+      const slot = bySubject.get(key);
+      if (!slot.buckets.has(item.quarter)) slot.buckets.set(item.quarter, []);
+      slot.buckets.get(item.quarter).push(item);
+    }
+    const subjects = [...bySubject.values()]
+      .map((entry) => {
+        const subjectPoints = quarterOrder.map((quarter) => {
+          const list = entry.buckets.get(quarter) || [];
+          if (!list.length) {
+            return { quarter, percent: null, exams: 0, status: null };
+          }
+          const percent = Math.round(list.reduce((sum, it) => sum + it.percent, 0) / list.length);
+          return {
+            quarter,
+            percent,
+            exams: list.length,
+            status: lessonStatus(percent)
+          };
+        });
+        return {
+          subject_id: entry.subject_id,
+          subject_name: entry.subject_name,
+          points: subjectPoints
+        };
+      })
+      .sort((a, b) => a.subject_name.localeCompare(b.subject_name));
+
     const scoredPoints = points.filter((p) => p.percent != null);
     const overall = scoredPoints.length
       ? Math.round(scoredPoints.reduce((sum, p) => sum + p.percent, 0) / scoredPoints.length)
@@ -839,6 +877,7 @@ exports.getChildExamPerformance = async (req, res) => {
 
     res.json({
       points,
+      subjects,
       exams,
       overall,
       status: latestPoint ? latestPoint.status : (overall != null ? lessonStatus(overall) : null),

@@ -296,13 +296,13 @@ function studentWorkGroupOf(item) {
   return 'pending';
 }
 
-/** Three rows (Pending, Done, Missing); inside each, Quizzes, Activities and Exams. */
+/** Three columns (Pending, Done, Missing); inside each, Quizzes, Activities and Exams. */
 function renderStudentWorkGroups(all) {
   const kindOf = (item) => {
     const kind = String(item.type || 'quiz').toLowerCase();
     return STUDENT_WORK_KINDS.some((k) => k.key === kind) ? kind : 'quiz';
   };
-  return STUDENT_WORK_GROUPS.map((group) => {
+  const columns = STUDENT_WORK_GROUPS.map((group) => {
     const inGroup = all.filter((item) => studentWorkGroupOf(item) === group.key);
     const kinds = STUDENT_WORK_KINDS.map((kind) => {
       const items = inGroup.filter((item) => kindOf(item) === kind.key);
@@ -317,6 +317,7 @@ function renderStudentWorkGroups(all) {
       ${kinds || `<p class="page-subheading student-work-group-empty">${group.empty}</p>`}
     </section>`;
   }).join('');
+  return `<div class="student-work-board">${columns}</div>`;
 }
 
 function renderStudentMaterialCard(item) {
@@ -16639,12 +16640,12 @@ async function renderParentOverview(student) {
         <div class="teacher-header-row" style="align-items:flex-start;">
           <div>
             <h3 style="font-size:1rem;color:var(--maroon-deep);margin:0;">Progress Summary</h3>
-            <p class="page-subheading" style="margin:2px 0 0;">Overall exam performance by quarter. Shows if scores are rising or going down.</p>
+            <p class="page-subheading" style="margin:2px 0 0;">Exam scores by quarter — one colored line per subject, plus an overall trend.</p>
           </div>
         </div>
         <p class="page-subheading" id="parent-exam-trend" style="margin:10px 0 0;"></p>
         <div class="parent-chart-wrap parent-chart-wrap--line" id="parent-exam-chart-wrap">
-          <canvas id="parent-exam-chart" aria-label="Overall exam performance by quarter" role="img"></canvas>
+          <canvas id="parent-exam-chart" aria-label="Exam performance by subject and quarter" role="img"></canvas>
         </div>
         <div class="page-subheading" id="parent-ai-summary" style="margin:12px 0 0;font-size:0.85rem;color:var(--text-dark);line-height:1.6;">
           Loading summary…
@@ -17008,10 +17009,28 @@ async function loadParentExamPerformance(studentId) {
   }
 }
 
+const PARENT_EXAM_SUBJECT_COLORS = [
+  '#2e7d32',
+  '#1565c0',
+  '#ef6c00',
+  '#6a1b9a',
+  '#00838f',
+  '#c62828',
+  '#5d4037',
+  '#4527a0',
+  '#00695c',
+  '#ad1457'
+];
+
+function parentExamSubjectColor(index) {
+  return PARENT_EXAM_SUBJECT_COLORS[index % PARENT_EXAM_SUBJECT_COLORS.length];
+}
+
 function paintParentExamChart() {
   const wrap = document.getElementById('parent-exam-chart-wrap');
   if (!wrap) return;
   const points = parentExamData?.points || [];
+  const subjectSeries = Array.isArray(parentExamData?.subjects) ? parentExamData.subjects : [];
   const scored = points.filter((p) => p.percent != null);
 
   if (!scored.length) {
@@ -17027,36 +17046,59 @@ function paintParentExamChart() {
   }
 
   if (!document.getElementById('parent-exam-chart')) {
-    wrap.innerHTML = '<canvas id="parent-exam-chart" aria-label="Overall exam performance by quarter" role="img"></canvas>';
+    wrap.innerHTML = '<canvas id="parent-exam-chart" aria-label="Exam performance by subject and quarter" role="img"></canvas>';
   }
   const canvas = document.getElementById('parent-exam-chart');
   const labels = points.map((p) => p.quarter);
-  const values = points.map((p) => (p.percent == null ? null : p.percent));
-  const pointColors = points.map((p) => {
-    if (p.percent == null) return 'rgba(138,114,107,0.35)';
-    return PARENT_STATUS_COLORS[p.status] || '#60100b';
+  const overallValues = points.map((p) => (p.percent == null ? null : p.percent));
+
+  const datasets = subjectSeries.map((subject, index) => {
+    const color = parentExamSubjectColor(index);
+    const subjectPoints = Array.isArray(subject.points) ? subject.points : [];
+    const byQuarter = new Map(subjectPoints.map((p) => [p.quarter, p]));
+    return {
+      label: subject.subject_name || 'Subject',
+      data: labels.map((q) => {
+        const point = byQuarter.get(q);
+        return point && point.percent != null ? point.percent : null;
+      }),
+      _metaPoints: labels.map((q) => byQuarter.get(q) || null),
+      spanGaps: true,
+      borderColor: color,
+      backgroundColor: color,
+      fill: false,
+      tension: 0.25,
+      borderWidth: 2.5,
+      pointRadius: 5,
+      pointHoverRadius: 7,
+      pointBackgroundColor: color,
+      pointBorderColor: '#fff',
+      pointBorderWidth: 1.5
+    };
+  });
+
+  datasets.push({
+    label: 'Overall',
+    data: overallValues,
+    _metaPoints: points,
+    spanGaps: true,
+    borderColor: '#60100b',
+    backgroundColor: 'rgba(96,16,11,0.08)',
+    borderDash: [6, 4],
+    fill: false,
+    tension: 0.25,
+    borderWidth: 2,
+    pointRadius: 4,
+    pointHoverRadius: 6,
+    pointBackgroundColor: '#60100b',
+    pointBorderColor: '#fff',
+    pointBorderWidth: 1.5
   });
 
   if (parentCharts.exams) { parentCharts.exams.destroy(); delete parentCharts.exams; }
   parentCharts.exams = new Chart(canvas, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Overall exam %',
-        data: values,
-        spanGaps: true,
-        borderColor: '#60100b',
-        backgroundColor: 'rgba(96,16,11,0.12)',
-        fill: true,
-        tension: 0.25,
-        pointRadius: 5,
-        pointHoverRadius: 7,
-        pointBackgroundColor: pointColors,
-        pointBorderColor: '#fff',
-        pointBorderWidth: 1.5
-      }]
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -17073,16 +17115,28 @@ function paintParentExamChart() {
         }
       },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: {
+            boxWidth: 12,
+            boxHeight: 12,
+            usePointStyle: true,
+            pointStyle: 'circle',
+            padding: 14,
+            font: { size: 11 }
+          }
+        },
         tooltip: {
           callbacks: {
             label: (item) => {
-              const point = points[item.dataIndex];
-              if (!point || point.percent == null) return 'No exams yet';
-              const st = parentExamStatusLabel(point.status);
-              const n = Number(point.exams) || 0;
+              const ds = item.dataset || {};
+              const meta = Array.isArray(ds._metaPoints) ? ds._metaPoints[item.dataIndex] : null;
+              if (!meta || meta.percent == null) return `${ds.label}: no exams yet`;
+              const st = parentExamStatusLabel(meta.status);
+              const n = Number(meta.exams) || 0;
               const count = n === 1 ? '1 exam' : `${n} exams`;
-              return [`Overall: ${point.percent}%`, st, count].filter(Boolean);
+              return [`${ds.label}: ${meta.percent}%`, st, count].filter(Boolean);
             }
           }
         }

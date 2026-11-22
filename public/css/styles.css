@@ -3748,9 +3748,28 @@ a.chip-ghost {
   padding-top: 8px;
 }
 
-/* Classworks: three rows (Pending, Done, Missing), each with Quizzes / Activities / Exams */
+/* Classworks: three columns (Pending, Done, Missing), each with Quizzes / Activities / Exams */
+.student-work-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
 .student-work-group {
-  margin: 0 0 26px;
+  margin: 0;
+  min-width: 0;
+}
+
+.student-work-board .student-card-grid {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 960px) {
+  .student-work-board {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
 }
 
 .student-work-group-title {
@@ -4354,7 +4373,7 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
 }
 
 .parent-chart-wrap--line {
-  height: 240px;
+  height: 280px;
   margin-top: 8px;
 }
 
