@@ -3748,7 +3748,87 @@ a.chip-ghost {
   padding-top: 8px;
 }
 
-/* Classworks: three columns (Pending, Done, Missing), each with Quizzes / Activities / Exams */
+/* Classworks: Pending/Done/Missing headers → Quizzes/Activities/Exams columns */
+.student-work-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.student-work-status-board {
+  margin-bottom: 2px;
+  align-items: stretch;
+}
+
+.student-work-status-tab {
+  appearance: none;
+  box-sizing: border-box;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  min-width: 0;
+  display: block;
+  transition: background 0.15s ease;
+}
+
+.student-work-status-tab .student-work-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  margin: 0;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-bottom: 2px solid #eadfdf;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  color: var(--maroon-deep);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.student-work-status-tab:hover .student-work-group-title,
+.student-work-status-tab:focus-visible .student-work-group-title {
+  color: var(--maroon);
+}
+
+.student-work-status-tab.is-active .student-work-group-title {
+  background: #f0e6e6;
+  color: var(--maroon-deep);
+  border-bottom-color: var(--maroon-deep);
+}
+
+.student-work-status-tab.student-work-group--done.is-active .student-work-group-title {
+  background: #e8f5e9;
+  color: #1b5e20;
+  border-bottom-color: #2e7d32;
+}
+
+.student-work-status-tab.student-work-group--missing.is-active .student-work-group-title {
+  background: #fdeaea;
+  color: #b71c1c;
+  border-bottom-color: #b71c1c;
+}
+
+/* Keep unselected status tabs equal — don't inherit Missing/Done kind colors. */
+.student-work-status-tab.student-work-group--missing:not(.is-active) .student-work-group-title,
+.student-work-status-tab.student-work-group--done:not(.is-active) .student-work-group-title {
+  color: var(--maroon-deep);
+  border-bottom-color: #eadfdf;
+  background: transparent;
+}
+
+.student-work-status-empty {
+  margin: 0;
+}
+
 .student-work-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3776,10 +3856,13 @@ a.chip-ghost {
   display: flex;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
   margin: 0 0 12px;
-  padding-bottom: 8px;
+  min-height: 44px;
+  padding: 10px 12px;
   border-bottom: 2px solid #eadfdf;
   font-size: 1.1rem;
+  line-height: 1.2;
   color: var(--maroon-deep);
 }
 
@@ -3793,30 +3876,14 @@ a.chip-ghost {
   text-align: center;
 }
 
-.student-work-group--missing .student-work-group-title {
+.student-work-group--kind.student-work-group--missing .student-work-group-title {
   color: #b71c1c;
   border-bottom-color: #f1c4c4;
 }
 
-.student-work-group--missing .student-work-group-count {
+.student-work-group--kind.student-work-group--missing .student-work-group-count {
   background: #fdeaea;
   color: #b71c1c;
-}
-
-.student-work-kind + .student-work-kind {
-  margin-top: 16px;
-}
-
-.student-work-kind-title {
-  margin: 0 0 8px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #6b5a5a;
-}
-
-.student-work-kind-title span {
-  font-weight: 400;
-  opacity: 0.8;
 }
 
 .student-work-group-empty {
@@ -4507,6 +4574,11 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
   background: var(--maroon-header);
   color: #fff;
   font-weight: 600;
+}
+
+.parent-att-placeholder-row td {
+  color: var(--text-muted, #8a726b);
+  opacity: 0.7;
 }
 
 .parent-att-summary {

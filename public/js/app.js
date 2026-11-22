@@ -284,10 +284,12 @@ const STUDENT_WORK_GROUPS = [
 ];
 
 const STUDENT_WORK_KINDS = [
-  { key: 'quiz', label: 'Quizzes' },
-  { key: 'activity', label: 'Activities' },
-  { key: 'exam', label: 'Exams' }
+  { key: 'quiz', label: 'Quizzes', empty: 'No quizzes here.' },
+  { key: 'activity', label: 'Activities', empty: 'No activities here.' },
+  { key: 'exam', label: 'Exams', empty: 'No exams here.' }
 ];
+
+let studentWorkStatus = 'pending';
 
 function studentWorkGroupOf(item) {
   if (item.group) return item.group;
@@ -296,28 +298,63 @@ function studentWorkGroupOf(item) {
   return 'pending';
 }
 
-/** Three columns (Pending, Done, Missing); inside each, Quizzes, Activities and Exams. */
-function renderStudentWorkGroups(all) {
-  const kindOf = (item) => {
-    const kind = String(item.type || 'quiz').toLowerCase();
-    return STUDENT_WORK_KINDS.some((k) => k.key === kind) ? kind : 'quiz';
-  };
-  const columns = STUDENT_WORK_GROUPS.map((group) => {
-    const inGroup = all.filter((item) => studentWorkGroupOf(item) === group.key);
-    const kinds = STUDENT_WORK_KINDS.map((kind) => {
-      const items = inGroup.filter((item) => kindOf(item) === kind.key);
-      if (!items.length) return '';
-      return `<div class="student-work-kind">
-        <h4 class="student-work-kind-title">${kind.label} <span>(${items.length})</span></h4>
-        <div class="student-card-grid">${items.map(renderStudentWorkCard).join('')}</div>
-      </div>`;
-    }).join('');
-    return `<section class="student-work-group student-work-group--${group.key}" aria-label="${group.label}">
-      <h3 class="student-work-group-title">${group.label} <span class="student-work-group-count">${inGroup.length}</span></h3>
-      ${kinds || `<p class="page-subheading student-work-group-empty">${group.empty}</p>`}
+function studentWorkKindOf(item) {
+  const kind = String(item.type || 'quiz').toLowerCase();
+  return STUDENT_WORK_KINDS.some((k) => k.key === kind) ? kind : 'quiz';
+}
+
+function pickDefaultStudentWorkStatus(all) {
+  const counts = Object.fromEntries(STUDENT_WORK_GROUPS.map((g) => [g.key, 0]));
+  for (const item of all || []) {
+    const key = studentWorkGroupOf(item);
+    if (counts[key] != null) counts[key] += 1;
+  }
+  if (counts.pending > 0) return 'pending';
+  if (counts.done > 0) return 'done';
+  if (counts.missing > 0) return 'missing';
+  return 'pending';
+}
+
+/** Status chips (Pending / Done / Missing) → three columns: Quizzes, Activities, Exams. */
+function renderStudentWorkGroups(all, selectedStatus = studentWorkStatus) {
+  const statusKey = STUDENT_WORK_GROUPS.some((g) => g.key === selectedStatus)
+    ? selectedStatus
+    : 'pending';
+  const statusMeta = STUDENT_WORK_GROUPS.find((g) => g.key === statusKey) || STUDENT_WORK_GROUPS[0];
+  const counts = Object.fromEntries(STUDENT_WORK_GROUPS.map((g) => [g.key, 0]));
+  for (const item of all || []) {
+    const key = studentWorkGroupOf(item);
+    if (counts[key] != null) counts[key] += 1;
+  }
+
+  const filters = STUDENT_WORK_GROUPS.map((group) => {
+    const active = group.key === statusKey ? ' is-active' : '';
+    return `<button type="button" class="student-work-status-tab student-work-group--${group.key}${active}" data-student-work-status="${group.key}" aria-pressed="${group.key === statusKey ? 'true' : 'false'}">
+      <span class="student-work-group-title">${escapeHtml(group.label)} <span class="student-work-group-count">${counts[group.key] || 0}</span></span>
+    </button>`;
+  }).join('');
+
+  const inStatus = (all || []).filter((item) => studentWorkGroupOf(item) === statusKey);
+  const columns = STUDENT_WORK_KINDS.map((kind) => {
+    const items = inStatus.filter((item) => studentWorkKindOf(item) === kind.key);
+    const body = items.length
+      ? `<div class="student-card-grid">${items.map(renderStudentWorkCard).join('')}</div>`
+      : `<p class="page-subheading student-work-group-empty">${escapeHtml(kind.empty)}</p>`;
+    return `<section class="student-work-group student-work-group--kind student-work-group--${statusKey}" aria-label="${kind.label}">
+      <h3 class="student-work-group-title">${escapeHtml(kind.label)} <span class="student-work-group-count">${items.length}</span></h3>
+      ${body}
     </section>`;
   }).join('');
-  return `<div class="student-work-board">${columns}</div>`;
+
+  const emptyNote = inStatus.length
+    ? ''
+    : `<p class="page-subheading student-work-status-empty">${escapeHtml(statusMeta.empty)}</p>`;
+
+  return `<div class="student-work-shell" data-student-work-shell>
+    <div class="student-work-board student-work-status-board" role="group" aria-label="Classwork status">${filters}</div>
+    ${emptyNote}
+    <div class="student-work-board">${columns}</div>
+  </div>`;
 }
 
 function renderStudentMaterialCard(item) {
@@ -409,9 +446,14 @@ function renderStudentSection() {
       : '<p class="page-subheading">Nothing taken yet.</p>';
   } else {
     const all = studentDetail.classworks || [];
-    body.innerHTML = all.length
-      ? renderStudentWorkGroups(all)
-      : '<p class="page-subheading">No classwork shared yet.</p>';
+    if (!all.length) {
+      body.innerHTML = '<p class="page-subheading">No classwork shared yet.</p>';
+    } else {
+      if (!STUDENT_WORK_GROUPS.some((g) => g.key === studentWorkStatus)) {
+        studentWorkStatus = pickDefaultStudentWorkStatus(all);
+      }
+      body.innerHTML = renderStudentWorkGroups(all, studentWorkStatus);
+    }
   }
   document.querySelectorAll('#student-content [data-student-section]').forEach((btn) => {
     const active = btn.getAttribute('data-student-section') === studentSection;
@@ -462,6 +504,7 @@ async function loadStudentSubject(subjectId) {
     if (!res.ok) throw new Error(data.error || 'Could not load this subject');
     if (Number(studentSubjectId) !== Number(subjectId)) return;
     studentDetail = data;
+    studentWorkStatus = pickDefaultStudentWorkStatus(data.classworks || []);
     const tab = (key, label) => `<button type="button" class="chip-ghost" role="tab" data-student-section="${key}">${label}</button>`;
     content.innerHTML = `${heading}
       <div class="student-section-switch" role="tablist" aria-label="Subject sections">
@@ -805,6 +848,14 @@ document.getElementById('student-content')?.addEventListener('click', (e) => {
     studentAnnFilter = annFilterBtn.getAttribute('data-student-ann-filter') || 'all';
     studentExpandedAnnId = null;
     paintStudentAnnouncementList();
+    return;
+  }
+  const statusBtn = e.target.closest('[data-student-work-status]');
+  if (statusBtn) {
+    const next = statusBtn.getAttribute('data-student-work-status') || 'pending';
+    if (!STUDENT_WORK_GROUPS.some((g) => g.key === next)) return;
+    studentWorkStatus = next;
+    renderStudentSection();
     return;
   }
   const btn = e.target.closest('[data-student-section]');
@@ -17846,16 +17897,28 @@ function parentAttendanceRowsHtml(records) {
   }).join('');
 }
 
-function parentAttendanceTableHtml(records, { emptyText = 'No attendance records yet.' } = {}) {
-  if (!records.length) {
+function parentAttendancePlaceholderRowsHtml(count) {
+  if (count <= 0) return '';
+  return Array.from({ length: count }, () => `
+    <tr class="parent-att-placeholder-row">
+      <td>—</td>
+      <td>—</td>
+      <td><span class="page-subheading" style="margin:0;">—</span></td>
+    </tr>`).join('');
+}
+
+function parentAttendanceTableHtml(records, { emptyText = 'No attendance records yet.', padTo = 0 } = {}) {
+  const rows = Array.isArray(records) ? records : [];
+  if (!rows.length && !(padTo > 0)) {
     return `<p style="color:var(--text-muted);font-size:0.84rem;margin:0;">${escapeHtml(emptyText)}</p>`;
   }
+  const placeholders = padTo > rows.length ? parentAttendancePlaceholderRowsHtml(padTo - rows.length) : '';
   return `
     <table style="width:100%;font-size:0.82rem;">
       <thead style="background:var(--maroon-header);color:#fff;">
         <tr><th>Date</th><th>Session / Subject</th><th>Status</th></tr>
       </thead>
-      <tbody>${parentAttendanceRowsHtml(records)}</tbody>
+      <tbody>${parentAttendanceRowsHtml(rows)}${placeholders}</tbody>
     </table>`;
 }
 
@@ -17875,7 +17938,8 @@ async function loadParentAttendanceTable(studentId) {
     parentAttendanceCache = records;
     const recent = recentParentAttendance(records);
     wrap.innerHTML = parentAttendanceTableHtml(recent, {
-      emptyText: 'No attendance records yet.'
+      emptyText: 'No attendance records yet.',
+      padTo: 10
     });
     const seeMore = document.getElementById('parent-attendance-see-more');
     if (seeMore) seeMore.hidden = records.length === 0;
