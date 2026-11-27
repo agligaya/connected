@@ -39,7 +39,7 @@ async function loadSharedLessons(student, schoolYear, subjectId = null) {
   await ensureLessonShareSchema();
   const params = [
     student.grade_level,
-    student.grade_level, student.section, schoolYear,
+    student.grade_level, student.section, schoolYear, schoolYear,
     student.grade_level, student.section
   ];
   let subjectSql = '';
@@ -63,8 +63,17 @@ async function loadSharedLessons(student, schoolYear, subjectId = null) {
            WHERE ta.teacher_id = lp.uploaded_by
              AND ta.grade_level = ?
              AND TRIM(UPPER(ta.section)) = TRIM(UPPER(?))
-             AND ta.school_year = ?
              AND (ta.subject_id IS NULL OR lp.subject_id IS NULL OR ta.subject_id = lp.subject_id)
+             AND (
+               ta.school_year = ?
+               OR NOT EXISTS (
+                 SELECT 1 FROM teacher_assignments cur
+                 WHERE cur.teacher_id = lp.uploaded_by
+                   AND cur.grade_level = lp.grade_level
+                   AND cur.school_year = ?
+                   AND (cur.subject_id IS NULL OR lp.subject_id IS NULL OR cur.subject_id = lp.subject_id)
+               )
+             )
          )
          OR EXISTS (
            SELECT 1 FROM teacher_profiles tp
@@ -110,7 +119,9 @@ async function announceSharedLesson(lessonId) {
   const [existing] = await db.query('SELECT id FROM announcements WHERE lesson_plan_id = ? LIMIT 1', [lp.id]);
   if (existing.length) return 0;
 
-  const [sections] = await db.query(
+  // Prefer current school year; if this teacher has no assignment there yet, use any year
+  // so share notices still reach the classes they actually teach.
+  let [sections] = await db.query(
     `SELECT DISTINCT UPPER(TRIM(ta.section)) AS section
      FROM teacher_assignments ta
      WHERE ta.teacher_id = ? AND ta.grade_level = ? AND ta.school_year = ?
@@ -123,6 +134,21 @@ async function announceSharedLesson(lessonId) {
        AND tp.homeroom_section IS NOT NULL AND TRIM(tp.homeroom_section) <> ''`,
     [lp.uploaded_by, lp.grade_level, schoolYear, lp.subject_id, lp.subject_id, lp.uploaded_by, lp.grade_level]
   );
+  if (!sections.length) {
+    [sections] = await db.query(
+      `SELECT DISTINCT UPPER(TRIM(ta.section)) AS section
+       FROM teacher_assignments ta
+       WHERE ta.teacher_id = ? AND ta.grade_level = ?
+         AND ta.section IS NOT NULL AND TRIM(ta.section) <> ''
+         AND (ta.subject_id IS NULL OR ? IS NULL OR ta.subject_id = ?)
+       UNION
+       SELECT UPPER(TRIM(tp.homeroom_section))
+       FROM teacher_profiles tp
+       WHERE tp.user_id = ? AND tp.homeroom_grade = ?
+         AND tp.homeroom_section IS NOT NULL AND TRIM(tp.homeroom_section) <> ''`,
+      [lp.uploaded_by, lp.grade_level, lp.subject_id, lp.subject_id, lp.uploaded_by, lp.grade_level]
+    );
+  }
 
   const where = lp.subject_name || 'your subject';
   const title = `New material: ${lp.title}`;

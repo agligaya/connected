@@ -2650,8 +2650,8 @@ router.post('/ai/recommendations/:id/approve', verifyToken, async (req, res) => 
 
     const title = String(part.title || `${type}: ${row.lesson_title || 'Lesson'}`).trim();
     const maxScore = Math.max(1, Number(max_score) || Number(part.max_score) || 100);
-    const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
+    const qtr = normalizeQuarter(quarter || current);
     if (!isQuarterUnlocked(qtr, current)) {
       return res.status(400).json({
         error: `${qtr} is locked. Admin has unlocked through ${current} only.`
@@ -3558,8 +3558,8 @@ router.post('/assessments/from-bank', verifyToken, async (req, res) => {
         maxScore = Math.max(1, Math.round(rubricSum * 100) / 100);
       }
     }
-    const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
+    const qtr = normalizeQuarter(quarter || current);
     if (!isQuarterUnlocked(qtr, current)) {
       return res.status(400).json({
         error: `${qtr} is locked. Admin has unlocked through ${current} only.`
@@ -4621,8 +4621,8 @@ router.post('/assessments', verifyToken, async (req, res) => {
       rubricJson = JSON.stringify(rubricObj);
     }
     const subjectId = subject_id ? Number(subject_id) : null;
-    const qtr = normalizeQuarter(quarter || 'Q1');
     const current = await getCurrentQuarter();
+    const qtr = normalizeQuarter(quarter || current);
     if (!isQuarterUnlocked(qtr, current)) {
       return res.status(400).json({
         error: `${qtr} is locked. Admin has unlocked through ${current} only.`

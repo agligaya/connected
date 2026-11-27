@@ -38,7 +38,7 @@ function fillUnlockedQuarterSelect(selectEl, preferred) {
   if (!selectEl) return null;
   const unlocked = (UNLOCKED_QUARTERS || ['Q1']).map(normalizeQuarterClient);
   const list = unlocked.length ? unlocked : [normalizeQuarterClient(CURRENT_QUARTER || 'Q1')];
-  const want = normalizeQuarterClient(preferred || teacherCurrentQuarter || CURRENT_QUARTER || list[list.length - 1]);
+  const want = normalizeQuarterClient(preferred || CURRENT_QUARTER || teacherCurrentQuarter || list[list.length - 1]);
   const selected = list.includes(want) ? want : list[list.length - 1];
   selectEl.innerHTML = list.map((q) =>
     `<option value="${q}">${q}${q === normalizeQuarterClient(CURRENT_QUARTER) ? ' (current)' : ''}</option>`
@@ -14978,7 +14978,7 @@ async function openCreateProgressFromBank() {
   }
 
   const qtrSel = document.getElementById('qb-create-quarter');
-  fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter);
+  fillUnlockedQuarterSelect(qtrSel, CURRENT_QUARTER);
 
   modal.hidden = false;
 }
@@ -15402,7 +15402,7 @@ async function openExamWriteModal() {
   fillExamClassSelect(document.getElementById('qb-exam-write-class'));
   fillUnlockedQuarterSelect(
     document.getElementById('qb-exam-write-quarter'),
-    teacherCurrentQuarter || CURRENT_QUARTER
+    CURRENT_QUARTER
   );
   const titleEl = document.getElementById('qb-exam-write-title');
   if (titleEl) titleEl.value = '';
@@ -15941,7 +15941,7 @@ async function openCreateExamModal() {
   syncHiddenClassSelectFromSections('qb-exam-class', defaultGrade, checkedSections);
 
   const qtrSel = document.getElementById('qb-exam-quarter');
-  const selectedQ = fillUnlockedQuarterSelect(qtrSel, teacherCurrentQuarter || CURRENT_QUARTER);
+  const selectedQ = fillUnlockedQuarterSelect(qtrSel, CURRENT_QUARTER);
 
   const { grade_level } = parseExamClassValue(document.getElementById('qb-exam-class')?.value);
   fillExamSubjectOptions(grade_level);
