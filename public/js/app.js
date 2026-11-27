@@ -6119,7 +6119,10 @@ function resetParentTabState(tabId) {
     parentAttPage = 1;
     // keep period preference across visits
   }
-  if (tabId === 'progress') parentProgressPage = 1;
+  if (tabId === 'progress') {
+    parentProgressPage = 1;
+    // Keep open subjects / quarter / filters when leaving the tab
+  }
   if (tabId === 'overview') destroyParentCharts();
 }
 
@@ -7821,9 +7824,18 @@ const TEACHER_STUDENT_SCORE_COLORS = {
   behind: '#c62828'
 };
 
+const TEACHER_STUDENT_TYPE_COLORS = {
+  quiz: '#2e7d32',
+  activity: '#e67e22',
+  exam: '#60100b'
+};
+
 let teacherStudentProgressRecords = [];
 let teacherStudentProgressFilter = 'all';
+let teacherStudentProgressQuarter = '';
+let teacherStudentProgressSubject = ''; // '' = All subjects (summary)
 let teacherStudentProgressChart = null;
+let teacherStudentProgressChartRows = []; // rows currently plotted (for click / tooltips)
 
 function teacherJoinTopics(list) {
   const arr = (list || []).map((t) => String(t || '').trim()).filter(Boolean);
@@ -7849,19 +7861,89 @@ function teacherStudentProgressScoreBand(percent) {
   return 'behind';
 }
 
+/** Infer quarter from title marker or record date (no API change). */
+function teacherStudentProgressQuarterOf(row) {
+  const title = String(row?.title || '');
+  const fromTitle = title.match(/\b(Q[1-3])\b/i);
+  if (fromTitle) return fromTitle[1].toUpperCase();
+  const iso = String(row?.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return 'Q1';
+  const month = Number(iso.slice(5, 7));
+  if (month >= 6 && month <= 8) return 'Q1';
+  if (month >= 9 && month <= 11) return 'Q2';
+  return 'Q3';
+}
+
+function teacherStudentProgressCleanTitle(title) {
+  return String(title || 'Untitled')
+    .replace(/\s*[—\-–]\s*(Quarterly\s+)?(Quiz|Activity|Exam)\s*$/i, '')
+    .trim() || 'Untitled';
+}
+
+function teacherStudentProgressTruncate(label, maxLen) {
+  const s = String(label || '');
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(1, maxLen - 1))}…`;
+}
+
+function teacherStudentProgressLabelMax() {
+  return (typeof window !== 'undefined' && window.innerWidth < 640) ? 16 : 24;
+}
+
+function teacherStudentProgressIsSummary() {
+  return !teacherStudentProgressSubject;
+}
+
 function teacherStudentProgressFilteredRecords() {
-  const filter = teacherStudentProgressFilter;
-  const rows = Array.isArray(teacherStudentProgressRecords) ? teacherStudentProgressRecords : [];
-  if (filter === 'all') return rows;
-  return rows.filter((row) => row.type === filter);
+  let rows = Array.isArray(teacherStudentProgressRecords) ? [...teacherStudentProgressRecords] : [];
+  if (teacherStudentProgressFilter !== 'all') {
+    rows = rows.filter((row) => row.type === teacherStudentProgressFilter);
+  }
+  if (teacherStudentProgressQuarter) {
+    const q = normalizeQuarterClient(teacherStudentProgressQuarter);
+    rows = rows.filter((row) => teacherStudentProgressQuarterOf(row) === q);
+  }
+  if (teacherStudentProgressSubject) {
+    const want = teacherStudentProgressSubject.toLowerCase();
+    rows = rows.filter((row) => String(row.subject_name || 'General').trim().toLowerCase() === want);
+  }
+  return rows;
+}
+
+function teacherStudentProgressSubjectGroups(records) {
+  const map = new Map();
+  for (const row of records || []) {
+    const name = String(row.subject_name || '').trim() || 'General';
+    const key = name.toLowerCase();
+    if (!map.has(key)) map.set(key, { key, name, records: [] });
+    map.get(key).records.push(row);
+  }
+  return [...map.values()]
+    .map((g) => {
+      const avg = g.records.length
+        ? Math.round(g.records.reduce((s, r) => s + (Number(r.percent) || 0), 0) / g.records.length)
+        : 0;
+      return { ...g, avg, count: g.records.length };
+    })
+    .sort((a, b) => a.avg - b.avg || a.name.localeCompare(b.name));
 }
 
 function teacherStudentProgressRecordsHtml(records) {
   if (!records.length) {
-    const empty = teacherStudentProgressFilter === 'all'
-      ? 'No scores recorded yet for this student in the current class view.'
-      : `No ${TEACHER_STUDENT_PROGRESS_TYPES.find((t) => t.key === teacherStudentProgressFilter)?.label?.toLowerCase() || 'scores'} yet.`;
-    return `<p class="page-subheading" style="margin:0;">${escapeHtml(empty)}</p>`;
+    return '<p class="page-subheading" style="margin:0;">No scores match these filters.</p>';
+  }
+  if (teacherStudentProgressIsSummary()) {
+    const groups = teacherStudentProgressSubjectGroups(records);
+    if (!groups.length) {
+      return '<p class="page-subheading" style="margin:0;">No scores match these filters.</p>';
+    }
+    return `<div class="teacher-student-progress-group">
+      <h5 class="teacher-student-progress-heading">By subject (weakest first)</h5>
+      <ul>${groups.map((g) => `<li>
+        <button type="button" class="teacher-student-progress-subject-link" data-subject="${escapeHtml(g.name)}">${escapeHtml(g.name)}</button>
+        <span class="page-subheading teacher-student-progress-score">${g.avg}% · ${g.count} record${g.count === 1 ? '' : 's'}</span>
+      </li>`).join('')}</ul>
+    </div>`;
   }
   const types = teacherStudentProgressFilter === 'all'
     ? TEACHER_STUDENT_PROGRESS_TYPES
@@ -7870,12 +7952,10 @@ function teacherStudentProgressRecordsHtml(records) {
     const group = records.filter((row) => row.type === key);
     if (!group.length) return '';
     const items = group.map((row) => {
-      const subject = String(row.subject_name || '').trim();
       const date = row.date ? String(row.date).slice(0, 10) : '';
-      const meta = [subject, date].filter(Boolean).join(' · ');
       return `<li>
         <span class="teacher-student-progress-title">${escapeHtml(row.title || 'Untitled')}</span>
-        <span class="page-subheading teacher-student-progress-score">${Number(row.score)}/${Number(row.max_score)} (${Number(row.percent)}%)${meta ? ` · ${escapeHtml(meta)}` : ''}</span>
+        <span class="page-subheading teacher-student-progress-score">${Number(row.score)}/${Number(row.max_score)} (${Number(row.percent)}%)${date ? ` · ${escapeHtml(date)}` : ''}</span>
       </li>`;
     }).join('');
     return `<div class="teacher-student-progress-group">
@@ -7893,26 +7973,128 @@ function syncTeacherStudentProgressFilterChips() {
   });
 }
 
+function syncTeacherStudentProgressBackBtn() {
+  const btn = document.getElementById('teacher-student-progress-back');
+  if (!btn) return;
+  btn.hidden = teacherStudentProgressIsSummary();
+}
+
+function fillTeacherStudentProgressQuarterSelect() {
+  const sel = document.getElementById('teacher-student-progress-quarter');
+  if (!sel) return;
+  const unlocked = (UNLOCKED_QUARTERS || ['Q1']).map(normalizeQuarterClient);
+  const list = unlocked.length ? unlocked : [normalizeQuarterClient(CURRENT_QUARTER || 'Q1')];
+  if (!teacherStudentProgressQuarter || !list.includes(normalizeQuarterClient(teacherStudentProgressQuarter))) {
+    teacherStudentProgressQuarter = normalizeQuarterClient(CURRENT_QUARTER || list[list.length - 1]);
+  }
+  sel.innerHTML = list.map((q) =>
+    `<option value="${q}" ${q === teacherStudentProgressQuarter ? 'selected' : ''}>${q}${q === normalizeQuarterClient(CURRENT_QUARTER) ? ' (current)' : ''}</option>`
+  ).join('');
+}
+
+function fillTeacherStudentProgressSubjectSelect() {
+  const sel = document.getElementById('teacher-student-progress-subject');
+  if (!sel) return;
+  // Subjects available under current quarter + type (ignore selected subject so list stays full)
+  let rows = Array.isArray(teacherStudentProgressRecords) ? [...teacherStudentProgressRecords] : [];
+  if (teacherStudentProgressFilter !== 'all') {
+    rows = rows.filter((row) => row.type === teacherStudentProgressFilter);
+  }
+  if (teacherStudentProgressQuarter) {
+    const q = normalizeQuarterClient(teacherStudentProgressQuarter);
+    rows = rows.filter((row) => teacherStudentProgressQuarterOf(row) === q);
+  }
+  const names = [...new Set(rows.map((r) => String(r.subject_name || '').trim() || 'General'))]
+    .sort((a, b) => a.localeCompare(b));
+  if (teacherStudentProgressSubject && !names.some((n) => n.toLowerCase() === teacherStudentProgressSubject.toLowerCase())) {
+    teacherStudentProgressSubject = '';
+  }
+  sel.innerHTML = [
+    '<option value="">All subjects</option>',
+    ...names.map((n) => {
+      const selected = n.toLowerCase() === teacherStudentProgressSubject.toLowerCase();
+      return `<option value="${escapeHtml(n)}" ${selected ? 'selected' : ''}>${escapeHtml(n)}</option>`;
+    })
+  ].join('');
+}
+
 function destroyTeacherStudentProgressChart() {
   if (teacherStudentProgressChart) {
-    teacherStudentProgressChart.destroy();
+    try { teacherStudentProgressChart.destroy(); } catch { /* ignore */ }
     teacherStudentProgressChart = null;
   }
+  teacherStudentProgressChartRows = [];
 }
+
+const teacherStudentProgressPassLinePlugin = {
+  id: 'teacherStudentProgressPassLine',
+  afterDraw(chart) {
+    const xScale = chart.scales?.x;
+    const area = chart.chartArea;
+    if (!xScale || !area) return;
+    const x = xScale.getPixelForValue(75);
+    const { ctx } = chart;
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = 'rgba(183, 28, 28, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.bottom);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
+const teacherStudentProgressEndLabelPlugin = {
+  id: 'teacherStudentProgressEndLabels',
+  afterDatasetsDraw(chart) {
+    const meta = chart.getDatasetMeta(0);
+    if (!meta?.data?.length) return;
+    const { ctx } = chart;
+    const values = chart.data.datasets[0]?.data || [];
+    ctx.save();
+    ctx.fillStyle = '#4b0a06';
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    meta.data.forEach((bar, i) => {
+      const val = values[i];
+      if (val == null) return;
+      const label = `${val}%`;
+      const x = Math.min(bar.x + 6, chart.chartArea.right - 28);
+      ctx.textAlign = 'left';
+      ctx.fillText(label, x, bar.y);
+    });
+    ctx.restore();
+  }
+};
 
 function paintTeacherStudentProgressChart() {
   const wrap = document.getElementById('teacher-student-progress-chart-wrap');
+  const scroll = document.getElementById('teacher-student-progress-chart-scroll');
   if (!wrap) return;
 
   destroyTeacherStudentProgressChart();
 
   const filtered = teacherStudentProgressFilteredRecords();
-  // Chart oldest → newest so progress reads left-to-right / top-to-bottom.
-  const rows = [...filtered].reverse();
+  const summary = teacherStudentProgressIsSummary();
+  const groups = summary ? teacherStudentProgressSubjectGroups(filtered) : [];
+  const rows = summary
+    ? groups.map((g) => ({
+      kind: 'subject',
+      subject_name: g.name,
+      title: g.name,
+      percent: g.avg,
+      count: g.count
+    }))
+    : [...filtered].reverse();
+
+  teacherStudentProgressChartRows = rows;
 
   if (!rows.length) {
     wrap.style.height = '120px';
-    wrap.innerHTML = '<p class="parent-chart-empty">No scores to chart for this filter.</p>';
+    wrap.innerHTML = '<p class="parent-chart-empty">No scores match these filters.</p>';
+    if (scroll) scroll.scrollTop = 0;
     return;
   }
 
@@ -7923,34 +8105,52 @@ function paintTeacherStudentProgressChart() {
     return;
   }
 
+  const labelMax = teacherStudentProgressLabelMax();
   wrap.innerHTML = '<canvas id="teacher-student-progress-chart" aria-label="Student scores" role="img"></canvas>';
-  wrap.style.height = `${Math.max(180, Math.min(420, 44 * rows.length + 64))}px`;
+  const chartHeight = Math.max(200, 28 * rows.length + 48);
+  wrap.style.height = `${chartHeight}px`;
+  if (scroll) scroll.scrollTop = 0;
+
   const canvas = document.getElementById('teacher-student-progress-chart');
   const labels = rows.map((row) => {
-    const title = String(row.title || 'Untitled').trim();
-    return title.length > 36 ? `${title.slice(0, 34)}…` : title;
+    const base = summary ? row.subject_name : teacherStudentProgressCleanTitle(row.title);
+    return teacherStudentProgressTruncate(base, labelMax);
   });
   const values = rows.map((row) => Number(row.percent) || 0);
-  const colors = rows.map((row) => TEACHER_STUDENT_SCORE_COLORS[teacherStudentProgressScoreBand(row.percent)] || '#8a726b');
+  const colors = rows.map((row) => {
+    if ((Number(row.percent) || 0) < 75) return TEACHER_STUDENT_SCORE_COLORS.behind;
+    if (summary) return TEACHER_STUDENT_SCORE_COLORS[teacherStudentProgressScoreBand(row.percent)] || '#8a726b';
+    return TEACHER_STUDENT_TYPE_COLORS[row.type] || '#8a726b';
+  });
 
   teacherStudentProgressChart = new ChartLib(canvas, {
     type: 'bar',
     data: {
       labels,
       datasets: [{
-        label: 'Score %',
+        label: summary ? 'Subject average %' : 'Score %',
         data: values,
         backgroundColor: colors,
         borderRadius: 6,
         maxBarThickness: 22,
-        categoryPercentage: 0.7,
-        barPercentage: 0.85
+        categoryPercentage: 0.72,
+        barPercentage: 0.88
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      onClick: (_evt, elements) => {
+        if (!summary || !elements?.length) return;
+        const idx = elements[0].index;
+        const row = teacherStudentProgressChartRows[idx];
+        if (!row?.subject_name) return;
+        teacherStudentProgressSubject = row.subject_name;
+        const sel = document.getElementById('teacher-student-progress-subject');
+        if (sel) sel.value = row.subject_name;
+        renderTeacherStudentProgressView();
+      },
       scales: {
         x: {
           min: 0,
@@ -7959,37 +8159,71 @@ function paintTeacherStudentProgressChart() {
           grid: { color: 'rgba(93,17,13,0.08)' }
         },
         y: {
-          ticks: { autoSkip: false, font: { size: 11 } },
+          ticks: {
+            autoSkip: false,
+            font: { size: 11 },
+            callback(value) {
+              const raw = this.getLabelForValue(value);
+              return teacherStudentProgressTruncate(raw, teacherStudentProgressLabelMax());
+            }
+          },
           grid: { display: false }
         }
       },
       plugins: {
-        legend: { display: false },
+        legend: summary
+          ? { display: false }
+          : {
+            display: true,
+            position: 'top',
+            labels: {
+              boxWidth: 10,
+              font: { size: 11 },
+              generateLabels() {
+                return [
+                  { text: 'Quiz', fillStyle: TEACHER_STUDENT_TYPE_COLORS.quiz, strokeStyle: TEACHER_STUDENT_TYPE_COLORS.quiz, lineWidth: 0, hidden: false },
+                  { text: 'Activity', fillStyle: TEACHER_STUDENT_TYPE_COLORS.activity, strokeStyle: TEACHER_STUDENT_TYPE_COLORS.activity, lineWidth: 0, hidden: false },
+                  { text: 'Exam', fillStyle: TEACHER_STUDENT_TYPE_COLORS.exam, strokeStyle: TEACHER_STUDENT_TYPE_COLORS.exam, lineWidth: 0, hidden: false },
+                  { text: 'Below 75%', fillStyle: TEACHER_STUDENT_SCORE_COLORS.behind, strokeStyle: TEACHER_STUDENT_SCORE_COLORS.behind, lineWidth: 0, hidden: false }
+                ];
+              }
+            }
+          },
         tooltip: {
           callbacks: {
-            title: (items) => rows[items[0]?.dataIndex]?.title || '',
+            title: (items) => {
+              const row = rows[items[0]?.dataIndex];
+              if (!row) return '';
+              return summary ? row.subject_name : (row.title || 'Untitled');
+            },
             label: (item) => {
               const row = rows[item.dataIndex];
               if (!row) return '';
+              if (summary) {
+                return [`Average: ${row.percent}%`, `${row.count} record${row.count === 1 ? '' : 's'}`];
+              }
               const typeLabel = TEACHER_STUDENT_PROGRESS_TYPES.find((t) => t.key === row.type)?.label || row.type;
-              const band = TEACHER_STUDENT_BAND_LABELS[teacherStudentProgressScoreBand(row.percent)] || '';
+              const date = row.date ? String(row.date).slice(0, 10) : '';
               return [
-                `${row.score}/${row.max_score} (${row.percent}%)`,
                 typeLabel,
-                band,
-                row.subject_name || ''
+                `Score: ${row.score} / ${row.max_score} (${row.percent}%)`,
+                date ? `Date: ${date}` : ''
               ].filter(Boolean);
             }
           }
         }
       }
-    }
+    },
+    plugins: [teacherStudentProgressPassLinePlugin, teacherStudentProgressEndLabelPlugin]
   });
 }
 
 function renderTeacherStudentProgressView() {
   const bodyEl = document.getElementById('teacher-student-progress-body');
   syncTeacherStudentProgressFilterChips();
+  fillTeacherStudentProgressQuarterSelect();
+  fillTeacherStudentProgressSubjectSelect();
+  syncTeacherStudentProgressBackBtn();
   paintTeacherStudentProgressChart();
   if (bodyEl) bodyEl.innerHTML = teacherStudentProgressRecordsHtml(teacherStudentProgressFilteredRecords());
 }
@@ -8024,9 +8258,14 @@ async function openTeacherStudentProgressModal(studentId) {
   }
 
   teacherStudentProgressFilter = 'all';
+  teacherStudentProgressSubject = '';
+  teacherStudentProgressQuarter = normalizeQuarterClient(CURRENT_QUARTER || 'Q2');
   teacherStudentProgressRecords = [];
   destroyTeacherStudentProgressChart();
   syncTeacherStudentProgressFilterChips();
+  fillTeacherStudentProgressQuarterSelect();
+  fillTeacherStudentProgressSubjectSelect();
+  syncTeacherStudentProgressBackBtn();
 
   if (titleEl) titleEl.textContent = 'Student progress';
   if (subEl) subEl.textContent = 'Loading…';
@@ -8094,6 +8333,34 @@ document.getElementById('teacher-student-progress-filters')?.addEventListener('c
   const btn = e.target.closest('[data-progress-type]');
   if (!btn) return;
   setTeacherStudentProgressFilter(btn.getAttribute('data-progress-type'));
+});
+
+document.getElementById('teacher-student-progress-quarter')?.addEventListener('change', (e) => {
+  teacherStudentProgressQuarter = normalizeQuarterClient(e.target.value || CURRENT_QUARTER || 'Q1');
+  renderTeacherStudentProgressView();
+});
+
+document.getElementById('teacher-student-progress-subject')?.addEventListener('change', (e) => {
+  teacherStudentProgressSubject = String(e.target.value || '').trim();
+  renderTeacherStudentProgressView();
+});
+
+document.getElementById('teacher-student-progress-back')?.addEventListener('click', () => {
+  teacherStudentProgressSubject = '';
+  const sel = document.getElementById('teacher-student-progress-subject');
+  if (sel) sel.value = '';
+  renderTeacherStudentProgressView();
+});
+
+document.getElementById('teacher-student-progress-body')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.teacher-student-progress-subject-link');
+  if (!btn) return;
+  const name = btn.getAttribute('data-subject') || '';
+  if (!name) return;
+  teacherStudentProgressSubject = name;
+  const sel = document.getElementById('teacher-student-progress-subject');
+  if (sel) sel.value = name;
+  renderTeacherStudentProgressView();
 });
 
 const SUBJECT_RECORD_SHEETS = [
@@ -16245,6 +16512,7 @@ function updateParentChildName(text) {
       parentAttendanceCache = [];
       parentAttPage = 1;
       parentProgressPage = 1;
+      parentClassworkPage = 1;
       updateParentChildName(`${selected.first_name} ${selected.last_name}`);
       const activeTab = document.querySelector('[data-parent-tab].active')?.dataset.parentTab;
       if (activeTab === 'overview') renderParentOverview(selected);
@@ -16352,15 +16620,17 @@ async function buildParentReportHtml(student, tab) {
       parentProgressAverageAll = overallAvg;
     }
     const records = filterParentProgressRecords(all, {
-      subject: parentProgressSubject,
       type: parentProgressType,
+      quarter: parentProgressQuarter || CURRENT_QUARTER || 'Q2',
+      search: parentProgressSearch,
       mode: parentProgressPeriodMode,
       period: parentProgressPeriod
     });
     const filterBits = [
-      parentProgressSubject === 'all' ? 'All subjects' : (parentProgressSubject === '__none__' ? 'No subject' : parentProgressSubject),
+      parentProgressQuarter || CURRENT_QUARTER || 'Q2',
       parentProgressType === 'all' ? 'All types' : parentProgressTypeLabel(parentProgressType),
-      parentPeriodLabel(parentProgressPeriod, parentProgressPeriodMode)
+      parentPeriodLabel(parentProgressPeriod, parentProgressPeriodMode),
+      parentProgressSearch ? `Search “${parentProgressSearch}”` : 'All titles'
     ];
     const shownAvg = parentProgressAverage(records);
     const rows = records.map((r) => {
@@ -16750,6 +17020,7 @@ let parentLessonData = null;      // { subjects, lessons }
 let parentLessonSubject = 'all';  // 'all' | subject_id string
 let parentClassworkWeek = '';     // YYYY-MM-DD (Monday)
 let parentClassworkData = null;
+let parentClassworkPage = 1;
 let parentExamData = null;        // overall exam performance by quarter
 let parentAttRange = 'month';     // day | week | month | year
 let parentAttSummaryData = null;
@@ -17356,10 +17627,12 @@ function wireParentWeekNav(studentId) {
   if (!parentClassworkWeek) parentClassworkWeek = parentTodayISO();
   document.getElementById('parent-week-prev')?.addEventListener('click', () => {
     parentClassworkWeek = parentShiftISO(parentClassworkData?.weekStart || parentClassworkWeek, -7);
+    parentClassworkPage = 1;
     loadParentWeeklyClasswork(studentId);
   });
   document.getElementById('parent-week-next')?.addEventListener('click', () => {
     parentClassworkWeek = parentShiftISO(parentClassworkData?.weekStart || parentClassworkWeek, 7);
+    parentClassworkPage = 1;
     loadParentWeeklyClasswork(studentId);
   });
 }
@@ -17455,12 +17728,14 @@ function paintParentClassworkChart() {
   }
 
   if (tableWrap) {
+    const pager = paginate(items, parentClassworkPage, PARENT_PAGE_SIZE);
+    parentClassworkPage = pager.page;
     tableWrap.innerHTML = `
       <p class="page-subheading" style="margin:0 0 6px;">Average this week: <strong>${parentClassworkData.average}%</strong> · ${items.length} item${items.length === 1 ? '' : 's'}</p>
       <table class="parent-mini-table">
         <thead><tr><th>Name</th><th>Type</th><th>Subject</th><th>Score</th><th>%</th></tr></thead>
         <tbody>
-          ${items.map((it) => `
+          ${pager.rows.map((it) => `
             <tr>
               <td>${escapeHtml(it.title)}</td>
               <td><span class="badge type-${escapeHtml(it.type)}">${it.type === 'quiz' ? 'Quiz' : it.type === 'activity' ? 'Activity' : 'Exam'}</span></td>
@@ -17469,7 +17744,12 @@ function paintParentClassworkChart() {
               <td>${it.percent}%</td>
             </tr>`).join('')}
         </tbody>
-      </table>`;
+      </table>
+      <div id="parent-classwork-pager-wrap">${parentPagerHtml('parent-classwork-pager', pager)}</div>`;
+    wireParentPager('parent-classwork-pager', (p) => {
+      parentClassworkPage = p;
+      paintParentClassworkChart();
+    });
   }
 }
 
@@ -17613,17 +17893,25 @@ let parentAttPeriod = '';            // period key for the mode, '' = all
 let parentAttPeriodInitialized = false;
 let parentAttPage = 1;
 
-// Records tab state
+// Records tab state (Parent Portal accordion view)
 let parentProgressCache = null;      // records from /progress (null = not loaded)
 let parentProgressAverageAll = 0;
-let parentProgressSubject = 'all';   // 'all' | subject name
 let parentProgressType = 'all';      // all | quiz | activity | exam
-let parentProgressPeriodMode = 'month';
-let parentProgressPeriod = '';       // '' = all
-let parentProgressPage = 1;
-let parentProgressSubjectMenuApi = null;
-let parentProgressTypeMenuApi = null;
+let parentProgressQuarter = '';      // Q1 | Q2 | Q3 (set on first paint)
+let parentProgressSearch = '';
+let parentProgressSortAlpha = false; // false = weakest first
+let parentProgressChartOpen = true;
+/** @type {Map<string, Set<string>>} childId -> open subject keys */
+const parentProgressOpenByChild = new Map();
+/** @type {Set<string>} childIds that already got default-expand applied */
+const parentProgressDefaultExpanded = new Set();
+// Legacy aliases kept so older print helpers do not throw
+let parentProgressSubject = 'all';
+let parentProgressPeriodMode = 'year'; // week | month | year
+let parentProgressPeriod = '';        // '' = all periods in mode
+let parentProgressPeriodInitialized = false;
 let parentProgressPeriodFilterApi = null;
+let parentProgressPage = 1;
 let parentAttendanceStatus = 'all'; // all | Late | Absent | Present
 let parentAttStatusMenuApi = null;
 let parentAttPeriodFilterApi = null;
@@ -18138,61 +18426,68 @@ async function loadParentAttendanceFull(studentId) {
 function renderParentProgress(student) {
   const contentEl = document.getElementById('parent-content');
   if (!contentEl) return;
+  if (!parentProgressQuarter) {
+    parentProgressQuarter = normalizeQuarterClient(CURRENT_QUARTER || 'Q2');
+  }
   contentEl.innerHTML = `
     <div class="parent-main">
-      <div class="chart-card">
+      <div class="chart-card parent-records-card">
         <div class="teacher-header-row">
           <div>
             <h3 class="page-heading font-heading">Records</h3>
-            <p class="page-subheading" id="parent-progress-avg">Loading scores…</p>
+            <p class="page-subheading">Scores by subject for the selected quarter.</p>
           </div>
         </div>
-        <div class="parent-att-toolbar">
-          <div class="download-menu" id="parent-progress-subject-menu">
-            <button type="button" class="chip-ghost" id="parent-progress-subject-btn" aria-haspopup="true" aria-expanded="false">All subjects ▾</button>
-            <div class="download-menu-panel download-menu-panel--scroll" id="parent-progress-subject-panel" hidden></div>
-          </div>
-          <div class="download-menu" id="parent-progress-type-menu">
-            <button type="button" class="chip-ghost" id="parent-progress-type-btn" aria-haspopup="true" aria-expanded="false">All types ▾</button>
-            <div class="download-menu-panel" id="parent-progress-type-panel" hidden></div>
-          </div>
-          <div class="parent-period-filter parent-att-menu--right">
-            <div class="parent-period-chips" id="parent-progress-period-chips" role="group" aria-label="Date taken"></div>
+
+        <div class="parent-records-toolbar">
+          <div class="parent-records-quarters" id="parent-records-quarter-chips" role="group" aria-label="Quarter"></div>
+          <div class="parent-records-type" id="parent-records-type-chips" role="group" aria-label="Record type"></div>
+          <div class="parent-period-filter parent-records-period">
+            <div class="parent-period-chips" id="parent-progress-period-chips" role="group" aria-label="Period type"></div>
             <div class="download-menu" id="parent-progress-period-menu">
               <button type="button" class="chip-ghost" id="parent-progress-period-btn" aria-haspopup="true" aria-expanded="false">Period ▾</button>
               <div class="download-menu-panel download-menu-panel--scroll" id="parent-progress-period-panel" hidden></div>
             </div>
           </div>
+          <label class="parent-records-search">
+            <span class="visually-hidden">Search records</span>
+            <input type="search" id="parent-records-search" class="inbox-search-input" placeholder="Search title or subject…" value="${escapeHtml(parentProgressSearch)}" autocomplete="off" />
+          </label>
         </div>
-        <div id="parent-progress-table-wrap" class="records-table-wrapper" style="margin-top:8px;padding-left:0;padding-right:0;"></div>
-        <div id="parent-progress-pager-wrap"></div>
+
+        <div class="parent-records-summary" id="parent-records-summary" aria-live="polite">
+          <span>Loading scores…</span>
+        </div>
+
+        <div class="parent-records-chart-block">
+          <button type="button" class="chip-ghost parent-records-chart-toggle" id="parent-records-chart-toggle" aria-expanded="${parentProgressChartOpen}">
+            ${parentProgressChartOpen ? 'Hide' : 'Show'} subject averages chart
+          </button>
+          <div class="parent-chart-wrap parent-records-chart-wrap" id="parent-records-chart-wrap" ${parentProgressChartOpen ? '' : 'hidden'}>
+            <canvas id="parent-records-chart" aria-label="Average score per subject" role="img"></canvas>
+          </div>
+        </div>
+
+        <div class="parent-records-actions">
+          <button type="button" class="chip-ghost" id="parent-records-expand-all">Expand all</button>
+          <button type="button" class="chip-ghost" id="parent-records-collapse-all">Collapse all</button>
+          <button type="button" class="chip-ghost" id="parent-records-sort-toggle" aria-pressed="${parentProgressSortAlpha}">
+            ${parentProgressSortAlpha ? 'Sort: A–Z' : 'Sort: weakest first'}
+          </button>
+        </div>
+
+        <div id="parent-progress-table-wrap" class="parent-records-accordion" style="margin-top:8px;"></div>
       </div>
     </div>`;
 
-  parentProgressSubjectMenuApi = wireDownloadSelectMenu({
-    menuId: 'parent-progress-subject-menu',
-    btnId: 'parent-progress-subject-btn',
-    panelId: 'parent-progress-subject-panel',
-    options: [{ value: 'all', label: 'All subjects' }],
-    getValue: () => parentProgressSubject,
-    setValue: (v) => { parentProgressSubject = v || 'all'; },
-    onPick: () => { parentProgressPage = 1; paintParentProgress(); }
-  });
+  if (!parentProgressPeriodInitialized) {
+    parentProgressPeriodMode = parentProgressPeriodMode || 'year';
+    parentProgressPeriod = parentPeriodKey(new Date(), parentProgressPeriodMode);
+    parentProgressPeriodInitialized = true;
+  }
 
-  parentProgressTypeMenuApi = wireDownloadSelectMenu({
-    menuId: 'parent-progress-type-menu',
-    btnId: 'parent-progress-type-btn',
-    panelId: 'parent-progress-type-panel',
-    options: [
-      { value: 'all', label: 'All types' },
-      { value: 'quiz', label: 'Quiz' },
-      { value: 'activity', label: 'Activity' },
-      { value: 'exam', label: 'Exam' }
-    ],
-    getValue: () => parentProgressType,
-    setValue: (v) => { parentProgressType = v || 'all'; },
-    onPick: () => { parentProgressPage = 1; paintParentProgress(); }
-  });
+  paintParentRecordsQuarterChips();
+  paintParentRecordsTypeChips();
 
   parentProgressPeriodFilterApi = wireParentPeriodFilter({
     chipsId: 'parent-progress-period-chips',
@@ -18203,7 +18498,46 @@ function renderParentProgress(student) {
     setMode: (m) => { parentProgressPeriodMode = m; },
     getPeriod: () => parentProgressPeriod,
     setPeriod: (p) => { parentProgressPeriod = p; },
-    onChange: () => { parentProgressPage = 1; paintParentProgress(); }
+    onChange: () => { paintParentProgress(); }
+  });
+
+  const searchEl = document.getElementById('parent-records-search');
+  let searchTimer = null;
+  searchEl?.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      parentProgressSearch = String(searchEl.value || '').trim();
+      paintParentProgress();
+    }, 160);
+  });
+
+  document.getElementById('parent-records-expand-all')?.addEventListener('click', () => {
+    parentRecordsSetAllOpen(true);
+    paintParentProgress();
+  });
+  document.getElementById('parent-records-collapse-all')?.addEventListener('click', () => {
+    parentRecordsSetAllOpen(false);
+    paintParentProgress();
+  });
+  document.getElementById('parent-records-sort-toggle')?.addEventListener('click', () => {
+    parentProgressSortAlpha = !parentProgressSortAlpha;
+    const btn = document.getElementById('parent-records-sort-toggle');
+    if (btn) {
+      btn.setAttribute('aria-pressed', String(parentProgressSortAlpha));
+      btn.textContent = parentProgressSortAlpha ? 'Sort: A–Z' : 'Sort: weakest first';
+    }
+    paintParentProgress();
+  });
+  document.getElementById('parent-records-chart-toggle')?.addEventListener('click', () => {
+    parentProgressChartOpen = !parentProgressChartOpen;
+    const wrap = document.getElementById('parent-records-chart-wrap');
+    const btn = document.getElementById('parent-records-chart-toggle');
+    if (wrap) wrap.hidden = !parentProgressChartOpen;
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(parentProgressChartOpen));
+      btn.textContent = parentProgressChartOpen ? 'Hide subject averages chart' : 'Show subject averages chart';
+    }
+    if (parentProgressChartOpen) paintParentRecordsChart(parentRecordsGroupedSubjects());
   });
 
   loadParentProgress(student.id);
@@ -18297,24 +18631,66 @@ window.viewParentWork = async function (assessmentId) {
 };
 
 function parentProgressTypeLabel(type) {
-  return type === 'quiz' ? 'Quiz' : type === 'activity' ? 'Activity' : 'Exam';
+  return type === 'quiz' ? 'Quiz' : type === 'activity' ? 'Activity' : type === 'exam' ? 'Exam' : String(type || '');
 }
 
-function parentProgressSubjectOptions(records) {
-  const names = new Set();
-  (records || []).forEach((r) => {
-    const n = String(r.subject_name || '').trim();
-    if (n) names.add(n);
-  });
-  const sorted = [...names].sort((a, b) => a.localeCompare(b));
-  const opts = [{ value: 'all', label: 'All subjects' }, ...sorted.map((n) => ({ value: n, label: n }))];
-  if ((records || []).some((r) => !String(r.subject_name || '').trim())) {
-    opts.push({ value: '__none__', label: 'No subject' });
+/** Infer quarter from title marker or created_at (SY Jun–May). */
+function parentRecordQuarter(record) {
+  const title = String(record?.title || '');
+  const fromTitle = title.match(/\b(Q[1-3])\b/i);
+  if (fromTitle) return fromTitle[1].toUpperCase();
+  const lesson = String(record?.lesson_title || '');
+  const fromLesson = lesson.match(/\b(Q[1-3])\b/i);
+  if (fromLesson) return fromLesson[1].toUpperCase();
+  const iso = parentAttendanceISO(record?.created_at);
+  if (!iso) return 'Q1';
+  const month = Number(iso.slice(5, 7));
+  if (month >= 6 && month <= 8) return 'Q1';
+  if (month >= 9 && month <= 11) return 'Q2';
+  return 'Q3'; // Dec–May
+}
+
+function parentPrevQuarter(q) {
+  const n = normalizeQuarterClient(q);
+  if (n === 'Q2') return 'Q1';
+  if (n === 'Q3') return 'Q2';
+  return null;
+}
+
+function parentProgressAverage(records) {
+  if (!records.length) return 0;
+  return Math.round(records.reduce((s, r) => s + (Number(r.percent) || 0), 0) / records.length);
+}
+
+function parentRecordsPerfBadge(avg) {
+  const n = Number(avg) || 0;
+  if (n >= 85) return { cls: 'parent-records-badge parent-records-badge--strong', label: 'Strong' };
+  if (n >= 75) return { cls: 'parent-records-badge parent-records-badge--ok', label: 'On track' };
+  return { cls: 'parent-records-badge parent-records-badge--risk', label: 'Needs support' };
+}
+
+function parentRecordsTrendHtml(currentAvg, prevAvg) {
+  if (prevAvg == null || !Number.isFinite(prevAvg)) {
+    return '<span class="parent-records-trend parent-records-trend--flat" title="No prior quarter">–</span>';
   }
-  return opts;
+  const delta = Math.round(currentAvg - prevAvg);
+  if (delta > 0) {
+    return `<span class="parent-records-trend parent-records-trend--up" title="+${delta} vs prior quarter">▲</span>`;
+  }
+  if (delta < 0) {
+    return `<span class="parent-records-trend parent-records-trend--down" title="${delta} vs prior quarter">▼</span>`;
+  }
+  return '<span class="parent-records-trend parent-records-trend--flat" title="Same as prior quarter">●</span>';
 }
 
-function filterParentProgressRecords(records, { subject = 'all', type = 'all', mode = '', period = '' } = {}) {
+function filterParentProgressRecords(records, {
+  subject = 'all',
+  type = 'all',
+  mode = '',
+  period = '',
+  quarter = '',
+  search = ''
+} = {}) {
   let list = Array.isArray(records) ? [...records] : [];
   list.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
   if (subject && subject !== 'all') {
@@ -18324,12 +18700,232 @@ function filterParentProgressRecords(records, { subject = 'all', type = 'all', m
   }
   if (type && type !== 'all') list = list.filter((r) => String(r.type || '').toLowerCase() === type);
   if (mode && period) list = list.filter((r) => parentPeriodKey(r.created_at, mode) === period);
+  if (quarter) {
+    const q = normalizeQuarterClient(quarter);
+    list = list.filter((r) => parentRecordQuarter(r) === q);
+  }
+  const q = String(search || '').trim().toLowerCase();
+  if (q) {
+    list = list.filter((r) => {
+      const hay = `${r.title || ''} ${r.subject_name || ''} ${r.type || ''} ${r.lesson_title || ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
   return list;
 }
 
-function parentProgressAverage(records) {
-  if (!records.length) return 0;
-  return Math.round(records.reduce((s, r) => s + (Number(r.percent) || 0), 0) / records.length);
+function parentRecordsChildKey() {
+  return String(parentCurrentChild?.id || '');
+}
+
+function parentRecordsOpenSet() {
+  const key = parentRecordsChildKey();
+  if (!parentProgressOpenByChild.has(key)) parentProgressOpenByChild.set(key, new Set());
+  return parentProgressOpenByChild.get(key);
+}
+
+function parentRecordsSetAllOpen(open) {
+  const set = parentRecordsOpenSet();
+  set.clear();
+  if (!open) return;
+  for (const g of parentRecordsGroupedSubjects()) set.add(g.key);
+}
+
+function parentRecordsGroupedSubjects() {
+  const all = parentProgressCache || [];
+  const quarter = normalizeQuarterClient(parentProgressQuarter || CURRENT_QUARTER || 'Q2');
+  const filtered = filterParentProgressRecords(all, {
+    type: parentProgressType,
+    quarter,
+    search: parentProgressSearch,
+    mode: parentProgressPeriodMode,
+    period: parentProgressPeriod
+  });
+  const prevQ = parentPrevQuarter(quarter);
+  const prevFiltered = prevQ
+    ? filterParentProgressRecords(all, {
+      type: parentProgressType,
+      quarter: prevQ,
+      search: '',
+      mode: parentProgressPeriodMode,
+      period: parentProgressPeriod
+    })
+    : [];
+
+  const bySubject = new Map();
+  for (const r of filtered) {
+    const name = String(r.subject_name || '').trim() || 'No subject';
+    const key = name.toLowerCase();
+    if (!bySubject.has(key)) bySubject.set(key, { key, name, records: [] });
+    bySubject.get(key).records.push(r);
+  }
+  const prevAvgBySubject = new Map();
+  for (const r of prevFiltered) {
+    const name = String(r.subject_name || '').trim() || 'No subject';
+    const key = name.toLowerCase();
+    if (!prevAvgBySubject.has(key)) prevAvgBySubject.set(key, []);
+    prevAvgBySubject.get(key).push(Number(r.percent) || 0);
+  }
+
+  let groups = [...bySubject.values()].map((g) => {
+    const avg = parentProgressAverage(g.records);
+    const prevList = prevAvgBySubject.get(g.key);
+    const prevAvg = prevList?.length
+      ? Math.round(prevList.reduce((s, n) => s + n, 0) / prevList.length)
+      : null;
+    return {
+      ...g,
+      avg,
+      count: g.records.length,
+      below: g.records.filter((r) => (Number(r.percent) || 0) < 75).length,
+      prevAvg
+    };
+  });
+
+  if (parentProgressSortAlpha) {
+    groups.sort((a, b) => a.name.localeCompare(b.name));
+  } else {
+    groups.sort((a, b) => a.avg - b.avg || a.name.localeCompare(b.name));
+  }
+  return groups;
+}
+
+function paintParentRecordsQuarterChips() {
+  const el = document.getElementById('parent-records-quarter-chips');
+  if (!el) return;
+  const unlocked = new Set((UNLOCKED_QUARTERS || ['Q1']).map(normalizeQuarterClient));
+  if (!parentProgressQuarter || !unlocked.has(normalizeQuarterClient(parentProgressQuarter))) {
+    parentProgressQuarter = normalizeQuarterClient(CURRENT_QUARTER || [...unlocked][0] || 'Q1');
+  }
+  el.innerHTML = ['Q1', 'Q2', 'Q3'].map((q) => {
+    const isUnlocked = unlocked.has(q);
+    const active = q === normalizeQuarterClient(parentProgressQuarter);
+    return `<button type="button" class="chip-ghost${active ? ' is-pressed' : ''}" data-quarter="${q}" ${isUnlocked ? '' : 'disabled aria-disabled="true"'} title="${isUnlocked ? q : `${q} is locked`}">${q}</button>`;
+  }).join('');
+  el.querySelectorAll('button[data-quarter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const q = btn.dataset.quarter;
+      if (q === parentProgressQuarter) return;
+      parentProgressQuarter = q;
+      paintParentRecordsQuarterChips();
+      paintParentProgress();
+    });
+  });
+}
+
+function paintParentRecordsTypeChips() {
+  const el = document.getElementById('parent-records-type-chips');
+  if (!el) return;
+  const opts = [
+    { value: 'all', label: 'All' },
+    { value: 'quiz', label: 'Quizzes' },
+    { value: 'activity', label: 'Activities' },
+    { value: 'exam', label: 'Exams' }
+  ];
+  el.innerHTML = opts.map((o) => {
+    const active = o.value === parentProgressType;
+    return `<button type="button" class="chip-ghost${active ? ' is-pressed' : ''}" data-type="${o.value}" aria-pressed="${active}">${o.label}</button>`;
+  }).join('');
+  el.querySelectorAll('button[data-type]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      parentProgressType = btn.dataset.type || 'all';
+      paintParentRecordsTypeChips();
+      paintParentProgress();
+    });
+  });
+}
+
+function paintParentRecordsSummary(groups, filteredCount) {
+  const el = document.getElementById('parent-records-summary');
+  if (!el) return;
+  if (!filteredCount) {
+    el.innerHTML = '<span>No records match these filters.</span>';
+    return;
+  }
+  const avg = groups.length
+    ? Math.round(groups.reduce((s, g) => s + g.avg * g.count, 0) / filteredCount)
+    : 0;
+  const below = groups.reduce((s, g) => s + g.below, 0);
+  el.innerHTML = `
+    <div class="parent-records-stat"><span>Overall average</span><strong>${avg}%</strong></div>
+    <div class="parent-records-stat"><span>Records</span><strong>${filteredCount}</strong></div>
+    <div class="parent-records-stat"><span>Below 75%</span><strong>${below}</strong></div>
+    <div class="parent-records-stat"><span>Subjects</span><strong>${groups.length}</strong></div>`;
+}
+
+function paintParentRecordsChart(groups) {
+  const wrap = document.getElementById('parent-records-chart-wrap');
+  const canvas = document.getElementById('parent-records-chart');
+  if (!wrap || !canvas || typeof Chart === 'undefined') return;
+  if (parentCharts.recordsSubjects) {
+    try { parentCharts.recordsSubjects.destroy(); } catch { /* ignore */ }
+    delete parentCharts.recordsSubjects;
+  }
+  if (!parentProgressChartOpen || wrap.hidden) return;
+  if (!groups.length) {
+    wrap.innerHTML = '<p class="page-subheading" style="margin:0;">No subjects to chart.</p>';
+    return;
+  }
+  if (!document.getElementById('parent-records-chart')) {
+    wrap.innerHTML = '<canvas id="parent-records-chart" aria-label="Average score per subject" role="img"></canvas>';
+  }
+  const c = document.getElementById('parent-records-chart');
+  if (!c) return;
+  const labels = groups.map((g) => g.name);
+  const data = groups.map((g) => g.avg);
+  const colors = groups.map((g) => (g.avg >= 85 ? 'rgba(27,94,32,0.75)' : g.avg >= 75 ? 'rgba(230,126,34,0.75)' : 'rgba(183,28,28,0.75)'));
+  parentCharts.recordsSubjects = new Chart(c, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Average %',
+        data,
+        backgroundColor: colors,
+        borderWidth: 0,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.parsed.y}%` } }
+      },
+      scales: {
+        y: { beginAtZero: true, max: 100, ticks: { callback: (v) => `${v}%` } },
+        x: { ticks: { maxRotation: 45, minRotation: 0, autoSkip: true, font: { size: 10 } } }
+      }
+    }
+  });
+}
+
+function parentRecordsInnerTableHtml(records) {
+  const rows = (records || []).map((r) => {
+    const pct = Number(r.percent) || 0;
+    const tint = pct < 75 ? 'parent-records-row--low' : '';
+    return `<tr class="${tint}">
+      <td data-label="Title">${escapeHtml(r.title || '')}</td>
+      <td data-label="Type"><span class="badge type-${escapeHtml(r.type)}">${parentProgressTypeLabel(r.type)}</span></td>
+      <td data-label="Score">${escapeHtml(String(r.score))} / ${escapeHtml(String(r.max_score))}</td>
+      <td data-label="%">${pct}%</td>
+      <td data-label="Date">${r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}</td>
+      <td data-label="Work" class="progress-work-cell">${r.has_submission
+        ? `<button type="button" class="chip-ghost" data-view-work="parent" data-assessment-id="${Number(r.id)}" onclick="viewParentWork(${Number(r.id)})">View Work</button>`
+        : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="parent-records-inner-scroll">
+      <table class="parent-records-inner-table">
+        <thead>
+          <tr><th>Title</th><th>Type</th><th>Score</th><th>%</th><th>Date</th><th>Work</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 async function loadParentProgress(studentId) {
@@ -18342,95 +18938,85 @@ async function loadParentProgress(studentId) {
     if (!res.ok) throw new Error(data.error);
     parentProgressCache = data.records || [];
     parentProgressAverageAll = Number(data.average) || 0;
+    paintParentRecordsQuarterChips();
     paintParentProgress();
   } catch (err) {
     wrap.innerHTML = '<p style="color:#b71c1c;">Failed to load progress</p>';
-    const avgEl = document.getElementById('parent-progress-avg');
-    if (avgEl) avgEl.textContent = 'Could not load scores.';
+    const sum = document.getElementById('parent-records-summary');
+    if (sum) sum.innerHTML = '<span>Could not load scores.</span>';
   }
 }
 
 function paintParentProgress() {
   const wrap = document.getElementById('parent-progress-table-wrap');
-  const pagerWrap = document.getElementById('parent-progress-pager-wrap');
-  const avgEl = document.getElementById('parent-progress-avg');
   if (!wrap) return;
   const records = parentProgressCache || [];
-
-  // Refresh filter options from the data
-  const subjectOpts = parentProgressSubjectOptions(records);
-  if (parentProgressSubject !== 'all' && !subjectOpts.some((o) => o.value === parentProgressSubject)) {
-    parentProgressSubject = 'all';
-  }
-  if (parentProgressSubjectMenuApi) parentProgressSubjectMenuApi.setOptions(subjectOpts);
+  paintParentRecordsQuarterChips();
 
   const periodOpts = parentPeriodOptions(records, parentProgressPeriodMode, (r) => r.created_at);
-  if (parentProgressPeriod && !periodOpts.some((o) => o.value === parentProgressPeriod)) parentProgressPeriod = '';
+  if (parentProgressPeriod && !periodOpts.some((o) => o.value === parentProgressPeriod)) {
+    parentProgressPeriod = '';
+  }
   if (parentProgressPeriodFilterApi) {
     parentProgressPeriodFilterApi.setOptions(periodOpts);
     parentProgressPeriodFilterApi.sync();
   }
 
   if (!records.length) {
-    if (avgEl) avgEl.textContent = 'No quiz, activity, or exam scores yet.';
+    paintParentRecordsSummary([], 0);
     wrap.innerHTML = '<p style="color:var(--text-muted);">Teachers have not published scores for this student yet.</p>';
-    if (pagerWrap) pagerWrap.innerHTML = '';
+    paintParentRecordsChart([]);
     return;
   }
 
-  const filtered = filterParentProgressRecords(records, {
-    subject: parentProgressSubject,
-    type: parentProgressType,
-    mode: parentProgressPeriodMode,
-    period: parentProgressPeriod
+  const groups = parentRecordsGroupedSubjects();
+  const filteredCount = groups.reduce((s, g) => s + g.count, 0);
+  paintParentRecordsSummary(groups, filteredCount);
+
+  if (!groups.length) {
+    wrap.innerHTML = '<p style="color:var(--text-muted);">No quiz, activity, or exam matches the selected quarter, period, type, or search.</p>';
+    paintParentRecordsChart([]);
+    return;
+  }
+
+  const openSet = parentRecordsOpenSet();
+  const childKey = parentRecordsChildKey();
+  if (childKey && !parentProgressDefaultExpanded.has(childKey)) {
+    parentProgressDefaultExpanded.add(childKey);
+    const firstWeak = groups.find((g) => g.avg < 75);
+    if (firstWeak) openSet.add(firstWeak.key);
+  }
+
+  wrap.innerHTML = groups.map((g) => {
+    const open = openSet.has(g.key);
+    const badge = parentRecordsPerfBadge(g.avg);
+    return `
+      <details class="parent-records-subject" data-subject-key="${escapeHtml(g.key)}" ${open ? 'open' : ''}>
+        <summary class="parent-records-subject-summary">
+          <span class="parent-records-subject-name">${escapeHtml(g.name)}</span>
+          <span class="parent-records-subject-meta">
+            <strong>${g.avg}%</strong>
+            <span class="page-subheading">${g.count} record${g.count === 1 ? '' : 's'}</span>
+            ${parentRecordsTrendHtml(g.avg, g.prevAvg)}
+            <span class="${badge.cls}">${badge.label}</span>
+          </span>
+        </summary>
+        <div class="parent-records-subject-body">
+          ${parentRecordsInnerTableHtml(g.records)}
+        </div>
+      </details>`;
+  }).join('');
+
+  wrap.querySelectorAll('details.parent-records-subject').forEach((det) => {
+    det.addEventListener('toggle', () => {
+      const key = det.getAttribute('data-subject-key') || '';
+      if (!key) return;
+      if (det.open) openSet.add(key);
+      else openSet.delete(key);
+    });
   });
-  const isFiltered = parentProgressSubject !== 'all' || parentProgressType !== 'all' || !!parentProgressPeriod;
-
-  if (avgEl) {
-    if (!filtered.length) {
-      avgEl.textContent = `No items match these filters. Overall average: ${parentProgressAverageAll}% across ${records.length} item${records.length === 1 ? '' : 's'}.`;
-    } else if (isFiltered) {
-      avgEl.textContent = `Average across ${filtered.length} shown item${filtered.length === 1 ? '' : 's'}: ${parentProgressAverage(filtered)}% (overall ${parentProgressAverageAll}%)`;
-    } else {
-      avgEl.textContent = `Average across ${records.length} recorded item${records.length === 1 ? '' : 's'}: ${parentProgressAverageAll}%`;
-    }
-  }
-
-  if (!filtered.length) {
-    wrap.innerHTML = '<p style="color:var(--text-muted);">No quiz, activity, or exam matches the selected subject, type, or period.</p>';
-    if (pagerWrap) pagerWrap.innerHTML = '';
-    return;
-  }
-
-  const pager = paginate(filtered, parentProgressPage);
-  parentProgressPage = pager.page;
-
-  wrap.innerHTML = `
-    <table style="width:100%;font-size:0.85rem;">
-      <thead style="background:var(--maroon-header);color:#fff;">
-        <tr><th>Date</th><th>Type</th><th>Title</th><th>Subject</th><th>Score</th><th>%</th><th>Work</th></tr>
-      </thead>
-      <tbody>
-        ${pager.rows.map(r => `
-          <tr>
-            <td>${r.created_at ? new Date(r.created_at).toLocaleDateString() : '-'}</td>
-            <td><span class="badge type-${escapeHtml(r.type)}">${parentProgressTypeLabel(r.type)}</span></td>
-            <td>${escapeHtml(r.title || '')}</td>
-            <td>${escapeHtml(r.subject_name || '—')}</td>
-            <td>${r.score} / ${r.max_score}</td>
-            <td>${r.percent}%</td>
-            <td class="progress-work-cell">${r.has_submission
-              ? `<button type="button" class="chip-ghost" data-view-work="parent" data-assessment-id="${Number(r.id)}" onclick="viewParentWork(${Number(r.id)})">View Work</button>`
-              : '—'}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>`;
   bindProgressWorkClicks(wrap);
-  if (pagerWrap) {
-    pagerWrap.innerHTML = parentPagerHtml('parent-progress-pager', pager);
-    wireParentPager('parent-progress-pager', (p) => { parentProgressPage = p; paintParentProgress(); });
-  }
+  paintParentRecordsChart(groups);
 }
 
 function renderParentContact() {

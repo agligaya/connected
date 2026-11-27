@@ -4370,21 +4370,91 @@ html.layout-mobile #parent-progress-table-wrap th:nth-child(3) {
 .teacher-student-progress-card {
   max-height: min(92vh, 760px);
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.teacher-student-progress-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 10px;
 }
 
 .teacher-student-progress-filters {
-  margin: 0 0 10px;
+  margin: 0;
+}
+
+.teacher-student-progress-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.teacher-student-progress-select select {
+  min-width: 120px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(107, 24, 18, 0.28);
+  background: #fff;
+  color: var(--maroon-deep);
+  font-size: 0.82rem;
+}
+
+.teacher-student-progress-back {
+  margin: 0 0 8px;
+}
+
+.teacher-student-progress-chart-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  margin: 0 0 14px;
+  border: 1px solid rgba(107, 24, 18, 0.1);
+  border-radius: 8px;
+  background: #fff;
 }
 
 .teacher-student-progress-chart-wrap {
   height: 220px;
-  margin: 0 0 14px;
+  margin: 0;
+  padding: 8px 8px 4px;
 }
 
 .teacher-student-progress-body {
   max-height: min(32vh, 260px);
   overflow: auto;
   margin-bottom: 8px;
+}
+
+.teacher-student-progress-subject-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--maroon-deep);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .teacher-student-progress-selects {
+    margin-left: 0;
+    width: 100%;
+  }
+  .teacher-student-progress-select {
+    flex: 1 1 140px;
+  }
+  .teacher-student-progress-select select {
+    width: 100%;
+  }
+  .teacher-student-progress-chart-scroll {
+    max-height: min(50vh, 360px);
+  }
 }
 
 .teacher-student-progress-group {
@@ -8065,4 +8135,204 @@ html.layout-mobile #admin-tab-students .records-table-wrapper {
   border: 1px solid var(--border-maroon);
   border-radius: 4px;
   background: var(--peach-soft);
+}
+
+/* Parent Portal — Records accordion */
+.parent-records-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin: 10px 0 8px;
+}
+.parent-records-quarters,
+.parent-records-type,
+.parent-records-period,
+.parent-records-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.parent-records-period {
+  margin-left: auto;
+}
+.parent-records-search {
+  flex: 1 1 180px;
+  min-width: 160px;
+  margin: 0;
+}
+.parent-records-search .inbox-search-input {
+  width: 100%;
+}
+.parent-records-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 10px 12px;
+  margin: 4px 0 10px;
+  border-radius: 8px;
+  background: rgba(107, 24, 18, 0.06);
+  border: 1px solid rgba(107, 24, 18, 0.12);
+}
+.parent-records-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 88px;
+}
+.parent-records-stat span {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.parent-records-stat strong {
+  font-size: 1.05rem;
+  color: var(--maroon-deep);
+}
+.parent-records-chart-block {
+  margin: 0 0 10px;
+}
+.parent-records-chart-wrap {
+  height: 220px;
+  margin-top: 8px;
+}
+.parent-records-actions {
+  margin-bottom: 6px;
+}
+.parent-records-accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.parent-records-subject {
+  border: 1px solid rgba(107, 24, 18, 0.16);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+.parent-records-subject-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(107, 24, 18, 0.04), transparent);
+}
+.parent-records-subject-summary::-webkit-details-marker {
+  display: none;
+}
+.parent-records-subject-name {
+  font-weight: 650;
+  color: var(--maroon-deep);
+  font-size: 0.95rem;
+}
+.parent-records-subject-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 0.84rem;
+}
+.parent-records-subject-body {
+  border-top: 1px solid rgba(107, 24, 18, 0.1);
+  padding: 0;
+}
+.parent-records-inner-scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+.parent-records-inner-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.parent-records-inner-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--maroon-header);
+  color: #fff;
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+.parent-records-inner-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  vertical-align: middle;
+}
+.parent-records-row--low {
+  background: rgba(183, 28, 28, 0.06);
+}
+.parent-records-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+.parent-records-badge--strong {
+  background: rgba(27, 94, 32, 0.14);
+  color: #1b5e20;
+}
+.parent-records-badge--ok {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
+}
+.parent-records-badge--risk {
+  background: rgba(183, 28, 28, 0.12);
+  color: #b71c1c;
+}
+.parent-records-trend {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.parent-records-trend--up { color: #1b5e20; }
+.parent-records-trend--down { color: #b71c1c; }
+.parent-records-trend--flat { color: #64748b; }
+
+@media (max-width: 640px) {
+  .parent-records-subject-summary {
+    align-items: flex-start;
+  }
+  .parent-records-subject-meta {
+    width: 100%;
+  }
+  .parent-records-inner-table thead {
+    display: none;
+  }
+  .parent-records-inner-table,
+  .parent-records-inner-table tbody,
+  .parent-records-inner-table tr,
+  .parent-records-inner-table td {
+    display: block;
+    width: 100%;
+  }
+  .parent-records-inner-table tr {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(107, 24, 18, 0.12);
+  }
+  .parent-records-inner-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+    border: 0;
+  }
+  .parent-records-inner-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--text-muted);
+    flex: 0 0 auto;
+  }
+  .parent-records-inner-scroll {
+    max-height: none;
+    overflow: visible;
+  }
 }

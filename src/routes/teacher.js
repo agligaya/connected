@@ -1888,12 +1888,14 @@ router.get('/subjects', verifyToken, async (req, res) => {
       }
     }
 
-    // Class adviser rows (subject_id NULL) for Grades 1–3 only →
-    // subjects that apply to those adviser grades (homeroom teaches all subjects)
+    // Homeroom rows (subject_id NULL, adviser/assistant) → all subjects that
+    // apply to that grade. Grades 1–3 always; Grades 4–6 also, so class advisers
+    // and assistants can open Materials for every subject in their class even when
+    // day-to-day subject teaching is split across teachers.
     const adviserGrades = [
       ...new Set(
         assignmentRows
-          .filter((r) => r.subject_id == null && Number(r.grade_level) >= 1 && Number(r.grade_level) <= 3)
+          .filter((r) => r.subject_id == null && Number(r.grade_level) >= 1 && Number(r.grade_level) <= 6)
           .map((r) => Number(r.grade_level))
       )
     ];

@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test \"tests/**/*.test.js\"",
-    "mail:test": "node scripts/mail-test.js"
+    "mail:test": "node scripts/mail-test.js",
+    "seed:demo": "node scripts/seed-demo.js --confirm",
+    "seed:demo:reset": "node scripts/seed-demo.js --reset --confirm",
+    "rename:demo-logins": "node scripts/rename-demo-logins.js --confirm"
   },
   "keywords": [],
   "author": "",

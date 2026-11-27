@@ -23,7 +23,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261121ae" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261127sp" />
 
 </head>
 <body data-view="login">
@@ -1896,14 +1896,29 @@
       <h3 class="font-heading" id="teacher-student-progress-title">Student progress</h3>
       <p class="page-subheading" id="teacher-student-progress-sub" style="margin:0 0 8px;"></p>
       <p class="page-subheading teacher-student-progress-topics" id="teacher-student-progress-topics" hidden style="margin:0 0 12px;"></p>
-      <div class="parent-chart-filters teacher-student-progress-filters" id="teacher-student-progress-filters" role="group" aria-label="Filter by type">
-        <button type="button" class="chip-ghost is-active" data-progress-type="all">All</button>
-        <button type="button" class="chip-ghost" data-progress-type="quiz">Quizzes</button>
-        <button type="button" class="chip-ghost" data-progress-type="activity">Activities</button>
-        <button type="button" class="chip-ghost" data-progress-type="exam">Exams</button>
+      <div class="teacher-student-progress-toolbar">
+        <div class="parent-chart-filters teacher-student-progress-filters" id="teacher-student-progress-filters" role="group" aria-label="Filter by type">
+          <button type="button" class="chip-ghost is-active" data-progress-type="all">All</button>
+          <button type="button" class="chip-ghost" data-progress-type="quiz">Quizzes</button>
+          <button type="button" class="chip-ghost" data-progress-type="activity">Activities</button>
+          <button type="button" class="chip-ghost" data-progress-type="exam">Exams</button>
+        </div>
+        <div class="teacher-student-progress-selects">
+          <label class="teacher-student-progress-select">
+            <span class="visually-hidden">Quarter</span>
+            <select id="teacher-student-progress-quarter" aria-label="Quarter"></select>
+          </label>
+          <label class="teacher-student-progress-select">
+            <span class="visually-hidden">Subject</span>
+            <select id="teacher-student-progress-subject" aria-label="Subject"></select>
+          </label>
+        </div>
       </div>
-      <div class="parent-chart-wrap teacher-student-progress-chart-wrap" id="teacher-student-progress-chart-wrap">
-        <canvas id="teacher-student-progress-chart" aria-label="Student scores" role="img"></canvas>
+      <button type="button" class="chip-ghost teacher-student-progress-back" id="teacher-student-progress-back" hidden>← All subjects</button>
+      <div class="teacher-student-progress-chart-scroll" id="teacher-student-progress-chart-scroll">
+        <div class="parent-chart-wrap teacher-student-progress-chart-wrap" id="teacher-student-progress-chart-wrap">
+          <canvas id="teacher-student-progress-chart" aria-label="Student scores" role="img"></canvas>
+        </div>
       </div>
       <div id="teacher-student-progress-body" class="teacher-student-progress-body"></div>
       <div class="modal-form-actions modal-form-actions--match">
@@ -2072,7 +2087,7 @@
 
   <!-- Single-page app: load unified app.js that handles role-based routing -->
   <script src="/js/vendor/chart.umd.js"></script>
-  <script src="/js/app.js?v=20261121ae" type="module"></script>
+  <script src="/js/app.js?v=20261127sp" type="module"></script>
 
 <!-- RE-ENROLL STUDENT MODAL -->
 <div id="reenroll-student-modal" class="modal-overlay" hidden>
